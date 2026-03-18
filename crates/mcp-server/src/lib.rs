@@ -29,14 +29,14 @@
 pub mod tools;
 pub mod server;
 
-use server::OpenClawHandler;
+use server::WraithHandler;
 use tracing::info;
 
 /// Start the MCP server with the given transport mode.
 pub async fn run(transport: Transport) -> anyhow::Result<()> {
-    info!(transport = ?transport, "Starting OpenClaw MCP Server");
+    info!(transport = ?transport, "Starting Wraith MCP Server");
 
-    let handler = OpenClawHandler::new();
+    let handler = WraithHandler::new();
 
     match transport {
         Transport::Stdio => {
