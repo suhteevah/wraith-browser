@@ -35,6 +35,17 @@ pub struct NativeClient {
     user_agent: String,
     /// Values filled via Fill/TypeText actions, keyed by ref_id
     filled_values: HashMap<u32, String>,
+    /// Cookies accumulated during this session (for persistence)
+    stored_cookies: Vec<StoredCookie>,
+}
+
+/// A cookie stored for persistence across sessions.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredCookie {
+    pub domain: String,
+    pub name: String,
+    pub value: String,
+    pub path: String,
 }
 
 impl NativeClient {
@@ -59,6 +70,7 @@ impl NativeClient {
             history: Vec::new(),
             user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string(),
             filled_values: HashMap::new(),
+            stored_cookies: Vec::new(),
         }
     }
 
@@ -95,14 +107,50 @@ impl NativeClient {
 
     /// Navigate without pushing to history (used by GoBack to avoid double-push).
     async fn navigate_internal(&mut self, url: &str) -> Result<DomSnapshot, BrowserError> {
+        // Build request with realistic browser headers to avoid bot detection
+        let referer = self.current_url.clone().unwrap_or_default();
         let response = self.client
             .get(url)
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept-Encoding", "gzip, deflate, br")
+            .header("Sec-Ch-Ua", "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+            .header("Sec-Ch-Ua-Mobile", "?0")
+            .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", if referer.is_empty() { "none" } else { "same-origin" })
+            .header("Sec-Fetch-User", "?1")
+            .header("Upgrade-Insecure-Requests", "1")
+            .header("Cache-Control", "max-age=0")
+            .header("Referer", &referer)
             .send()
             .await
             .map_err(|e| BrowserError::NavigationFailed { url: url.to_string(), reason: format!("HTTP request failed: {e}") })?;
 
         let final_url = response.url().to_string();
         let status = response.status();
+
+        // Capture Set-Cookie headers for persistence
+        if let Ok(parsed_url) = url::Url::parse(&final_url) {
+            let domain = parsed_url.host_str().unwrap_or("");
+            for value in response.headers().get_all("set-cookie") {
+                if let Ok(cookie_str) = value.to_str() {
+                    // Parse name=value from the cookie string
+                    if let Some((nv, _rest)) = cookie_str.split_once(';') {
+                        if let Some((name, val)) = nv.split_once('=') {
+                            self.stored_cookies.retain(|c| !(c.domain == domain && c.name == name.trim()));
+                            self.stored_cookies.push(StoredCookie {
+                                domain: domain.to_string(),
+                                name: name.trim().to_string(),
+                                value: val.to_string(),
+                                path: "/".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         if !status.is_success() {
             return Err(BrowserError::NavigationFailed {
@@ -300,12 +348,28 @@ impl NativeClient {
 
         info!(url = %url, method = %form.method, fields = form.fields.len(), "Submitting form");
 
+        let referer = self.current_url.clone().unwrap_or_default();
+        let base_headers = |req: reqwest::RequestBuilder| -> reqwest::RequestBuilder {
+            req.header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+               .header("Accept-Language", "en-US,en;q=0.9")
+               .header("Sec-Ch-Ua", "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+               .header("Sec-Ch-Ua-Mobile", "?0")
+               .header("Sec-Ch-Ua-Platform", "\"Windows\"")
+               .header("Sec-Fetch-Dest", "document")
+               .header("Sec-Fetch-Mode", "navigate")
+               .header("Sec-Fetch-Site", "same-origin")
+               .header("Sec-Fetch-User", "?1")
+               .header("Upgrade-Insecure-Requests", "1")
+               .header("Origin", referer.split('/').take(3).collect::<Vec<_>>().join("/"))
+               .header("Referer", &referer)
+        };
+
         let response = match form.method.to_uppercase().as_str() {
             "GET" => {
-                self.client.get(&url).query(&form.fields).send().await
+                base_headers(self.client.get(&url)).query(&form.fields).send().await
             }
             _ => {
-                self.client.post(&url).form(&form.fields).send().await
+                base_headers(self.client.post(&url)).form(&form.fields).send().await
             }
         };
 
@@ -356,12 +420,32 @@ impl NativeClient {
             || html.contains("id=\"__next\"") || html.contains("id=\"__nuxt\"");
         let has_spa_framework = html.contains("__NEXT_DATA__")
             || html.contains("__NUXT__")
-            || html.contains("window.__INITIAL_STATE__");
+            || html.contains("window.__INITIAL_STATE__")
+            || html.contains("window.__remixContext")
+            || html.contains("__APOLLO_STATE__");
         let minimal_content = html.len() > 5000 && snapshot.elements.len() < 3;
+
+        // Known SPA-heavy job sites
+        let url_lower = html.to_lowercase(); // reuse for checks below
+        let is_known_spa = self.current_url.as_ref().map(|u| {
+            let u = u.to_lowercase();
+            u.contains("linkedin.com")
+                || u.contains("indeed.com")
+                || u.contains("glassdoor.com")
+                || u.contains("lever.co")
+                || u.contains("greenhouse.io")
+                || u.contains("workday.com")
+                || u.contains("myworkdayjobs.com")
+                || u.contains("icims.com")
+                || u.contains("smartrecruiters.com")
+                || u.contains("angel.co")
+                || u.contains("wellfound.com")
+        }).unwrap_or(false);
 
         let needs_js = body_is_empty
             || (has_root_div && minimal_content)
-            || has_spa_framework;
+            || has_spa_framework
+            || is_known_spa;
 
         if needs_js {
             debug!(
@@ -375,6 +459,54 @@ impl NativeClient {
         }
 
         needs_js
+    }
+
+    /// Save cookies to a JSON file for persistence across sessions.
+    pub fn save_cookies(&self, path: &std::path::Path) -> Result<(), BrowserError> {
+        // reqwest::cookie::Jar doesn't expose cookies for enumeration,
+        // so we store cookie data from Set-Cookie headers as we see them.
+        // For now, save the cookie jar state we've accumulated.
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| BrowserError::CdpError(format!("Cookie dir creation failed: {e}")))?;
+        }
+
+        let cookies_json = serde_json::to_string_pretty(&self.stored_cookies)
+            .map_err(|e| BrowserError::CdpError(format!("Cookie serialization failed: {e}")))?;
+
+        std::fs::write(path, cookies_json)
+            .map_err(|e| BrowserError::CdpError(format!("Cookie file write failed: {e}")))?;
+
+        debug!(path = %path.display(), count = self.stored_cookies.len(), "Cookies saved");
+        Ok(())
+    }
+
+    /// Load cookies from a JSON file.
+    pub fn load_cookies(&mut self, path: &std::path::Path) -> Result<(), BrowserError> {
+        if !path.exists() {
+            debug!(path = %path.display(), "No cookie file found, starting fresh");
+            return Ok(());
+        }
+
+        let data = std::fs::read_to_string(path)
+            .map_err(|e| BrowserError::CdpError(format!("Cookie file read failed: {e}")))?;
+
+        let cookies: Vec<StoredCookie> = serde_json::from_str(&data)
+            .map_err(|e| BrowserError::CdpError(format!("Cookie parse failed: {e}")))?;
+
+        // Inject cookies into the jar
+        for cookie in &cookies {
+            let url = format!("https://{}{}", cookie.domain, cookie.path);
+            if let Ok(url) = url::Url::parse(&url) {
+                let cookie_str = format!("{}={}; Domain={}; Path={}",
+                    cookie.name, cookie.value, cookie.domain, cookie.path);
+                self.cookie_jar.add_cookie_str(&cookie_str, &url);
+            }
+        }
+
+        self.stored_cookies = cookies.clone();
+        info!(path = %path.display(), count = self.stored_cookies.len(), "Cookies loaded");
+        Ok(())
     }
 }
 

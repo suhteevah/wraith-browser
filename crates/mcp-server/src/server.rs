@@ -1,6 +1,7 @@
 //! MCP server handler — implements the rmcp ServerHandler trait.
 //! Wired to a real NativeClient for Chrome-free browsing.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
@@ -88,9 +89,16 @@ impl WraithHandler {
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized with NativeClient");
 
+        // Create browser and load saved cookies
+        let mut browser = NativeClient::new();
+        let cookie_path = cookie_file_path();
+        if let Err(e) = browser.load_cookies(&cookie_path) {
+            warn!(error = %e, "Failed to load saved cookies (starting fresh)");
+        }
+
         Self {
             tools,
-            browser: Arc::new(Mutex::new(NativeClient::new())),
+            browser: Arc::new(Mutex::new(browser)),
         }
     }
 
@@ -111,12 +119,21 @@ impl WraithHandler {
                 let snapshot = browser.navigate(&input.url).await
                     .map_err(|e| ErrorData::internal_error(format!("Navigation failed: {e}"), None))?;
 
+                // Auto-save cookies after navigation
+                let _ = browser.save_cookies(&cookie_file_path());
+
                 let agent_text = snapshot.to_agent_text();
                 let needs_js = browser.needs_javascript();
 
                 let mut response = agent_text;
                 if needs_js {
-                    response.push_str("\n\n[WARNING: This page may require JavaScript to render fully. Some content might be missing.]");
+                    response.push_str("\n\n⚠️ THIS PAGE REQUIRES JAVASCRIPT — content above may be incomplete or empty.\n");
+                    response.push_str("This is a JavaScript-rendered SPA (React/Next.js/Vue). Native mode cannot execute JS.\n\n");
+                    response.push_str("ALTERNATIVES:\n");
+                    response.push_str("  1. Try the site's API directly if available (many job sites have public APIs)\n");
+                    response.push_str("  2. Try a mobile/simplified version of the URL (add ?force_classic=true, m.site.com, etc.)\n");
+                    response.push_str("  3. Use browse_search to find the information via web search instead\n");
+                    response.push_str("  4. Look for the data in the HTML source — some SPAs embed JSON data in script tags\n");
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(response)]))
@@ -403,4 +420,12 @@ fn make_tool(
 
     Tool::new(name, description, input_schema)
         .with_annotations(annotations)
+}
+
+/// Get the path for cookie persistence.
+fn cookie_file_path() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("wraith-browser")
+        .join("cookies.json")
 }
