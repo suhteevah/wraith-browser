@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/browser-core",
+    "crates/content-extract",
+    "crates/cache",
+    "crates/identity",
+    "crates/mcp-server",
+    "crates/search-engine",
+    "crates/agent-loop",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+repository = "https://github.com/suhteevah/openclaw-browser"
+description = "An AI-agent-first web browser written in Rust — designed for LLM control, not humans"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Browser control via CDP
+chromiumoxide = { version = "0.9" }
+chromiumoxide_cdp = { version = "0.9" }
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "cookies", "gzip", "brotli"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "timeout"] }
+
+# HTML parsing & content extraction
+html5ever = "0.39"
+markup5ever_rcdom = "0.38"
+scraper = "0.25"
+lol_html = "2"
+ego-tree = "0.10"
+url = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Observability — MANDATORY
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# MCP protocol
+rmcp = { version = "1.2", features = ["server", "transport-io"] }
+schemars = "0.8"
+
+# Search
+tantivy = "0.25"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+base64 = "0.22"
+
+# Storage & caching
+rusqlite = { version = "0.32", features = ["bundled", "blob", "functions", "trace"] }
+blake3 = "1"
+flate2 = "1"
+sha2 = "0.10"
+parking_lot = "0.12"
+
+# Cryptography & identity
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+secrecy = { version = "0.10", features = ["serde"] }
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+dirs = "6"
+
+# Optimize crypto crates even in debug builds — argon2 is unusably slow without this
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.test.package.argon2]
+opt-level = 3
+
+[profile.test.package.blake2]
+opt-level = 3

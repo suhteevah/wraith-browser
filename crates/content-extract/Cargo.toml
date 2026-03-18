@@ -1,0 +1,21 @@
+[package]
+name = "openclaw-content-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTML content extraction and markdown conversion for AI consumption"
+
+[dependencies]
+html5ever.workspace = true
+markup5ever_rcdom.workspace = true
+scraper.workspace = true
+lol_html.workspace = true
+ego-tree.workspace = true
+url.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+regex.workspace = true

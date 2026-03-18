@@ -1,0 +1,20 @@
+[package]
+name = "openclaw-agent-loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AI agent decision loop — observe, think, act cycle for autonomous browsing"
+
+[dependencies]
+openclaw-browser-core = { path = "../browser-core" }
+openclaw-content-extract = { path = "../content-extract" }
+openclaw-search = { path = "../search-engine" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+reqwest.workspace = true
+chrono.workspace = true
+uuid.workspace = true

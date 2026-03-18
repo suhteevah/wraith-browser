@@ -1,0 +1,30 @@
+/target
+**/*.rs.bk
+*.pdb
+.env
+.env.local
+*.log
+# IDE / editor
+.idea/
+.vscode/
+.obsidian/
+.claude/
+*.swp
+*.swo
+# OS
+.DS_Store
+Thumbs.db
+# Tantivy index (local dev)
+/data/
+# Build artifacts
+openclaw-browser.zip
+# Broken directory name artifact
+{crates/
+# SQLite databases
+*.db
+*.db-wal
+*.db-shm
+# Cache blobs
+/blobs/
+/index/
+/.wraith/

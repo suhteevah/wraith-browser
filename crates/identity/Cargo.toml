@@ -1,0 +1,44 @@
+[package]
+name = "openclaw-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Encrypted credential vault, browser fingerprint spoofing, and auth flow management for AI browser agents"
+
+[dependencies]
+# Crypto — vault encryption
+aes-gcm.workspace = true
+argon2.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+secrecy.workspace = true
+sha2.workspace = true
+blake3.workspace = true
+base64.workspace = true
+
+# TOTP 2FA
+totp-rs.workspace = true
+
+# Storage
+rusqlite.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+
+# Browser (for fingerprint capture)
+chromiumoxide.workspace = true
+futures.workspace = true
+
+# Core
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+url.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
