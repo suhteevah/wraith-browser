@@ -29,6 +29,9 @@ pub mod swarm;
 pub mod tls_fingerprint;
 pub mod wasm_plugins;
 pub mod vision;
+pub mod stealth_evasions;
+pub mod tor;
+pub mod telemetry;
 
 pub use session::BrowserSession;
 pub use tab::TabHandle;

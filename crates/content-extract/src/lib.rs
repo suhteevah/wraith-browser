@@ -14,6 +14,8 @@ pub mod readability;
 pub mod markdown;
 pub mod strip;
 pub mod error;
+pub mod pdf;
+pub mod ocr;
 
 use tracing::{info, debug, instrument};
 
