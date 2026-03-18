@@ -34,6 +34,7 @@ pub enum SearchSource {
     JSearch,
     Adzuna,
     Remotive,
+    SearXNG,
     LocalIndex,
 }
 

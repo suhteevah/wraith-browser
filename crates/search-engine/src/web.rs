@@ -64,7 +64,18 @@ pub async fn metasearch(query: &str, max_results: usize) -> Result<Vec<SearchRes
         }
     }
 
-    // Remotive — always available, no auth needed
+    // SearXNG — always available, no auth needed, aggregates multiple engines
+    match searxng_search(query, max_results).await {
+        Ok(results) => {
+            debug!(count = results.len(), "SearXNG results received");
+            all_results.extend(results);
+        }
+        Err(e) => {
+            warn!(error = %e, "SearXNG search failed, continuing");
+        }
+    }
+
+    // Remotive — always available, no auth needed (remote jobs)
     match remotive_search(query, max_results).await {
         Ok(results) => {
             debug!(count = results.len(), "Remotive results received");
@@ -547,6 +558,110 @@ async fn remotive_search(query: &str, max_results: usize) -> Result<Vec<SearchRe
 
     debug!(count = results.len(), "Remotive results parsed");
     Ok(results)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SearXNG (public instances, no auth)
+// ═══════════════════════════════════════════════════════════════
+
+/// Public SearXNG instances that support JSON output.
+const SEARXNG_INSTANCES: &[&str] = &[
+    "https://search.ononoki.org",
+    "https://search.sapti.me",
+    "https://searx.be",
+    "https://search.bus-hit.me",
+    "https://priv.au",
+];
+
+/// Search using a public SearXNG instance.
+/// Falls through instances on failure — no auth required.
+#[instrument(skip_all, fields(query = %query))]
+async fn searxng_search(query: &str, max_results: usize) -> Result<Vec<SearchResult>, SearchError> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| SearchError::ProviderFailed {
+            provider: "SearXNG".to_string(),
+            reason: format!("Client build failed: {e}"),
+        })?;
+
+    // Also check for a custom instance URL
+    let custom_instance = std::env::var("SEARXNG_URL").ok();
+    let instances: Vec<&str> = if let Some(ref custom) = custom_instance {
+        std::iter::once(custom.as_str()).chain(SEARXNG_INSTANCES.iter().copied()).collect()
+    } else {
+        SEARXNG_INSTANCES.to_vec()
+    };
+
+    for instance in &instances {
+        let url = format!("{instance}/search");
+        let result = client
+            .get(&url)
+            .query(&[
+                ("q", query),
+                ("format", "json"),
+                ("engines", "google,bing,duckduckgo,brave,wikipedia"),
+                ("safesearch", "0"),
+            ])
+            .header("Accept", "application/json")
+            .send()
+            .await;
+
+        let response = match result {
+            Ok(r) if r.status().is_success() => r,
+            Ok(r) => {
+                debug!(instance = %instance, status = %r.status(), "SearXNG instance returned error, trying next");
+                continue;
+            }
+            Err(e) => {
+                debug!(instance = %instance, error = %e, "SearXNG instance unreachable, trying next");
+                continue;
+            }
+        };
+
+        let body: serde_json::Value = match response.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(instance = %instance, error = %e, "SearXNG JSON parse failed, trying next");
+                continue;
+            }
+        };
+
+        let mut results = Vec::new();
+        if let Some(search_results) = body.get("results").and_then(|r| r.as_array()) {
+            for (i, item) in search_results.iter().enumerate() {
+                if results.len() >= max_results {
+                    break;
+                }
+
+                let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                let url = item.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+                let snippet = item.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+
+                if title.is_empty() || url.is_empty() {
+                    continue;
+                }
+
+                let relevance = 1.0 - (i as f32 / search_results.len().max(1) as f32);
+                results.push(SearchResult {
+                    title,
+                    url,
+                    snippet,
+                    source: SearchSource::SearXNG,
+                    relevance_score: relevance,
+                });
+            }
+        }
+
+        debug!(instance = %instance, count = results.len(), "SearXNG results parsed");
+        return Ok(results);
+    }
+
+    Err(SearchError::ProviderFailed {
+        provider: "SearXNG".to_string(),
+        reason: "All SearXNG instances failed".to_string(),
+    })
 }
 
 /// Simple URL encoding for query strings.
