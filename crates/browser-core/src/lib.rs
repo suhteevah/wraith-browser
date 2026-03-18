@@ -21,6 +21,7 @@ pub mod dom;
 pub mod actions;
 pub mod error;
 pub mod config;
+pub mod native;
 
 pub use session::BrowserSession;
 pub use tab::TabHandle;
@@ -28,3 +29,4 @@ pub use dom::DomSnapshot;
 pub use actions::{BrowserAction, ActionResult};
 pub use error::BrowserError;
 pub use config::BrowserConfig;
+pub use native::NativeClient;
