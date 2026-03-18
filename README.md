@@ -211,7 +211,7 @@ You can use Wraith freely for personal projects, open source work, academic rese
 
 ### Commercial Use
 
-Companies that want to use Wraith in proprietary products without open-sourcing their codebase can obtain a **commercial license**. Contact [matt@ridgecellrepair.com](mailto:matt@ridgecellrepair.com) for licensing inquiries.
+Companies that want to use Wraith in proprietary products without open-sourcing their codebase can obtain a **commercial license**. Contact [ridgecellrepair@gmail.com](mailto:ridgecellrepair@gmail.com) for licensing inquiries.
 
 ### Enterprise
 
