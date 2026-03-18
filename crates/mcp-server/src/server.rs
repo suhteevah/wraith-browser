@@ -278,14 +278,22 @@ impl WraithHandler {
                 // In native mode, Enter on a form triggers submit
                 if input.key.eq_ignore_ascii_case("enter") {
                     let mut browser = self.browser.lock().await;
-                    // Try to find and submit the current form
-                    if let Ok(html) = browser.page_source() {
-                        let html_owned = html.to_string();
-                        // Submit the first form on the page
-                        let result = browser.execute(BrowserAction::Click { ref_id: 0 }).await;
-                        match result {
-                            Ok(r) => return Ok(CallToolResult::success(vec![Content::text(format_action_result(&r))])),
-                            Err(_) => {}
+                    // Get the current snapshot and find a submit button or regular button
+                    if let Ok(snapshot) = browser.snapshot() {
+                        let submit_el = snapshot.elements.iter().find(|el| {
+                            el.role == "submit" || el.role == "button"
+                        });
+                        if let Some(el) = submit_el {
+                            let ref_id = el.ref_id;
+                            let result = browser.execute(BrowserAction::Click { ref_id }).await;
+                            match result {
+                                Ok(r) => return Ok(CallToolResult::success(vec![Content::text(format_action_result(&r))])),
+                                Err(_) => {}
+                            }
+                        } else {
+                            return Ok(CallToolResult::success(vec![Content::text(
+                                "No submit button found on page".to_string()
+                            )]));
                         }
                     }
                 }

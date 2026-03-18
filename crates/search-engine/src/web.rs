@@ -178,15 +178,47 @@ fn percent_decode(s: &str) -> String {
     let mut chars = s.chars();
     while let Some(c) = chars.next() {
         if c == '%' {
+            // Collect all consecutive percent-encoded bytes into a buffer
+            // so multi-byte UTF-8 sequences (e.g. %C3%A9 for 'é') are decoded correctly.
+            let mut bytes = Vec::new();
             let hex: String = chars.by_ref().take(2).collect();
             if hex.len() == 2 {
                 if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                    result.push(byte as char);
+                    bytes.push(byte);
+                } else {
+                    result.push('%');
+                    result.push_str(&hex);
                     continue;
                 }
+            } else {
+                result.push('%');
+                result.push_str(&hex);
+                continue;
             }
-            result.push('%');
-            result.push_str(&hex);
+            // Keep consuming consecutive %XX sequences
+            // We need to peek ahead, so we use a loop with a temporary collection
+            // Since chars is by-ref, we need to be careful
+            loop {
+                // Try to peek at the next char to see if it's '%'
+                // We'll clone the iterator state by collecting remaining into a string
+                // Actually, we can just check the next char
+                let mut peeker = chars.clone();
+                if let Some('%') = peeker.next() {
+                    let hex2: String = peeker.by_ref().take(2).collect();
+                    if hex2.len() == 2 {
+                        if let Ok(byte) = u8::from_str_radix(&hex2, 16) {
+                            bytes.push(byte);
+                            // Actually advance the real iterator past '%XX'
+                            chars.next(); // skip '%'
+                            chars.next(); // skip first hex char
+                            chars.next(); // skip second hex char
+                            continue;
+                        }
+                    }
+                }
+                break;
+            }
+            result.push_str(&String::from_utf8_lossy(&bytes));
         } else if c == '+' {
             result.push(' ');
         } else {
@@ -263,13 +295,20 @@ async fn brave_search(query: &str, max_results: usize, api_key: &str) -> Result<
 
 /// Simple URL encoding for query strings.
 fn urlencoding(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            ' ' => "+".to_string(),
-            _ => format!("%{:02X}", c as u32),
-        })
-        .collect()
+    let mut result = String::with_capacity(s.len() * 3);
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => result.push(c),
+            ' ' => result.push('+'),
+            _ => {
+                // Encode each UTF-8 byte, not the Unicode code point
+                for byte in c.to_string().as_bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]

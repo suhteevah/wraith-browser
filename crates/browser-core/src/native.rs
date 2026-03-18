@@ -33,6 +33,8 @@ pub struct NativeClient {
     history: Vec<String>,
     /// User agent string
     user_agent: String,
+    /// Values filled via Fill/TypeText actions, keyed by ref_id
+    filled_values: HashMap<u32, String>,
 }
 
 impl NativeClient {
@@ -43,7 +45,7 @@ impl NativeClient {
             .cookie_provider(Arc::clone(&jar))
             .cookie_store(true)
             .redirect(reqwest::redirect::Policy::limited(10))
-            .user_agent("Wraith-Browser/0.1.0 (AI Agent; Rust)")
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
@@ -55,7 +57,8 @@ impl NativeClient {
             current_html: None,
             current_snapshot: None,
             history: Vec::new(),
-            user_agent: "Wraith-Browser/0.1.0 (AI Agent; Rust)".to_string(),
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string(),
+            filled_values: HashMap::new(),
         }
     }
 
@@ -78,6 +81,8 @@ impl NativeClient {
     /// Navigate to a URL and parse the page.
     #[instrument(skip(self), fields(url = %url))]
     pub async fn navigate(&mut self, url: &str) -> Result<DomSnapshot, BrowserError> {
+        validate_url_scheme(url)?;
+
         info!(url = %url, "Native navigate");
 
         // Push current URL to history
@@ -85,6 +90,11 @@ impl NativeClient {
             self.history.push(current.clone());
         }
 
+        self.navigate_internal(url).await
+    }
+
+    /// Navigate without pushing to history (used by GoBack to avoid double-push).
+    async fn navigate_internal(&mut self, url: &str) -> Result<DomSnapshot, BrowserError> {
         let response = self.client
             .get(url)
             .send()
@@ -174,8 +184,8 @@ impl NativeClient {
                     })
                 } else if element.role == "button" || element.role == "submit" {
                     // For buttons, try to find and submit the parent form
-                    if let Some(ref html) = self.current_html {
-                        if let Some(form_data) = extract_form_for_submit(html, ref_id) {
+                    if let Some(ref html) = self.current_html.clone() {
+                        if let Some(form_data) = extract_form_with_fills(html, ref_id, &self.filled_values) {
                             let result = self.submit_form(&form_data).await?;
                             return Ok(result);
                         }
@@ -192,6 +202,7 @@ impl NativeClient {
 
             BrowserAction::Fill { ref_id, text } => {
                 // Store the fill value for later form submission
+                self.filled_values.insert(ref_id, text.clone());
                 if let Some(ref mut snapshot) = self.current_snapshot {
                     if let Some(el) = snapshot.elements.iter_mut().find(|e| e.ref_id == ref_id) {
                         el.value = Some(text.clone());
@@ -204,6 +215,7 @@ impl NativeClient {
             }
 
             BrowserAction::Select { ref_id, value } => {
+                self.filled_values.insert(ref_id, value.clone());
                 if let Some(ref mut snapshot) = self.current_snapshot {
                     if let Some(el) = snapshot.elements.iter_mut().find(|e| e.ref_id == ref_id) {
                         el.value = Some(value.clone());
@@ -216,7 +228,7 @@ impl NativeClient {
 
             BrowserAction::GoBack => {
                 if let Some(prev_url) = self.history.pop() {
-                    let snapshot = self.navigate(&prev_url).await?;
+                    let snapshot = self.navigate_internal(&prev_url).await?;
                     Ok(ActionResult::Navigated {
                         url: prev_url,
                         title: snapshot.title,
@@ -254,6 +266,7 @@ impl NativeClient {
 
             BrowserAction::TypeText { ref_id, text, .. } => {
                 // Same as Fill in native mode
+                self.filled_values.insert(ref_id, text.clone());
                 if let Some(ref mut snapshot) = self.current_snapshot {
                     if let Some(el) = snapshot.elements.iter_mut().find(|e| e.ref_id == ref_id) {
                         el.value = Some(text.clone());
@@ -674,6 +687,109 @@ fn detect_page_type(
     "generic".to_string()
 }
 
+/// Validate that a URL uses an allowed scheme (http or https only).
+fn validate_url_scheme(url: &str) -> Result<(), BrowserError> {
+    let url_lower = url.trim().to_lowercase();
+    if url_lower.starts_with("http://") || url_lower.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(BrowserError::NavigationFailed {
+            url: url.to_string(),
+            reason: "Only http:// and https:// schemes are allowed".to_string(),
+        })
+    }
+}
+
+/// Extract form data for HTTP submission, using filled values from the Fill action.
+fn extract_form_with_fills(html: &str, _submit_ref_id: u32, filled_values: &HashMap<u32, String>) -> Option<FormData> {
+    let doc = Html::parse_document(html);
+    let form_sel = Selector::parse("form").ok()?;
+    let input_sel = Selector::parse("input, select, textarea").ok()?;
+
+    // Find the first form (simplified — a full implementation would
+    // find the form containing the submit button by ref_id)
+    let form_el = doc.select(&form_sel).next()?;
+
+    let action = form_el.value().attr("action").unwrap_or("").to_string();
+    let method = form_el.value().attr("method").unwrap_or("POST").to_string();
+
+    // Build a map from field name to ref_id by walking the snapshot numbering.
+    // Re-parse to get ref_ids consistent with parse_html_to_snapshot.
+    let snapshot_doc = Html::parse_document(html);
+    let all_input_sel = Selector::parse("input, select, textarea").ok()?;
+    let link_sel = Selector::parse("a[href]").ok()?;
+    let button_sel = Selector::parse("button").ok()?;
+
+    // Count links first (they get ref_ids before inputs)
+    let link_count = snapshot_doc.select(&link_sel)
+        .filter(|el| {
+            let href = el.value().attr("href").unwrap_or("");
+            if href.is_empty() || href.starts_with('#') || href.starts_with("javascript:") {
+                return false;
+            }
+            let text: String = el.text().collect::<String>().trim().to_string();
+            !text.is_empty() || el.value().attr("aria-label").is_some()
+        })
+        .count() as u32;
+
+    // Map input names to their ref_ids
+    let mut name_to_ref_id: HashMap<String, u32> = HashMap::new();
+    let mut current_ref_id = link_count + 1; // inputs start after links
+    for input in snapshot_doc.select(&all_input_sel) {
+        let input_type = input.value().attr("type").unwrap_or("text").to_lowercase();
+        if input_type == "hidden" {
+            continue; // hidden inputs are skipped in parse
+        }
+        if let Some(name) = input.value().attr("name") {
+            if !name.is_empty() {
+                name_to_ref_id.insert(name.to_string(), current_ref_id);
+            }
+        }
+        current_ref_id += 1;
+    }
+    // buttons also get ref_ids
+    for _btn in snapshot_doc.select(&button_sel) {
+        current_ref_id += 1;
+    }
+
+    // Build ref_id to filled value lookup
+    let mut ref_id_to_fill: HashMap<u32, &str> = HashMap::new();
+    for (rid, val) in filled_values {
+        ref_id_to_fill.insert(*rid, val.as_str());
+    }
+
+    let mut fields = Vec::new();
+    for input in form_el.select(&input_sel) {
+        let name = match input.value().attr("name") {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
+        let input_type = input.value().attr("type").unwrap_or("text");
+
+        // Skip unchecked checkboxes/radios
+        if (input_type == "checkbox" || input_type == "radio")
+            && input.value().attr("checked").is_none()
+        {
+            continue;
+        }
+
+        // Use filled value if available, otherwise fall back to HTML attribute
+        let value = if let Some(&rid) = name_to_ref_id.get(&name) {
+            if let Some(&filled) = ref_id_to_fill.get(&rid) {
+                filled.to_string()
+            } else {
+                input.value().attr("value").unwrap_or("").to_string()
+            }
+        } else {
+            input.value().attr("value").unwrap_or("").to_string()
+        };
+
+        fields.push((name, value));
+    }
+
+    Some(FormData { action, method, fields })
+}
+
 /// Extract form data for HTTP submission when a submit button is clicked.
 fn extract_form_for_submit(html: &str, _submit_ref_id: u32) -> Option<FormData> {
     let doc = Html::parse_document(html);
@@ -715,8 +831,11 @@ fn extract_form_for_submit(html: &str, _submit_ref_id: u32) -> Option<FormData> 
 
 /// Resolve a potentially relative URL against a base URL.
 fn resolve_url(href: &str, base: &str) -> String {
-    if href.starts_with("http://") || href.starts_with("https://") || href.starts_with("//") {
+    if href.starts_with("http://") || href.starts_with("https://") {
         return href.to_string();
+    }
+    if href.starts_with("//") {
+        return format!("https:{href}");
     }
     if let Ok(base_url) = Url::parse(base) {
         if let Ok(resolved) = base_url.join(href) {
