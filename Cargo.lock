@@ -2069,6 +2069,7 @@ dependencies = [
  "openclaw-cache",
  "openclaw-content-extract",
  "openclaw-search",
+ "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

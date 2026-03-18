@@ -26,6 +26,9 @@ pub mod selectors;
 pub mod network_intel;
 pub mod stealth;
 pub mod swarm;
+pub mod tls_fingerprint;
+pub mod wasm_plugins;
+pub mod vision;
 
 pub use session::BrowserSession;
 pub use tab::TabHandle;
