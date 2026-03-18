@@ -38,6 +38,43 @@ pub async fn metasearch(query: &str, max_results: usize) -> Result<Vec<SearchRes
         }
     }
 
+    // JSearch (RapidAPI) — if API key is available
+    if let Ok(rapidapi_key) = std::env::var("RAPIDAPI_KEY") {
+        match jsearch(query, max_results, &rapidapi_key).await {
+            Ok(results) => {
+                debug!(count = results.len(), "JSearch results received");
+                all_results.extend(results);
+            }
+            Err(e) => {
+                warn!(error = %e, "JSearch failed");
+            }
+        }
+    }
+
+    // Adzuna — if app ID and key are available
+    if let (Ok(app_id), Ok(app_key)) = (std::env::var("ADZUNA_APP_ID"), std::env::var("ADZUNA_APP_KEY")) {
+        match adzuna_search(query, max_results, &app_id, &app_key).await {
+            Ok(results) => {
+                debug!(count = results.len(), "Adzuna results received");
+                all_results.extend(results);
+            }
+            Err(e) => {
+                warn!(error = %e, "Adzuna search failed");
+            }
+        }
+    }
+
+    // Remotive — always available, no auth needed
+    match remotive_search(query, max_results).await {
+        Ok(results) => {
+            debug!(count = results.len(), "Remotive results received");
+            all_results.extend(results);
+        }
+        Err(e) => {
+            warn!(error = %e, "Remotive search failed, continuing");
+        }
+    }
+
     // Deduplicate by URL
     all_results.sort_by(|a, b| b.relevance_score.partial_cmp(&a.relevance_score).unwrap_or(std::cmp::Ordering::Equal));
     all_results.dedup_by(|a, b| a.url == b.url);
@@ -290,6 +327,225 @@ async fn brave_search(query: &str, max_results: usize, api_key: &str) -> Result<
     }
 
     debug!(count = results.len(), "Brave Search results parsed");
+    Ok(results)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// JSearch (RapidAPI)
+// ═══════════════════════════════════════════════════════════════
+
+/// Search using JSearch via RapidAPI.
+/// Requires RAPIDAPI_KEY environment variable.
+#[instrument(skip_all, fields(query = %query))]
+async fn jsearch(query: &str, max_results: usize, api_key: &str) -> Result<Vec<SearchResult>, SearchError> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://jsearch.p.rapidapi.com/search")
+        .header("X-RapidAPI-Key", api_key)
+        .header("X-RapidAPI-Host", "jsearch.p.rapidapi.com")
+        .query(&[
+            ("query", query),
+            ("num_pages", "1"),
+        ])
+        .send()
+        .await
+        .map_err(|e| SearchError::ProviderFailed {
+            provider: "JSearch".to_string(),
+            reason: format!("Request failed: {e}"),
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(SearchError::ProviderFailed {
+            provider: "JSearch".to_string(),
+            reason: format!("API error {status}: {body}"),
+        });
+    }
+
+    let body: serde_json::Value = response.json().await.map_err(|e| SearchError::ProviderFailed {
+        provider: "JSearch".to_string(),
+        reason: format!("JSON parse failed: {e}"),
+    })?;
+
+    let mut results = Vec::new();
+    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+        for (i, item) in data.iter().enumerate() {
+            if results.len() >= max_results {
+                break;
+            }
+
+            let title = item.get("job_title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let employer = item.get("employer_name").and_then(|e| e.as_str()).unwrap_or("");
+            let url = item.get("job_apply_link").and_then(|u| u.as_str()).unwrap_or("").to_string();
+            let snippet = item.get("job_description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+
+            if title.is_empty() || url.is_empty() {
+                continue;
+            }
+
+            let display_title = if employer.is_empty() {
+                title
+            } else {
+                format!("{title} — {employer}")
+            };
+
+            let relevance = 1.0 - (i as f32 / data.len().max(1) as f32);
+            results.push(SearchResult {
+                title: display_title,
+                url,
+                snippet,
+                source: SearchSource::JSearch,
+                relevance_score: relevance,
+            });
+        }
+    }
+
+    debug!(count = results.len(), "JSearch results parsed");
+    Ok(results)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Adzuna API
+// ═══════════════════════════════════════════════════════════════
+
+/// Search using the Adzuna job search API.
+/// Requires ADZUNA_APP_ID and ADZUNA_APP_KEY environment variables.
+#[instrument(skip_all, fields(query = %query))]
+async fn adzuna_search(query: &str, max_results: usize, app_id: &str, app_key: &str) -> Result<Vec<SearchResult>, SearchError> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://api.adzuna.com/v1/api/jobs/us/search/1")
+        .query(&[
+            ("app_id", app_id),
+            ("app_key", app_key),
+            ("what", query),
+            ("results_per_page", &max_results.to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| SearchError::ProviderFailed {
+            provider: "Adzuna".to_string(),
+            reason: format!("Request failed: {e}"),
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(SearchError::ProviderFailed {
+            provider: "Adzuna".to_string(),
+            reason: format!("API error {status}: {body}"),
+        });
+    }
+
+    let body: serde_json::Value = response.json().await.map_err(|e| SearchError::ProviderFailed {
+        provider: "Adzuna".to_string(),
+        reason: format!("JSON parse failed: {e}"),
+    })?;
+
+    let mut results = Vec::new();
+    if let Some(items) = body.get("results").and_then(|r| r.as_array()) {
+        for (i, item) in items.iter().enumerate() {
+            if results.len() >= max_results {
+                break;
+            }
+
+            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let url = item.get("redirect_url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+            let snippet = item.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+
+            if title.is_empty() || url.is_empty() {
+                continue;
+            }
+
+            let relevance = 1.0 - (i as f32 / items.len().max(1) as f32);
+            results.push(SearchResult {
+                title,
+                url,
+                snippet,
+                source: SearchSource::Adzuna,
+                relevance_score: relevance,
+            });
+        }
+    }
+
+    debug!(count = results.len(), "Adzuna results parsed");
+    Ok(results)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Remotive API
+// ═══════════════════════════════════════════════════════════════
+
+/// Search remote jobs using the Remotive API.
+/// No authentication required.
+#[instrument(skip_all, fields(query = %query))]
+async fn remotive_search(query: &str, max_results: usize) -> Result<Vec<SearchResult>, SearchError> {
+    let client = reqwest::Client::new();
+
+    let response = client
+        .get("https://remotive.com/api/remote-jobs")
+        .query(&[
+            ("search", query),
+            ("limit", &max_results.to_string()),
+        ])
+        .send()
+        .await
+        .map_err(|e| SearchError::ProviderFailed {
+            provider: "Remotive".to_string(),
+            reason: format!("Request failed: {e}"),
+        })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(SearchError::ProviderFailed {
+            provider: "Remotive".to_string(),
+            reason: format!("API error {status}: {body}"),
+        });
+    }
+
+    let body: serde_json::Value = response.json().await.map_err(|e| SearchError::ProviderFailed {
+        provider: "Remotive".to_string(),
+        reason: format!("JSON parse failed: {e}"),
+    })?;
+
+    let mut results = Vec::new();
+    if let Some(jobs) = body.get("jobs").and_then(|j| j.as_array()) {
+        for (i, item) in jobs.iter().enumerate() {
+            if results.len() >= max_results {
+                break;
+            }
+
+            let title = item.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let company = item.get("company_name").and_then(|c| c.as_str()).unwrap_or("");
+            let url = item.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string();
+            let snippet = item.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
+
+            if title.is_empty() || url.is_empty() {
+                continue;
+            }
+
+            let display_title = if company.is_empty() {
+                title
+            } else {
+                format!("{title} — {company}")
+            };
+
+            let relevance = 1.0 - (i as f32 / jobs.len().max(1) as f32);
+            results.push(SearchResult {
+                title: display_title,
+                url,
+                snippet,
+                source: SearchSource::Remotive,
+                relevance_score: relevance,
+            });
+        }
+    }
+
+    debug!(count = results.len(), "Remotive results parsed");
     Ok(results)
 }
 

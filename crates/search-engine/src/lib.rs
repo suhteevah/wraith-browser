@@ -31,6 +31,9 @@ pub enum SearchSource {
     Bing,
     DuckDuckGo,
     Brave,
+    JSearch,
+    Adzuna,
+    Remotive,
     LocalIndex,
 }
 
