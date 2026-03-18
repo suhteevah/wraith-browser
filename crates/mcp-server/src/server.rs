@@ -14,10 +14,10 @@ use rmcp::service::RequestContext;
 use schemars::schema_for;
 use serde_json::json;
 use tokio::sync::Mutex;
-use tracing::{info, warn, debug, instrument};
+use tracing::{info, warn, debug};
 
 use openclaw_browser_core::NativeClient;
-use openclaw_browser_core::actions::{BrowserAction, ActionResult, ScrollDirection};
+use openclaw_browser_core::actions::{BrowserAction, ActionResult};
 
 use crate::tools::*;
 
@@ -148,7 +148,7 @@ impl WraithHandler {
                     .map_err(|e| ErrorData::internal_error(format!("Click failed: {e}"), None))?;
 
                 match result {
-                    ActionResult::Navigated { ref url, ref title } => {
+                    ActionResult::Navigated { url: _, title: _ } => {
                         // After navigation from a click, return the new page snapshot
                         let snapshot = browser.snapshot()
                             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -303,9 +303,8 @@ impl WraithHandler {
                         if let Some(el) = submit_el {
                             let ref_id = el.ref_id;
                             let result = browser.execute(BrowserAction::Click { ref_id }).await;
-                            match result {
-                                Ok(r) => return Ok(CallToolResult::success(vec![Content::text(format_action_result(&r))])),
-                                Err(_) => {}
+                            if let Ok(r) = result {
+                                return Ok(CallToolResult::success(vec![Content::text(format_action_result(&r))]));
                             }
                         } else {
                             return Ok(CallToolResult::success(vec![Content::text(
@@ -320,7 +319,7 @@ impl WraithHandler {
             }
 
             "browse_scroll" => {
-                let input: ScrollInput = parse_args(args)?;
+                let _input: ScrollInput = parse_args(args)?;
                 Ok(CallToolResult::success(vec![Content::text(
                     "Scroll acknowledged. In native mode, the entire page is already parsed — \
                      use browse_snapshot to see all elements or browse_extract for full content."

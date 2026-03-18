@@ -13,10 +13,10 @@ use std::sync::Arc;
 
 use reqwest::cookie::Jar;
 use scraper::{Html, Selector, ElementRef};
-use tracing::{info, debug, warn, instrument};
+use tracing::{info, debug, instrument};
 use url::Url;
 
-use crate::actions::{ActionResult, BrowserAction, ScrollDirection};
+use crate::actions::{ActionResult, BrowserAction};
 use crate::dom::{DomElement, DomSnapshot, PageMeta};
 use crate::error::BrowserError;
 
@@ -426,7 +426,7 @@ impl NativeClient {
         let minimal_content = html.len() > 5000 && snapshot.elements.len() < 3;
 
         // Known SPA-heavy job sites
-        let url_lower = html.to_lowercase(); // reuse for checks below
+        let _url_lower = html.to_lowercase(); // reuse for checks below
         let is_known_spa = self.current_url.as_ref().map(|u| {
             let u = u.to_lowercase();
             u.contains("linkedin.com")
@@ -791,7 +791,7 @@ fn detect_page_type(
     }
 
     let html_lower = html.to_lowercase();
-    let desc = description.as_deref().unwrap_or("").to_lowercase();
+    let _desc = description.as_deref().unwrap_or("").to_lowercase();
 
     if html_lower.contains("search-results") || html_lower.contains("searchresults")
         || html_lower.contains("class=\"result\"")
@@ -881,8 +881,10 @@ fn extract_form_with_fills(html: &str, _submit_ref_id: u32, filled_values: &Hash
     }
     // buttons also get ref_ids
     for _btn in snapshot_doc.select(&button_sel) {
+        let _ = current_ref_id; // consumed by button count
         current_ref_id += 1;
     }
+    let _ = current_ref_id; // final value intentionally unused
 
     // Build ref_id to filled value lookup
     let mut ref_id_to_fill: HashMap<u32, &str> = HashMap::new();
@@ -923,6 +925,7 @@ fn extract_form_with_fills(html: &str, _submit_ref_id: u32, filled_values: &Hash
 }
 
 /// Extract form data for HTTP submission when a submit button is clicked.
+#[allow(dead_code)]
 fn extract_form_for_submit(html: &str, _submit_ref_id: u32) -> Option<FormData> {
     let doc = Html::parse_document(html);
     let form_sel = Selector::parse("form").ok()?;

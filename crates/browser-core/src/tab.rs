@@ -519,11 +519,19 @@ impl TabHandle {
 
             BrowserAction::Screenshot { full_page } => {
                 let png = self.screenshot_impl(full_page).await?;
+                // Decode PNG header to get actual dimensions (IHDR chunk at bytes 16-23)
+                let (width, height) = if png.len() >= 24 {
+                    let w = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+                    let h = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
+                    (w, h)
+                } else {
+                    (0, 0)
+                };
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&png);
                 Ok(ActionResult::Screenshot {
                     png_base64: b64,
-                    width: 0, // TODO: get from viewport
-                    height: 0,
+                    width,
+                    height,
                 })
             }
 

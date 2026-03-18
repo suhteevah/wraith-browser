@@ -22,6 +22,10 @@ pub mod actions;
 pub mod error;
 pub mod config;
 pub mod native;
+pub mod selectors;
+pub mod network_intel;
+pub mod stealth;
+pub mod swarm;
 
 pub use session::BrowserSession;
 pub use tab::TabHandle;
@@ -30,3 +34,7 @@ pub use actions::{BrowserAction, ActionResult};
 pub use error::BrowserError;
 pub use config::BrowserConfig;
 pub use native::NativeClient;
+pub use selectors::AdaptiveSelector;
+pub use network_intel::NetworkCapture;
+pub use stealth::HumanBehavior;
+pub use swarm::BrowserSwarm;

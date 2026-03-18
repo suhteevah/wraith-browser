@@ -64,5 +64,5 @@ pub use fingerprint::{BrowserFingerprint, FingerprintManager};
 pub use auth::{AuthFlow, AuthResult};
 pub use credential::{Credential, CredentialKind};
 pub use profiles::IdentityProfile;
-pub use human_loop::HumanCallback;
+pub use human_loop::{HumanCallback, TerminalHumanCallback, McpHumanCallback, NoHumanCallback};
 pub use error::IdentityError;

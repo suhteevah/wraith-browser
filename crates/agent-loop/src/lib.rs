@@ -16,6 +16,9 @@ pub mod llm;
 pub mod task;
 pub mod history;
 pub mod error;
+pub mod prefetch;
+pub mod timetravel;
+pub mod task_dag;
 
 pub use agent::Agent;
 pub use task::BrowsingTask;

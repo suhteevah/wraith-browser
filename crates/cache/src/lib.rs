@@ -61,6 +61,9 @@ pub mod compression;
 pub mod fulltext;
 pub mod error;
 pub mod stats;
+pub mod diffing;
+pub mod site_capability;
+pub mod entity_graph;
 
 pub use store::KnowledgeStore;
 pub use schema::{CachedPage, CachedSearch, CachedSnapshot, DomainProfile, ContentType};

@@ -1,5 +1,6 @@
 //! The main Agent struct — drives the observe→think→act loop.
 
+use std::sync::Arc;
 use crate::{AgentConfig, BrowsingTask, error::AgentError, history::StepHistory, llm::LlmBackend};
 use openclaw_browser_core::BrowserSession;
 use openclaw_browser_core::actions::{BrowserAction, ScrollDirection};
@@ -29,6 +30,8 @@ pub struct Agent<L: LlmBackend> {
     pub session: BrowserSession,
     pub llm: L,
     pub history: StepHistory,
+    /// Optional knowledge store for auto-caching visited pages.
+    pub cache: Option<Arc<openclaw_cache::KnowledgeStore>>,
 }
 
 impl<L: LlmBackend> Agent<L> {
@@ -38,6 +41,93 @@ impl<L: LlmBackend> Agent<L> {
             session,
             llm,
             history: StepHistory::new(),
+            cache: None,
+        }
+    }
+
+    /// Attach a KnowledgeStore for auto-caching every visited page.
+    pub fn with_cache(mut self, cache: Arc<openclaw_cache::KnowledgeStore>) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Auto-cache a page after navigation. Best-effort — failures are logged but not fatal.
+    async fn auto_cache_page(&self, url: &str, title: &str) {
+        let Some(ref cache) = self.cache else { return };
+
+        // Get the page source for extraction
+        let tab = match self.session.active_tab().await {
+            Ok(t) => t,
+            Err(e) => {
+                debug!(error = %e, "Auto-cache: couldn't get active tab");
+                return;
+            }
+        };
+
+        let html = match tab.page_source().await {
+            Ok(h) => h,
+            Err(e) => {
+                debug!(error = %e, "Auto-cache: couldn't get page source");
+                return;
+            }
+        };
+
+        // Extract content
+        let extracted = match openclaw_content_extract::extract(&html, url) {
+            Ok(e) => e,
+            Err(e) => {
+                debug!(error = %e, "Auto-cache: extraction failed");
+                return;
+            }
+        };
+
+        // Build CachedPage
+        let url_hash = blake3::hash(url.as_bytes()).to_hex().to_string();
+        let content_hash = blake3::hash(extracted.markdown.as_bytes()).to_hex().to_string();
+        let domain = url::Url::parse(url)
+            .map(|u| u.host_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+
+        let snippet: String = extracted.plain_text.chars().take(200).collect::<String>()
+            .replace('\n', " ")
+            .trim()
+            .to_string();
+
+        let page = openclaw_cache::CachedPage {
+            url_hash,
+            url: url.to_string(),
+            domain,
+            title: title.to_string(),
+            markdown: extracted.markdown,
+            plain_text: extracted.plain_text,
+            snippet,
+            token_count: extracted.estimated_tokens,
+            links: extracted.links,
+            content_type: openclaw_cache::ContentType::Generic,
+            content_hash,
+            first_seen: chrono::Utc::now(),
+            last_fetched: chrono::Utc::now(),
+            last_validated: chrono::Utc::now(),
+            hit_count: 0,
+            change_count: 0,
+            http_status: 200,
+            etag: None,
+            last_modified: None,
+            pinned: false,
+            agent_notes: None,
+            tags: vec![],
+            raw_html_size: html.len(),
+            extraction_confidence: extracted.confidence,
+        };
+
+        match cache.put_page(&page, &html) {
+            Ok(()) => debug!(url = %url, "Auto-cached page"),
+            Err(e) => debug!(error = %e, url = %url, "Auto-cache: put_page failed"),
+        }
+
+        // Also index in the local search index
+        if let Err(e) = openclaw_search::local::index_page(url, title, &page.plain_text) {
+            debug!(error = %e, "Auto-cache: local index failed");
         }
     }
 
@@ -133,6 +223,8 @@ impl<L: LlmBackend> Agent<L> {
             ParsedAction::Navigate(url) => {
                 tab.navigate(url).await
                     .map_err(AgentError::Browser)?;
+                let title = tab.title.clone().unwrap_or_default();
+                self.auto_cache_page(url, &title).await;
             }
             ParsedAction::Click(ref_id) => {
                 tab.execute(BrowserAction::Click { ref_id: *ref_id }).await

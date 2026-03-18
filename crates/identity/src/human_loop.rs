@@ -225,8 +225,163 @@ impl HumanCallback for TerminalHumanCallback {
     }
 }
 
-/// MCP-based human callback (sends tool results back to Claude Code).
-pub struct McpHumanCallback;
+/// MCP-based human callback for Claude Code / Cursor integration.
+///
+/// When the agent needs human interaction during an MCP session, this callback
+/// writes a request file to a shared directory and polls for a response file.
+/// The MCP server's tool handler shows the request to the user and writes the
+/// response file when the human answers.
+///
+/// Protocol:
+/// 1. Write `~/.openclaw/human_requests/{id}.request.json`
+/// 2. Poll for `~/.openclaw/human_requests/{id}.response.json`
+/// 3. Parse response and return
+pub struct McpHumanCallback {
+    /// Directory for request/response exchange
+    exchange_dir: std::path::PathBuf,
+}
 
-// TODO: Implement McpHumanCallback — sends a special MCP tool result
-// that Claude Code displays as a prompt to the user
+impl Default for McpHumanCallback {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl McpHumanCallback {
+    pub fn new() -> Self {
+        let exchange_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".openclaw")
+            .join("human_requests");
+        let _ = std::fs::create_dir_all(&exchange_dir);
+        Self { exchange_dir }
+    }
+
+    pub fn with_exchange_dir(dir: std::path::PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&dir);
+        Self { exchange_dir: dir }
+    }
+}
+
+impl HumanCallback for McpHumanCallback {
+    fn request_action(
+        &self,
+        request: HumanRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<HumanResponse, crate::error::IdentityError>> + Send + '_>> {
+        Box::pin(async move {
+            info!(
+                kind = ?request.kind,
+                domain = %request.domain,
+                id = %request.id,
+                "MCP human action required — writing exchange file"
+            );
+
+            // Write request file
+            let request_path = self.exchange_dir.join(format!("{}.request.json", request.id));
+            let request_json = serde_json::to_string_pretty(&request)
+                .map_err(|e| crate::error::IdentityError::Internal(
+                    anyhow::anyhow!("Failed to serialize request: {e}")
+                ))?;
+            std::fs::write(&request_path, &request_json)
+                .map_err(|e| crate::error::IdentityError::Internal(
+                    anyhow::anyhow!("Failed to write request file: {e}")
+                ))?;
+
+            // Poll for response file
+            let response_path = self.exchange_dir.join(format!("{}.response.json", request.id));
+            let timeout = std::time::Duration::from_secs(request.timeout_secs);
+            let start = std::time::Instant::now();
+            let poll_interval = std::time::Duration::from_millis(500);
+
+            loop {
+                if response_path.exists() {
+                    let response_json = std::fs::read_to_string(&response_path)
+                        .map_err(|e| crate::error::IdentityError::Internal(
+                            anyhow::anyhow!("Failed to read response file: {e}")
+                        ))?;
+
+                    // Clean up exchange files
+                    let _ = std::fs::remove_file(&request_path);
+                    let _ = std::fs::remove_file(&response_path);
+
+                    let response: HumanResponse = serde_json::from_str(&response_json)
+                        .map_err(|e| crate::error::IdentityError::Internal(
+                            anyhow::anyhow!("Failed to parse response: {e}")
+                        ))?;
+
+                    info!(id = %request.id, "MCP human response received");
+                    return Ok(response);
+                }
+
+                if start.elapsed() > timeout {
+                    // Clean up request file on timeout
+                    let _ = std::fs::remove_file(&request_path);
+                    info!(id = %request.id, timeout_secs = request.timeout_secs, "MCP human request timed out");
+                    return Ok(HumanResponse::TimedOut);
+                }
+
+                tokio::time::sleep(poll_interval).await;
+            }
+        })
+    }
+
+    fn notify(
+        &self,
+        message: &str,
+        urgency: Urgency,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let icon = match urgency {
+            Urgency::Low => "INFO",
+            Urgency::Medium => "WARN",
+            Urgency::High => "ALERT",
+            Urgency::Critical => "CRITICAL",
+        };
+        info!(urgency = %icon, message = %message, "MCP notification");
+
+        // Write a notification file (non-blocking, no response expected)
+        let notif_path = self.exchange_dir.join(format!(
+            "notification_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+        let notif = serde_json::json!({
+            "type": "notification",
+            "urgency": icon,
+            "message": message,
+        });
+        let _ = std::fs::write(&notif_path, notif.to_string());
+
+        Box::pin(async {})
+    }
+}
+
+/// No-op callback that always returns TimedOut.
+/// Useful for fully autonomous operation where no human is available.
+pub struct NoHumanCallback;
+
+impl HumanCallback for NoHumanCallback {
+    fn request_action(
+        &self,
+        request: HumanRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<HumanResponse, crate::error::IdentityError>> + Send + '_>> {
+        Box::pin(async move {
+            info!(
+                kind = ?request.kind,
+                domain = %request.domain,
+                "No human available — returning TimedOut"
+            );
+            Ok(HumanResponse::TimedOut)
+        })
+    }
+
+    fn notify(
+        &self,
+        message: &str,
+        urgency: Urgency,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let _ = (message, urgency);
+        Box::pin(async {})
+    }
+}

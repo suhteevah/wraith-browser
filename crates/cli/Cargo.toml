@@ -15,6 +15,7 @@ openclaw-content-extract = { path = "../content-extract" }
 openclaw-identity = { path = "../identity" }
 openclaw-search = { path = "../search-engine" }
 openclaw-agent-loop = { path = "../agent-loop" }
+openclaw-cache = { path = "../cache" }
 openclaw-mcp-server = { path = "../mcp-server" }
 secrecy = { workspace = true }
 dirs.workspace = true

@@ -281,9 +281,78 @@ async fn main() -> anyhow::Result<()> {
             session.shutdown().await?;
         }
 
-        Commands::Task { description, url: _, max_steps: _ } => {
-            info!(task = %description, "Running autonomous task");
-            println!("Task execution not yet implemented. Task: {}", description);
+        Commands::Task { description, url, max_steps } => {
+            info!(task = %description, max_steps, "Running autonomous task");
+
+            // Determine LLM backend from environment
+            let use_ollama = std::env::var("OPENCLAW_LLM").ok()
+                .map(|v| v.to_lowercase() == "ollama")
+                .unwrap_or(false);
+
+            let config = openclaw_browser_core::BrowserConfig::default();
+            let session = openclaw_browser_core::BrowserSession::launch(config).await?;
+
+            let task = openclaw_agent_loop::BrowsingTask {
+                description: description.clone(),
+                start_url: url,
+                timeout_secs: None,
+                context: None,
+            };
+
+            let model_override = std::env::var("OPENCLAW_MODEL").ok();
+
+            let agent_config = openclaw_agent_loop::AgentConfig {
+                max_steps,
+                model: model_override.clone().unwrap_or_else(|| {
+                    openclaw_agent_loop::AgentConfig::default().model
+                }),
+                ..Default::default()
+            };
+
+            // Open knowledge store for auto-caching
+            let cache_dir = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".openclaw")
+                .join("knowledge");
+            let cache = openclaw_cache::KnowledgeStore::open(&cache_dir)
+                .map(std::sync::Arc::new)
+                .ok();
+
+            let result = if use_ollama {
+                let ollama_url = std::env::var("OLLAMA_URL")
+                    .unwrap_or_else(|_| "http://localhost:11434".to_string());
+                let agent_config = openclaw_agent_loop::AgentConfig {
+                    model: model_override.unwrap_or_else(|| "llama3.1".to_string()),
+                    ..agent_config
+                };
+                let backend = openclaw_agent_loop::llm::OllamaBackend::new()
+                    .with_base_url(ollama_url);
+                let mut agent = openclaw_agent_loop::Agent::new(agent_config, session, backend);
+                if let Some(c) = cache { agent = agent.with_cache(c); }
+                agent.run(task).await
+            } else {
+                let api_key = std::env::var("ANTHROPIC_API_KEY")
+                    .or_else(|_| std::env::var("CLAUDE_API_KEY"))
+                    .map_err(|_| anyhow::anyhow!(
+                        "No API key found. Set ANTHROPIC_API_KEY or CLAUDE_API_KEY, \
+                         or use OPENCLAW_LLM=ollama for local models."
+                    ))?;
+                let backend = openclaw_agent_loop::llm::ClaudeBackend::new(api_key);
+                let mut agent = openclaw_agent_loop::Agent::new(agent_config, session, backend);
+                if let Some(c) = cache { agent = agent.with_cache(c); }
+                agent.run(task).await
+            };
+
+            match result {
+                Ok(output) => {
+                    println!("\n═══ Task Complete ═══");
+                    println!("{}", output);
+                }
+                Err(e) => {
+                    eprintln!("\n═══ Task Failed ═══");
+                    eprintln!("{}", e);
+                }
+            }
         }
 
         Commands::Search { query, max_results } => {

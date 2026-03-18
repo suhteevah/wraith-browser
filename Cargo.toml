@@ -9,6 +9,7 @@ members = [
     "crates/search-engine",
     "crates/agent-loop",
     "crates/cli",
+    "crates/scripting",
 ]
 
 [workspace.package]
@@ -84,6 +85,12 @@ zeroize = { version = "1", features = ["derive"] }
 secrecy = { version = "0.10", features = ["serde"] }
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 dirs = "6"
+
+# Knowledge graph
+petgraph = "0.8"
+
+# Scripting
+rhai = { version = "1.24", features = ["sync"] }
 
 # Optimize crypto crates even in debug builds — argon2 is unusably slow without this
 [profile.dev.package.argon2]

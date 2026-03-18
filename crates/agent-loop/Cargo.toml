@@ -9,6 +9,7 @@ description = "AI agent decision loop — observe, think, act cycle for autonomo
 openclaw-browser-core = { path = "../browser-core" }
 openclaw-content-extract = { path = "../content-extract" }
 openclaw-search = { path = "../search-engine" }
+openclaw-cache = { path = "../cache" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,3 +19,5 @@ tracing.workspace = true
 reqwest.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+blake3.workspace = true
+url.workspace = true
