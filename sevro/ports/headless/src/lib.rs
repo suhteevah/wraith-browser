@@ -270,23 +270,51 @@ impl SevroEngine {
             }
 
             // === Tier 3: FlareSolverr (for obfuscated Turnstile) ===
+            // Strategy: use FlareSolverr's full page response directly.
+            // Cookie replay usually fails because cookies are tied to
+            // FlareSolverr's browser fingerprint, not ours.
             if self.config.flaresolverr_url.is_some() {
                 info!(url = %url, "Tier 3: Escalating to FlareSolverr");
 
-                if let Some(cookies) = self.try_flaresolverr(url).await {
-                    let retry = self.http_fetch_with_cookies(url, &cookies).await;
-                    if let Ok((rs, rh, ru)) = retry {
-                        if !Self::is_cloudflare_challenge(&rh, rs) && !Self::is_ip_blocked(&rh) {
-                            info!(status = rs, "Tier 3 bypass successful — FlareSolverr solved challenge");
-                            self.load_page(&rh, &ru);
-                            return Ok(PageEvent::DomContentLoaded);
-                        }
+                if let Some(page_html) = self.try_flaresolverr_full_page(url).await {
+                    if !Self::is_ip_blocked(&page_html) {
+                        info!(html_len = page_html.len(), "Tier 3 bypass successful — FlareSolverr returned real page");
+                        self.load_page(&page_html, url);
+                        return Ok(PageEvent::DomContentLoaded);
                     }
                 }
             }
         }
 
-        // === Tier 4: Fallback proxy (for hard IP bans) ===
+        // === Tier 3.5: FlareSolverr for IP blocks too ===
+        // FlareSolverr has its own browser + IP — it can bypass both
+        // CF challenges AND IP bans since it runs on a different machine.
+        if Self::is_ip_blocked(&html) && self.config.flaresolverr_url.is_some() {
+            info!(url = %url, "Tier 3: IP blocked — FlareSolverr has its own browser+IP, trying it");
+
+            if let Some(cookies) = self.try_flaresolverr(url).await {
+                let retry = self.http_fetch_with_cookies(url, &cookies).await;
+                if let Ok((rs, rh, ru)) = retry {
+                    if !Self::is_ip_blocked(&rh) && !Self::is_cloudflare_challenge(&rh, rs) {
+                        info!(status = rs, "FlareSolverr bypass successful — solved IP block + challenge");
+                        self.load_page(&rh, &ru);
+                        return Ok(PageEvent::DomContentLoaded);
+                    }
+                }
+
+                // Even if our IP can't use the cookies, FlareSolverr may have
+                // returned the actual page content in its response
+                if let Some(page_html) = self.try_flaresolverr_full_page(url).await {
+                    if !Self::is_ip_blocked(&page_html) && !Self::is_cloudflare_challenge(&page_html, 200) {
+                        info!("FlareSolverr returned full page content directly");
+                        self.load_page(&page_html, url);
+                        return Ok(PageEvent::DomContentLoaded);
+                    }
+                }
+            }
+        }
+
+        // === Tier 4: Fallback proxy (for hard IP bans when no FlareSolverr) ===
         if Self::is_ip_blocked(&html) {
             if let Some(ref fallback_proxy) = self.config.fallback_proxy_url.clone() {
                 info!(url = %url, proxy = %fallback_proxy, "Tier 4: IP banned — retrying via fallback proxy");
@@ -295,40 +323,11 @@ impl SevroEngine {
                     if !Self::is_ip_blocked(&ph) {
                         info!(status = ps, "Tier 4 bypass successful — proxy circumvented IP ban");
                         self.load_page(&ph, &pu);
-
-                        // If the proxy response is ALSO a CF challenge, try solving it
-                        if Self::is_cloudflare_challenge(&ph, ps) {
-                            if let Some(cookies) = self.try_quickjs_solve(url).await {
-                                let retry = self.http_fetch_with_cookies(url, &cookies).await;
-                                if let Ok((rs, rh, ru)) = retry {
-                                    if !Self::is_cloudflare_challenge(&rh, rs) {
-                                        info!(status = rs, "Proxy + QuickJS bypass successful");
-                                        self.load_page(&rh, &ru);
-                                        return Ok(PageEvent::DomContentLoaded);
-                                    }
-                                }
-                            }
-
-                            // Try FlareSolverr through proxy
-                            if self.config.flaresolverr_url.is_some() {
-                                if let Some(cookies) = self.try_flaresolverr(url).await {
-                                    let retry = self.http_fetch_with_cookies(url, &cookies).await;
-                                    if let Ok((rs, rh, ru)) = retry {
-                                        if !Self::is_cloudflare_challenge(&rh, rs) {
-                                            info!(status = rs, "Proxy + FlareSolverr bypass successful");
-                                            self.load_page(&rh, &ru);
-                                            return Ok(PageEvent::DomContentLoaded);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         return Ok(PageEvent::DomContentLoaded);
                     }
                 }
-            } else {
-                warn!(url = %url, "IP blocked and no fallback proxy configured — set fallback_proxy_url or --fallback-proxy");
+            } else if self.config.flaresolverr_url.is_none() {
+                warn!(url = %url, "IP blocked — configure --flaresolverr or --fallback-proxy to bypass");
             }
         }
 
@@ -384,11 +383,17 @@ impl SevroEngine {
 
         info!(url = %url, solver = %solver_url, "Calling FlareSolverr");
 
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "cmd": "request.get",
             "url": url,
             "maxTimeout": 60000
         });
+
+        // If we have a fallback proxy, tell FlareSolverr to use it too
+        if let Some(ref proxy) = self.config.fallback_proxy_url {
+            payload["proxy"] = serde_json::json!({"url": proxy});
+            info!(proxy = %proxy, "FlareSolverr using proxy");
+        }
 
         let response = self.client.post(&endpoint)
             .json(&payload)
@@ -426,6 +431,58 @@ impl SevroEngine {
         }
 
         Some(cookie_header)
+    }
+
+    /// Tier 3 variant: get the full page HTML from FlareSolverr's response.
+    /// FlareSolverr returns the rendered page content — we can use it directly
+    /// without needing to replay cookies (which may be IP-locked anyway).
+    async fn try_flaresolverr_full_page(&self, url: &str) -> Option<String> {
+        let solver_url = self.config.flaresolverr_url.as_ref()?;
+        let endpoint = format!("{}/v1", solver_url);
+
+        info!(url = %url, "FlareSolverr: requesting full page content");
+
+        let mut payload = serde_json::json!({
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": 60000
+        });
+
+        if let Some(ref proxy) = self.config.fallback_proxy_url {
+            payload["proxy"] = serde_json::json!({"url": proxy});
+        }
+
+        let response = self.client.post(&endpoint)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                warn!(error = %e, "FlareSolverr request failed");
+                e
+            })
+            .ok()?;
+
+        let body: serde_json::Value = response.json().await.ok()?;
+
+        // Check status
+        let status = body["solution"]["status"].as_i64().unwrap_or(0);
+        if status != 200 {
+            warn!(status, "FlareSolverr returned non-200 status");
+        }
+
+        // Extract the full rendered HTML
+        let html = body["solution"]["response"].as_str()?;
+        if html.is_empty() {
+            return None;
+        }
+
+        info!(
+            html_len = html.len(),
+            status,
+            "FlareSolverr returned page content"
+        );
+
+        Some(html.to_string())
     }
 
     /// Fetch via a specific proxy (for Tier 4 IP ban fallback).
@@ -495,11 +552,17 @@ impl SevroEngine {
         }
     }
 
-    /// Detect if an HTTP response is a Cloudflare challenge page.
-    /// Checks both error statuses AND 200 responses (CF often returns 200 with the challenge).
+    /// Detect if an HTTP response is a Cloudflare challenge page (not a solved page).
+    /// A page with real content that also has CF remnants is NOT a challenge.
     fn is_cloudflare_challenge(html: &str, _status: u16) -> bool {
-        // Cloudflare challenge signatures — check regardless of status code
-        // because CF often returns 200 with the challenge page
+        // If the page has substantial content (>50KB), it's probably real content
+        // with leftover CF scripts/tags — not an unsolved challenge.
+        // Challenge pages are typically small (<20KB).
+        if html.len() > 50_000 {
+            return false;
+        }
+
+        // Cloudflare challenge signatures
         html.contains("cf-browser-verification")
             || html.contains("Checking if the site connection is secure")
             || html.contains("Attention Required! | Cloudflare")
