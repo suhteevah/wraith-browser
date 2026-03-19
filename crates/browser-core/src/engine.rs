@@ -100,13 +100,13 @@ pub async fn create_engine(name: &str) -> BrowserResult<Arc<Mutex<dyn BrowserEng
             ))
         }
         #[cfg(feature = "sevro")]
-        "sevro" => {
+        "sevro" | "native-js" => {
             Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::new())))
         }
         #[cfg(not(feature = "sevro"))]
-        "sevro" => {
+        "sevro" | "native-js" => {
             Err(crate::error::BrowserError::CdpError(
-                "Sevro engine not available — compile with --features sevro".to_string()
+                "Sevro/NativeJs engine not available — compile with --features sevro".to_string()
             ))
         }
         "auto" => {
