@@ -13,8 +13,10 @@ sevro = ["openclaw-browser-core/sevro"]
 openclaw-browser-core = { path = "../browser-core", default-features = false }
 base64.workspace = true
 openclaw-content-extract = { path = "../content-extract" }
+openclaw-identity = { path = "../identity" }
 openclaw-search = { path = "../search-engine" }
 openclaw-agent-loop = { path = "../agent-loop" }
+secrecy = { workspace = true }
 rmcp.workspace = true
 schemars.workspace = true
 tokio.workspace = true

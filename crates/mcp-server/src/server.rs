@@ -362,11 +362,94 @@ impl WraithHandler {
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
 
-            "browse_vault_store" | "browse_vault_get" => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    "Vault operations are not yet wired in MCP mode. \
-                     Use the CLI: wraith-browser vault store/list"
-                )]))
+            "browse_vault_store" => {
+                let input: VaultStoreInput = parse_args(args)?;
+                info!(domain = %input.domain, kind = %input.kind, "Storing credential");
+
+                let vault_path = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw")
+                    .join("vault.db");
+
+                let vault = openclaw_identity::CredentialVault::open(&vault_path)
+                    .map_err(|e| ErrorData::internal_error(format!("Vault open failed: {e}"), None))?;
+
+                // Auto-unlock with empty passphrase for MCP mode
+                // (the vault creates itself on first use)
+                let _ = vault.unlock(&secrecy::SecretString::from("".to_string()));
+
+                let kind = match input.kind.to_lowercase().as_str() {
+                    "password" => openclaw_identity::CredentialKind::Password,
+                    "api_key" | "apikey" => openclaw_identity::CredentialKind::ApiKey,
+                    "oauth_token" | "oauth" => openclaw_identity::CredentialKind::OAuthToken,
+                    "totp_seed" | "totp" => openclaw_identity::CredentialKind::TotpSeed,
+                    "session_cookie" | "cookie" => openclaw_identity::CredentialKind::SessionCookie,
+                    _ => openclaw_identity::CredentialKind::Generic,
+                };
+
+                let request = openclaw_identity::credential::StoreCredentialRequest {
+                    domain: input.domain.clone(),
+                    kind,
+                    identity: input.identity.clone(),
+                    secret: secrecy::SecretString::from(input.secret),
+                    label: None,
+                    url_pattern: None,
+                    auto_use: true,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                };
+
+                match vault.store(request) {
+                    Ok(id) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("Credential stored: {} ({}@{}, {:?})", id, input.identity, input.domain, kind)
+                        )]))
+                    }
+                    Err(e) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("Vault store failed: {e}")
+                        )]))
+                    }
+                }
+            }
+
+            "browse_vault_get" => {
+                let input: VaultGetInput = parse_args(args)?;
+                info!(domain = %input.domain, "Retrieving credential");
+
+                let vault_path = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw")
+                    .join("vault.db");
+
+                let vault = openclaw_identity::CredentialVault::open(&vault_path)
+                    .map_err(|e| ErrorData::internal_error(format!("Vault open failed: {e}"), None))?;
+
+                let _ = vault.unlock(&secrecy::SecretString::from("".to_string()));
+
+                let kind = input.kind.as_deref().map(|k| match k.to_lowercase().as_str() {
+                    "password" => openclaw_identity::CredentialKind::Password,
+                    "api_key" | "apikey" => openclaw_identity::CredentialKind::ApiKey,
+                    "oauth_token" | "oauth" => openclaw_identity::CredentialKind::OAuthToken,
+                    "session_cookie" | "cookie" => openclaw_identity::CredentialKind::SessionCookie,
+                    _ => openclaw_identity::CredentialKind::Generic,
+                });
+
+                match vault.get(&input.domain, kind) {
+                    Ok(cred) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!(
+                                "Credential found for {}:\n  ID: {}\n  Identity: {}\n  Kind: {:?}\n  Secret: {}",
+                                input.domain, cred.id, cred.identity, cred.kind,
+                                cred.expose_secret_value()
+                            )
+                        )]))
+                    }
+                    Err(e) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("No credential found for {}: {e}", input.domain)
+                        )]))
+                    }
+                }
             }
 
             _ => {
