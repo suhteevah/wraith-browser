@@ -1,0 +1,29 @@
+[package]
+name = "sevro-headless"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+description = "Headless Servo port for AI browser agents — no GPU, no window, just DOM + layout + JS"
+
+[dependencies]
+# This crate will depend on servo components once the build system is wired.
+# For now, it defines the SevroEngine interface as a stub.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json", "cookies", "gzip", "brotli"] }
+rquest = { version = "5.1", features = ["cookies", "gzip", "brotli"], optional = true }
+rquickjs = { version = "0.11", features = ["classes", "properties", "futures", "macro"] }
+tokio = { version = "1", features = ["full"] }
+scraper = "0.25"
+ego-tree = "0.10"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []
+stealth-tls = ["dep:rquest"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "macros"] }
