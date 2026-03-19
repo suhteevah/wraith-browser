@@ -19,9 +19,21 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Browser engine: "auto", "native", "chrome"
+    /// Browser engine: "auto" (sevro→native), "sevro", "native"
     #[arg(long, global = true, default_value = "auto")]
     engine: String,
+
+    /// HTTP proxy URL (e.g., "http://user:pass@proxy:8080", "socks5://127.0.0.1:1080")
+    #[arg(long, global = true)]
+    proxy: Option<String>,
+
+    /// FlareSolverr URL for Cloudflare bypass fallback (e.g., "http://localhost:8191")
+    #[arg(long, global = true)]
+    flaresolverr: Option<String>,
+
+    /// Fallback proxy for IP ban bypass (only used when blocked, not for normal requests)
+    #[arg(long, global = true)]
+    fallback_proxy: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -171,11 +183,10 @@ enum VaultAction {
 
 #[derive(Subcommand)]
 enum FingerprintAction {
-    /// Capture fingerprint from your real browser (opens a visible Chrome window)
-    Capture {
-        /// Name for the fingerprint profile
-        #[arg(short, long, default_value = "My Browser")]
-        name: String,
+    /// Import a fingerprint from a JSON file (exported from browser DevTools)
+    Import {
+        /// Path to the fingerprint JSON file
+        file: String,
     },
 
     /// List stored fingerprint profiles
@@ -255,12 +266,27 @@ async fn main() -> anyhow::Result<()> {
                 "stdio" => openclaw_mcp_server::Transport::Stdio,
                 other => anyhow::bail!("Unknown transport: {} (only 'stdio' is currently supported)", other),
             };
-            openclaw_mcp_server::run(transport).await?;
+            let engine = openclaw_browser_core::engine::create_engine_with_options(
+                &cli.engine,
+                openclaw_browser_core::engine::EngineOptions {
+                    proxy_url: cli.proxy.clone(),
+                    flaresolverr_url: cli.flaresolverr.clone(),
+                    fallback_proxy_url: cli.fallback_proxy.clone(),
+                },
+            ).await?;
+            openclaw_mcp_server::run_with_engine(transport, Some(engine)).await?;
         }
 
         Commands::Navigate { url, format } => {
             info!(url = %url, format = %format, "Navigating");
-            let engine = openclaw_browser_core::engine::create_engine(&cli.engine).await?;
+            let engine = openclaw_browser_core::engine::create_engine_with_options(
+                &cli.engine,
+                openclaw_browser_core::engine::EngineOptions {
+                    proxy_url: cli.proxy.clone(),
+                    flaresolverr_url: cli.flaresolverr.clone(),
+                    fallback_proxy_url: cli.fallback_proxy.clone(),
+                },
+            ).await?;
             {
                 let mut eng = engine.lock().await;
                 eng.navigate(&url).await?;
@@ -294,7 +320,14 @@ async fn main() -> anyhow::Result<()> {
                 .map(|v| v.to_lowercase() == "ollama")
                 .unwrap_or(false);
 
-            let engine = openclaw_browser_core::engine::create_engine(&cli.engine).await?;
+            let engine = openclaw_browser_core::engine::create_engine_with_options(
+                &cli.engine,
+                openclaw_browser_core::engine::EngineOptions {
+                    proxy_url: cli.proxy.clone(),
+                    flaresolverr_url: cli.flaresolverr.clone(),
+                    fallback_proxy_url: cli.fallback_proxy.clone(),
+                },
+            ).await?;
 
             let task = openclaw_agent_loop::BrowsingTask {
                 description: description.clone(),
@@ -373,7 +406,14 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Extract { url, max_tokens } => {
             info!(url = %url, "Extracting content");
-            let engine = openclaw_browser_core::engine::create_engine(&cli.engine).await?;
+            let engine = openclaw_browser_core::engine::create_engine_with_options(
+                &cli.engine,
+                openclaw_browser_core::engine::EngineOptions {
+                    proxy_url: cli.proxy.clone(),
+                    flaresolverr_url: cli.flaresolverr.clone(),
+                    fallback_proxy_url: cli.fallback_proxy.clone(),
+                },
+            ).await?;
             let mut eng = engine.lock().await;
             eng.navigate(&url).await?;
             let html = eng.page_source().await?;
@@ -509,15 +549,16 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Fingerprint { action } => {
             match action {
-                FingerprintAction::Capture { name: _ } => {
-                    println!("Launching your real browser to capture fingerprint...");
-                    println!("A Chrome window will open briefly — do not interact with it.");
-                    println!();
+                FingerprintAction::Import { file } => {
+                    let path = std::path::Path::new(&file);
+                    if !path.exists() {
+                        anyhow::bail!("File not found: {}", file);
+                    }
 
                     let mut mgr = openclaw_identity::FingerprintManager::new();
-                    let fp = mgr.capture_from_real_browser().await?;
+                    let fp = mgr.load_from_file(path)?;
 
-                    println!("Fingerprint captured:");
+                    println!("Fingerprint imported:");
                     println!("  ID:          {}", fp.id);
                     println!("  User-Agent:  {}", fp.user_agent.get(..80).unwrap_or(&fp.user_agent));
                     println!("  Platform:    {}", fp.platform);

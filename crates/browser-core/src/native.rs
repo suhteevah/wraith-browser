@@ -468,14 +468,14 @@ impl NativeClient {
         // For now, save the cookie jar state we've accumulated.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| BrowserError::CdpError(format!("Cookie dir creation failed: {e}")))?;
+                .map_err(|e| BrowserError::EngineError(format!("Cookie dir creation failed: {e}")))?;
         }
 
         let cookies_json = serde_json::to_string_pretty(&self.stored_cookies)
-            .map_err(|e| BrowserError::CdpError(format!("Cookie serialization failed: {e}")))?;
+            .map_err(|e| BrowserError::EngineError(format!("Cookie serialization failed: {e}")))?;
 
         std::fs::write(path, cookies_json)
-            .map_err(|e| BrowserError::CdpError(format!("Cookie file write failed: {e}")))?;
+            .map_err(|e| BrowserError::EngineError(format!("Cookie file write failed: {e}")))?;
 
         debug!(path = %path.display(), count = self.stored_cookies.len(), "Cookies saved");
         Ok(())
@@ -489,10 +489,10 @@ impl NativeClient {
         }
 
         let data = std::fs::read_to_string(path)
-            .map_err(|e| BrowserError::CdpError(format!("Cookie file read failed: {e}")))?;
+            .map_err(|e| BrowserError::EngineError(format!("Cookie file read failed: {e}")))?;
 
         let cookies: Vec<StoredCookie> = serde_json::from_str(&data)
-            .map_err(|e| BrowserError::CdpError(format!("Cookie parse failed: {e}")))?;
+            .map_err(|e| BrowserError::EngineError(format!("Cookie parse failed: {e}")))?;
 
         // Inject cookies into the jar
         for cookie in &cookies {

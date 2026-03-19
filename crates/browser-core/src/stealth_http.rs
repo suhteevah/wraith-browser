@@ -14,7 +14,7 @@
 //! Cloudflare blocks instantly. BoringSSL (via rquest) matches Chrome's
 //! actual TLS behavior, passing fingerprint checks.
 
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// Fetch a URL with stealth TLS (if available) or standard reqwest.
 /// Returns (status_code, response_body, final_url).
@@ -117,9 +117,45 @@ mod tests {
 
     #[test]
     fn stealth_tls_availability() {
-        // This test just verifies the function compiles correctly
         let available = has_stealth_tls();
         // Will be true if compiled with --features stealth-tls, false otherwise
         println!("Stealth TLS available: {}", available);
+    }
+
+    #[tokio::test]
+    async fn fetch_example_com() {
+        let result = stealth_fetch(
+            "https://example.com",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "en-US,en;q=0.9",
+        ).await;
+
+        let (status, body, final_url) = result.expect("fetch should succeed");
+        assert_eq!(status, 200);
+        assert!(body.contains("Example Domain"));
+        assert!(final_url.contains("example.com"));
+    }
+
+    #[tokio::test]
+    async fn fetch_returns_final_url() {
+        let result = stealth_fetch(
+            "http://example.com",
+            "Mozilla/5.0",
+            "en-US",
+        ).await;
+
+        let (status, _body, final_url) = result.expect("fetch should succeed");
+        assert_eq!(status, 200);
+        assert!(final_url.contains("example.com"));
+    }
+
+    #[tokio::test]
+    async fn fetch_invalid_url_returns_error() {
+        let result = stealth_fetch(
+            "https://this-domain-definitely-does-not-exist-xyz123.com",
+            "Mozilla/5.0",
+            "en-US",
+        ).await;
+        assert!(result.is_err());
     }
 }

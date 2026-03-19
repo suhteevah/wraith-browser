@@ -24,9 +24,7 @@ description = "An AI-agent-first web browser written in Rust — designed for LL
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# Browser control via CDP
-chromiumoxide = { version = "0.9" }
-chromiumoxide_cdp = { version = "0.9" }
+# Async
 futures = "0.3"
 
 # HTTP
@@ -72,7 +70,7 @@ regex = "1"
 base64 = "0.22"
 
 # Storage & caching
-rusqlite = { version = "0.32", features = ["bundled", "blob", "functions", "trace"] }
+rusqlite = { version = "0.38", features = ["bundled", "blob", "functions", "trace"] }
 blake3 = "1"
 flate2 = "1"
 sha2 = "0.10"
@@ -102,6 +100,16 @@ petgraph = "0.8"
 
 # Scripting
 rhai = { version = "1.24", features = ["sync"] }
+
+# ONNX Runtime for ML inference (vision backends)
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+
+# Tor onion routing
+arti-client = { version = "0.40", features = ["tokio"] }
+tor-rtcompat = { version = "0.40", features = ["tokio"] }
+
+# WASM plugin execution
+wasmtime = "42"
 
 # Optimize crypto crates even in debug builds — argon2 is unusably slow without this
 [profile.dev.package.argon2]

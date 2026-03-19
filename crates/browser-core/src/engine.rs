@@ -1,9 +1,12 @@
 //! # Unified Browser Engine Trait
 //!
-//! All browser backends (NativeClient, ChromeEngine, SevroEngine) implement
-//! this trait. The MCP server, agent loop, and CLI operate through
-//! `Arc<tokio::sync::Mutex<dyn BrowserEngine>>` — they never know which
-//! backend is running.
+//! All browser backends implement this trait. The MCP server, agent loop,
+//! and CLI operate through `Arc<tokio::sync::Mutex<dyn BrowserEngine>>` —
+//! they never know which backend is running.
+//!
+//! Available backends:
+//! - `NativeEngine` — pure-Rust HTTP client, no JS, ~50ms per page
+//! - `SevroEngine` — Servo-derived with QuickJS, DOM, layout (default)
 
 use crate::dom::DomSnapshot;
 use crate::actions::{BrowserAction, ActionResult};
@@ -12,7 +15,6 @@ use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::warn;
 
 /// Screenshot capability level.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -28,7 +30,7 @@ pub enum ScreenshotCapability {
 /// What a browser engine can do.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineCapabilities {
-    /// Can execute JavaScript (SpiderMonkey, V8, etc.)
+    /// Can execute JavaScript (QuickJS, SpiderMonkey, etc.)
     pub javascript: bool,
     /// Screenshot support level
     pub screenshots: ScreenshotCapability,
@@ -43,8 +45,8 @@ pub struct EngineCapabilities {
 /// Unified browser engine interface.
 ///
 /// Object-safe via `async_trait`. Stored behind `Arc<tokio::sync::Mutex<dyn BrowserEngine>>`.
-/// All methods are async to accommodate CDP round-trips in ChromeEngine.
-/// NativeClient and SevroEngine wrap sync operations in async (zero-cost).
+/// All methods are async. NativeClient and SevroEngine wrap sync operations
+/// in async (zero-cost — no actual suspension).
 #[async_trait]
 pub trait BrowserEngine: Send + Sync {
     /// Navigate to a URL. Waits for DOMContentLoaded equivalent.
@@ -78,59 +80,69 @@ pub trait BrowserEngine: Send + Sync {
 /// Create a browser engine by name.
 ///
 /// - `"native"` — NativeEngine (pure HTTP, always available)
-/// - `"chrome"` — ChromeEngine (requires `chrome-legacy` feature + Chrome installed)
-/// - `"sevro"` — SevroEngine (future)
-/// - `"auto"` — try chrome, fall back to native
+/// - `"sevro"` / `"native-js"` — SevroEngine (default, requires `sevro` feature)
+/// - `"auto"` — Sevro if available, otherwise native
 pub async fn create_engine(name: &str) -> BrowserResult<Arc<Mutex<dyn BrowserEngine>>> {
+    create_engine_with_proxy(name, None).await
+}
+
+/// Engine configuration options passed from CLI.
+#[derive(Debug, Default, Clone)]
+pub struct EngineOptions {
+    pub proxy_url: Option<String>,
+    pub flaresolverr_url: Option<String>,
+    pub fallback_proxy_url: Option<String>,
+}
+
+/// Create a browser engine by name with an optional proxy URL.
+pub async fn create_engine_with_proxy(
+    name: &str,
+    proxy_url: Option<String>,
+) -> BrowserResult<Arc<Mutex<dyn BrowserEngine>>> {
+    create_engine_with_options(name, EngineOptions {
+        proxy_url,
+        ..Default::default()
+    }).await
+}
+
+/// Create a browser engine by name with full options.
+pub async fn create_engine_with_options(
+    name: &str,
+    opts: EngineOptions,
+) -> BrowserResult<Arc<Mutex<dyn BrowserEngine>>> {
     match name {
         "native" => {
             Ok(Arc::new(Mutex::new(crate::engine_native::NativeEngine::new())))
         }
-        #[cfg(feature = "chrome-legacy")]
-        "chrome" => {
-            let engine = crate::engine_chrome::ChromeEngine::launch(
-                crate::config::BrowserConfig::default()
-            ).await?;
-            Ok(Arc::new(Mutex::new(engine)))
-        }
-        #[cfg(not(feature = "chrome-legacy"))]
-        "chrome" => {
-            Err(crate::error::BrowserError::CdpError(
-                "Chrome engine not available — compile with --features chrome-legacy".to_string()
-            ))
-        }
         #[cfg(feature = "sevro")]
         "sevro" | "native-js" => {
-            Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::new())))
+            let mut config = sevro_headless::SevroConfig::default();
+            config.proxy_url = opts.proxy_url;
+            config.flaresolverr_url = opts.flaresolverr_url;
+            config.fallback_proxy_url = opts.fallback_proxy_url;
+            Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::with_config(config))))
         }
         #[cfg(not(feature = "sevro"))]
         "sevro" | "native-js" => {
-            Err(crate::error::BrowserError::CdpError(
-                "Sevro/NativeJs engine not available — compile with --features sevro".to_string()
+            Err(crate::error::BrowserError::EngineError(
+                "Sevro engine not available — compile with --features sevro".to_string()
             ))
         }
         "auto" => {
-            // Try sevro first (best: native Rust, no Chrome)
             #[cfg(feature = "sevro")]
             {
-                return Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::new())));
+                let mut config = sevro_headless::SevroConfig::default();
+                config.proxy_url = opts.proxy_url;
+                config.flaresolverr_url = opts.flaresolverr_url;
+                config.fallback_proxy_url = opts.fallback_proxy_url;
+                return Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::with_config(config))));
             }
-            // Then try Chrome
-            #[cfg(feature = "chrome-legacy")]
-            {
-                match crate::engine_chrome::ChromeEngine::launch(
-                    crate::config::BrowserConfig::default()
-                ).await {
-                    Ok(engine) => return Ok(Arc::new(Mutex::new(engine))),
-                    Err(e) => {
-                        warn!(error = %e, "Chrome not available, falling back to native");
-                    }
-                }
-            }
-            Ok(Arc::new(Mutex::new(crate::engine_native::NativeEngine::new())))
+
+            #[cfg(not(feature = "sevro"))]
+            return Ok(Arc::new(Mutex::new(crate::engine_native::NativeEngine::new())));
         }
-        other => Err(crate::error::BrowserError::CdpError(
-            format!("Unknown engine: '{}'. Options: native, chrome, sevro, auto", other)
+        other => Err(crate::error::BrowserError::EngineError(
+            format!("Unknown engine: '{}'. Options: native, sevro, auto", other)
         )),
     }
 }

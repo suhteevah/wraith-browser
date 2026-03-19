@@ -980,5 +980,5 @@ pub struct CredentialSummary {
     pub auto_use: bool,
     pub created_at: String,
     pub last_used: Option<String>,
-    pub use_count: u64,
+    pub use_count: i64,
 }

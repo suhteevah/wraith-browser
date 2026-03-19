@@ -43,6 +43,14 @@ pub struct SevroConfig {
     pub viewport_height: u32,
     pub disable_cors: bool,
     pub enable_javascript: bool,
+    /// HTTP/HTTPS/SOCKS5 proxy URL (e.g., "http://user:pass@proxy:8080" or "socks5://127.0.0.1:1080")
+    pub proxy_url: Option<String>,
+    /// FlareSolverr URL for Cloudflare Turnstile bypass (e.g., "http://localhost:8191")
+    /// Only used as fallback when QuickJS can't solve the challenge.
+    pub flaresolverr_url: Option<String>,
+    /// Fallback proxy URL used only when an IP ban is detected.
+    /// Separate from proxy_url so the primary path stays direct.
+    pub fallback_proxy_url: Option<String>,
 }
 
 impl Default for SevroConfig {
@@ -56,6 +64,9 @@ impl Default for SevroConfig {
             viewport_height: 1080,
             disable_cors: false,
             enable_javascript: true,
+            proxy_url: None,
+            flaresolverr_url: None,
+            fallback_proxy_url: None,
         }
     }
 }
@@ -151,16 +162,36 @@ pub struct SevroEngine {
     _request_interceptor: Option<Box<dyn Fn(&str) -> RequestAction + Send + Sync>>,
 }
 
+// SAFETY: SevroEngine is always accessed behind Arc<Mutex<...>>, guaranteeing
+// single-threaded access. The non-Send/Sync types (rquickjs Rc<Runtime>,
+// scraper::Html with tendril::NonAtomic) are never shared across threads —
+// the Mutex serializes all access. This is the standard pattern for wrapping
+// single-threaded libraries in async Rust (e.g., SQLite, QuickJS).
+unsafe impl Send for SevroEngine {}
+unsafe impl Sync for SevroEngine {}
+
 impl SevroEngine {
     #[instrument(skip(config), fields(viewport = format!("{}x{}", config.viewport_width, config.viewport_height)))]
     pub fn new(config: SevroConfig) -> Self {
-        let client = reqwest::Client::builder()
+        let mut client_builder = reqwest::Client::builder()
             .user_agent(&config.user_agent)
             .cookie_store(true)
             .gzip(true)
-            .brotli(true)
-            .build()
-            .expect("failed to build HTTP client");
+            .brotli(true);
+
+        if let Some(ref proxy_url) = config.proxy_url {
+            match reqwest::Proxy::all(proxy_url) {
+                Ok(proxy) => {
+                    info!(proxy = %proxy_url, "HTTP proxy configured");
+                    client_builder = client_builder.proxy(proxy);
+                }
+                Err(e) => {
+                    warn!(error = %e, proxy = %proxy_url, "Failed to configure proxy — continuing without");
+                }
+            }
+        }
+
+        let client = client_builder.build().expect("failed to build HTTP client");
 
         let js = if config.enable_javascript {
             match js_runtime::JsRuntime::new() {
@@ -193,6 +224,13 @@ impl SevroEngine {
     }
 
     /// Navigate to a URL — fetches HTML and parses into a live DOM tree.
+    ///
+    /// ## Fallback chain (each tier only fires if the previous fails):
+    ///
+    /// 1. **Direct fetch** — stealth TLS + Chrome headers (fastest, ~50ms)
+    /// 2. **QuickJS challenge solver** — if Cloudflare "Just a moment..." detected
+    /// 3. **FlareSolverr** — if QuickJS can't solve (obfuscated Turnstile)
+    /// 4. **Fallback proxy** — if hard IP ban detected ("you have been blocked")
     #[instrument(skip(self), fields(url = %url))]
     pub async fn navigate(&mut self, url: &str) -> Result<PageEvent, String> {
         info!(url = %url, "Navigating");
@@ -202,36 +240,330 @@ impl SevroEngine {
             self.history.push(current.clone());
         }
 
+        // === Tier 1: Direct fetch ===
         let (status, html, final_url) = self.http_fetch(url).await?;
 
         if status >= 400 {
-            return Ok(PageEvent::Error(format!("HTTP {status}")));
+            warn!(status, url = %url, body_len = html.len(), "HTTP error status — parsing body anyway");
         }
 
-        // Parse HTML into DOM
-        let parsed = Html::parse_document(&html);
+        self.load_page(&html, &final_url);
 
-        // Extract DOM nodes from the parsed tree
+        // If no challenge, we're done
+        if !Self::is_cloudflare_challenge(&html, status) && !Self::is_ip_blocked(&html) {
+            return Ok(PageEvent::DomContentLoaded);
+        }
+
+        // === Tier 2: QuickJS challenge solver (for "Just a moment..." pages) ===
+        if Self::is_cloudflare_challenge(&html, status) && !Self::is_ip_blocked(&html) {
+            info!(url = %url, status, "Cloudflare challenge detected — Tier 2: QuickJS solver");
+
+            if let Some(cookies) = self.try_quickjs_solve(url).await {
+                let retry = self.http_fetch_with_cookies(url, &cookies).await;
+                if let Ok((rs, rh, ru)) = retry {
+                    if !Self::is_cloudflare_challenge(&rh, rs) && !Self::is_ip_blocked(&rh) {
+                        info!(status = rs, "Tier 2 bypass successful — QuickJS solved challenge");
+                        self.load_page(&rh, &ru);
+                        return Ok(PageEvent::DomContentLoaded);
+                    }
+                }
+            }
+
+            // === Tier 3: FlareSolverr (for obfuscated Turnstile) ===
+            if self.config.flaresolverr_url.is_some() {
+                info!(url = %url, "Tier 3: Escalating to FlareSolverr");
+
+                if let Some(cookies) = self.try_flaresolverr(url).await {
+                    let retry = self.http_fetch_with_cookies(url, &cookies).await;
+                    if let Ok((rs, rh, ru)) = retry {
+                        if !Self::is_cloudflare_challenge(&rh, rs) && !Self::is_ip_blocked(&rh) {
+                            info!(status = rs, "Tier 3 bypass successful — FlareSolverr solved challenge");
+                            self.load_page(&rh, &ru);
+                            return Ok(PageEvent::DomContentLoaded);
+                        }
+                    }
+                }
+            }
+        }
+
+        // === Tier 4: Fallback proxy (for hard IP bans) ===
+        if Self::is_ip_blocked(&html) {
+            if let Some(ref fallback_proxy) = self.config.fallback_proxy_url.clone() {
+                info!(url = %url, proxy = %fallback_proxy, "Tier 4: IP banned — retrying via fallback proxy");
+
+                if let Ok((ps, ph, pu)) = self.http_fetch_via_proxy(url, fallback_proxy).await {
+                    if !Self::is_ip_blocked(&ph) {
+                        info!(status = ps, "Tier 4 bypass successful — proxy circumvented IP ban");
+                        self.load_page(&ph, &pu);
+
+                        // If the proxy response is ALSO a CF challenge, try solving it
+                        if Self::is_cloudflare_challenge(&ph, ps) {
+                            if let Some(cookies) = self.try_quickjs_solve(url).await {
+                                let retry = self.http_fetch_with_cookies(url, &cookies).await;
+                                if let Ok((rs, rh, ru)) = retry {
+                                    if !Self::is_cloudflare_challenge(&rh, rs) {
+                                        info!(status = rs, "Proxy + QuickJS bypass successful");
+                                        self.load_page(&rh, &ru);
+                                        return Ok(PageEvent::DomContentLoaded);
+                                    }
+                                }
+                            }
+
+                            // Try FlareSolverr through proxy
+                            if self.config.flaresolverr_url.is_some() {
+                                if let Some(cookies) = self.try_flaresolverr(url).await {
+                                    let retry = self.http_fetch_with_cookies(url, &cookies).await;
+                                    if let Ok((rs, rh, ru)) = retry {
+                                        if !Self::is_cloudflare_challenge(&rh, rs) {
+                                            info!(status = rs, "Proxy + FlareSolverr bypass successful");
+                                            self.load_page(&rh, &ru);
+                                            return Ok(PageEvent::DomContentLoaded);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        return Ok(PageEvent::DomContentLoaded);
+                    }
+                }
+            } else {
+                warn!(url = %url, "IP blocked and no fallback proxy configured — set fallback_proxy_url or --fallback-proxy");
+            }
+        }
+
+        Ok(PageEvent::DomContentLoaded)
+    }
+
+    /// Detect hard IP bans (different from solvable challenges).
+    fn is_ip_blocked(html: &str) -> bool {
+        html.contains("Sorry, you have been blocked")
+            || html.contains("Access to this page has been denied")
+            || html.contains("Your IP address has been blocked")
+            || html.contains("This request was blocked by the security rules")
+    }
+
+    /// Tier 2: Try solving the CF challenge with QuickJS. Returns cookie string if successful.
+    async fn try_quickjs_solve(&self, url: &str) -> Option<String> {
+        let js = self.js.as_ref()?;
+
+        // Set location for the challenge scripts
+        let _ = js.run_script(&format!(
+            "__wraith_set_location({})",
+            serde_json::to_string(url).unwrap_or_default()
+        ));
+
+        // Run the challenge scripts
+        if let Some(ref page_html) = self.current_html {
+            let _ = js.execute_page_scripts(page_html);
+            let _ = js.run_script("__wraith_flush_timers()");
+        }
+
+        // Check for CF cookies
+        let cookie_json = js.run_script("__wraith_get_cookies()").ok()?;
+        if cookie_json.contains("cf_clearance") || cookie_json.contains("__cf_bm") {
+            let cookies: std::collections::HashMap<String, String> =
+                serde_json::from_str(&cookie_json).ok()?;
+            let header = cookies.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect::<Vec<_>>()
+                .join("; ");
+            info!(cookies = cookies.len(), "QuickJS captured CF cookies");
+            return Some(header);
+        }
+
+        debug!("QuickJS solver did not produce CF cookies");
+        None
+    }
+
+    /// Tier 3: Call FlareSolverr to solve Cloudflare challenge via real browser.
+    /// FlareSolverr must be running (e.g., `docker run -p 8191:8191 flaresolverr/flaresolverr`).
+    async fn try_flaresolverr(&self, url: &str) -> Option<String> {
+        let solver_url = self.config.flaresolverr_url.as_ref()?;
+        let endpoint = format!("{}/v1", solver_url);
+
+        info!(url = %url, solver = %solver_url, "Calling FlareSolverr");
+
+        let payload = serde_json::json!({
+            "cmd": "request.get",
+            "url": url,
+            "maxTimeout": 60000
+        });
+
+        let response = self.client.post(&endpoint)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                warn!(error = %e, "FlareSolverr request failed");
+                e
+            })
+            .ok()?;
+
+        let body: serde_json::Value = response.json().await.ok()?;
+
+        // Extract cookies from FlareSolverr response
+        let cookies = body["solution"]["cookies"].as_array()?;
+        let cookie_header: String = cookies.iter()
+            .filter_map(|c| {
+                let name = c["name"].as_str()?;
+                let value = c["value"].as_str()?;
+                Some(format!("{}={}", name, value))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+
+        if cookie_header.is_empty() {
+            warn!("FlareSolverr returned no cookies");
+            return None;
+        }
+
+        // Also check if FlareSolverr returned the actual page content
+        if let Some(solution_html) = body["solution"]["response"].as_str() {
+            if !solution_html.is_empty() && !Self::is_cloudflare_challenge(solution_html, 200) {
+                info!(cookie_count = cookies.len(), "FlareSolverr solved challenge — cookies captured");
+            }
+        }
+
+        Some(cookie_header)
+    }
+
+    /// Fetch via a specific proxy (for Tier 4 IP ban fallback).
+    async fn http_fetch_via_proxy(&self, url: &str, proxy_url: &str) -> Result<(u16, String, String), String> {
+        debug!(url = %url, proxy = %proxy_url, "Fetching via fallback proxy");
+
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|e| format!("Invalid proxy URL: {e}"))?;
+
+        let client = reqwest::Client::builder()
+            .user_agent(&self.config.user_agent)
+            .proxy(proxy)
+            .cookie_store(true)
+            .gzip(true)
+            .brotli(true)
+            .build()
+            .map_err(|e| format!("Proxy client build failed: {e}"))?;
+
+        let response = client.get(url)
+            .header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-ch-ua-platform", "\"Windows\"")
+            .header("Upgrade-Insecure-Requests", "1")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+            .header("Sec-Fetch-Site", "none")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-User", "?1")
+            .header("Sec-Fetch-Dest", "document")
+            .header("Accept-Encoding", "gzip, deflate, br, zstd")
+            .header("Accept-Language", &self.config.accept_language)
+            .send()
+            .await
+            .map_err(|e| format!("Proxy fetch failed: {e}"))?;
+
+        let status = response.status().as_u16();
+        let final_url = response.url().to_string();
+        let body = response.text().await.map_err(|e| format!("body failed: {e}"))?;
+        Ok((status, body, final_url))
+    }
+
+    /// Load HTML into the DOM engine and execute scripts.
+    fn load_page(&mut self, html: &str, url: &str) {
+        let parsed = Html::parse_document(html);
         self.dom_nodes = extract_dom_nodes(&parsed);
         self.parsed_dom = Some(parsed);
-        self.current_html = Some(html);
-        self.current_url = Some(final_url);
+        self.current_html = Some(html.to_string());
+        self.current_url = Some(url.to_string());
 
-        debug!(nodes = self.dom_nodes.len(), "DOM parsed");
+        debug!(nodes = self.dom_nodes.len(), url = %url, "DOM parsed");
 
-        // Execute JavaScript if enabled
+        // Set up JS environment and run scripts
         if let Some(ref js) = self.js {
             if let Err(e) = js.setup_dom_bridge(&self.dom_nodes) {
                 warn!(error = %e, "DOM bridge setup failed");
-            } else if let Some(ref html) = self.current_html {
+            } else {
+                // Set actual page location
+                let _ = js.run_script(&format!(
+                    "__wraith_set_location({})",
+                    serde_json::to_string(url).unwrap_or_default()
+                ));
+
                 match js.execute_page_scripts(html) {
                     Ok(n) => debug!(scripts = n, "Page scripts executed"),
                     Err(e) => debug!(error = %e, "Script execution failed (non-fatal)"),
                 }
             }
         }
+    }
 
-        Ok(PageEvent::DomContentLoaded)
+    /// Detect if an HTTP response is a Cloudflare challenge page.
+    /// Checks both error statuses AND 200 responses (CF often returns 200 with the challenge).
+    fn is_cloudflare_challenge(html: &str, _status: u16) -> bool {
+        // Cloudflare challenge signatures — check regardless of status code
+        // because CF often returns 200 with the challenge page
+        html.contains("cf-browser-verification")
+            || html.contains("Checking if the site connection is secure")
+            || html.contains("Attention Required! | Cloudflare")
+            || html.contains("Just a moment...")
+            || html.contains("Authenticating...")
+            || html.contains("cf_chl_opt")
+            || html.contains("challenge-platform")
+            || (html.contains("cloudflare") && html.contains("challenge"))
+    }
+
+    /// Fetch with explicit cookie header (for CF bypass retry).
+    async fn http_fetch_with_cookies(&self, url: &str, cookies: &str) -> Result<(u16, String, String), String> {
+        debug!(url = %url, "Retrying with Cloudflare cookies");
+
+        #[cfg(feature = "stealth-tls")]
+        {
+            let client = rquest::Client::builder()
+                .cookie_store(true)
+                .build()
+                .map_err(|e| format!("rquest build failed: {e}"))?;
+
+            let response = client.get(url)
+                .header("Cookie", cookies)
+                .header("Accept-Language", &self.config.accept_language)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "none")
+                .header("Sec-Fetch-User", "?1")
+                .header("Upgrade-Insecure-Requests", "1")
+                .send()
+                .await
+                .map_err(|e| format!("retry request failed: {e}"))?;
+
+            let status = response.status().as_u16();
+            let final_url = response.url().to_string();
+            let body = response.text().await.map_err(|e| format!("body failed: {e}"))?;
+            return Ok((status, body, final_url));
+        }
+
+        #[cfg(not(feature = "stealth-tls"))]
+        {
+            let response = self.client.get(url)
+                .header("Cookie", cookies)
+                .header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+                .header("sec-ch-ua-mobile", "?0")
+                .header("sec-ch-ua-platform", "\"Windows\"")
+                .header("Upgrade-Insecure-Requests", "1")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+                .header("Sec-Fetch-Site", "none")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-User", "?1")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Accept-Encoding", "gzip, deflate, br, zstd")
+                .header("Accept-Language", &self.config.accept_language)
+                .send()
+                .await
+                .map_err(|e| format!("retry request failed: {e}"))?;
+
+            let status = response.status().as_u16();
+            let final_url = response.url().to_string();
+            let body = response.text().await.map_err(|e| format!("body failed: {e}"))?;
+            Ok((status, body, final_url))
+        }
     }
 
     /// Fast DOM snapshot — just returns the cached node list. Target: <1ms.
@@ -396,11 +728,21 @@ impl SevroEngine {
 
         #[cfg(not(feature = "stealth-tls"))]
         {
-            debug!(url = %url, "Fetching with reqwest (rustls — may be flagged by Cloudflare)");
+            debug!(url = %url, "Fetching with reqwest (rustls — TLS fingerprint may differ from Chrome)");
 
             let response = self.client.get(url)
+                .header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+                .header("sec-ch-ua-mobile", "?0")
+                .header("sec-ch-ua-platform", "\"Windows\"")
+                .header("Upgrade-Insecure-Requests", "1")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+                .header("Sec-Fetch-Site", "none")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-User", "?1")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Accept-Encoding", "gzip, deflate, br, zstd")
                 .header("Accept-Language", &self.config.accept_language)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Priority", "u=0, i")
                 .send()
                 .await
                 .map_err(|e| format!("HTTP request failed: {e}"))?;

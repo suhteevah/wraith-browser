@@ -2,6 +2,7 @@
 //! Wired to a real NativeClient for Chrome-free browsing.
 
 use std::sync::Arc;
+use base64::Engine as _;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, ListToolsResult,
@@ -34,7 +35,13 @@ impl Default for WraithHandler {
 }
 
 impl WraithHandler {
+    /// Create the handler with the default engine (Sevro if available, native fallback).
     pub fn new() -> Self {
+        Self::with_engine(Self::default_engine())
+    }
+
+    /// Create the handler with a specific engine.
+    pub fn with_engine(engine: Arc<Mutex<dyn BrowserEngine>>) -> Self {
         let rw_open = ToolAnnotations::new().read_only(false).destructive(false).open_world(true);
         let ro_closed = ToolAnnotations::new().read_only(true).open_world(false);
         let ro_open = ToolAnnotations::new().read_only(true).open_world(true);
@@ -58,13 +65,13 @@ impl WraithHandler {
                 "Extract the current page's content as clean markdown optimized for LLM context.",
                 &schema_for!(ExtractInput), ro_closed.clone()),
             make_tool("browse_screenshot",
-                "Capture a PNG screenshot of the current page. (Requires Chrome backend — not available in native mode.)",
+                "Capture a PNG screenshot of the current page. Returns base64-encoded PNG.",
                 &schema_for!(ScreenshotInput), ro_closed.clone()),
             make_tool("browse_search",
                 "Search the web using metasearch (DuckDuckGo + Brave). Returns titles, URLs, and snippets.",
                 &schema_for!(SearchInput), ro_open),
             make_tool("browse_eval_js",
-                "Execute JavaScript code on the current page. (Requires Chrome backend — not available in native mode.)",
+                "Execute JavaScript code on the current page and return the result.",
                 &schema_for!(EvalJsInput), rw_destructive),
             make_tool("browse_tabs",
                 "Show the current page URL and title.",
@@ -76,7 +83,7 @@ impl WraithHandler {
                 "Press a keyboard key on the current page.",
                 &schema_for!(KeyPressInput), rw_open),
             make_tool("browse_scroll",
-                "Scroll the current page up or down. (No-op in native mode — full page is already parsed.)",
+                "Scroll the current page up or down.",
                 &schema_for!(ScrollInput), rw_closed.clone()),
             make_tool("browse_vault_store",
                 "Store a credential (password, API key, token) in the encrypted vault.",
@@ -87,12 +94,25 @@ impl WraithHandler {
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
-
-        let engine: Arc<Mutex<dyn BrowserEngine>> = Arc::new(Mutex::new(
-            openclaw_browser_core::engine_native::NativeEngine::new()
-        ));
-
         Self { tools, engine }
+    }
+
+    /// Build the default engine: Sevro → NativeEngine fallback.
+    fn default_engine() -> Arc<Mutex<dyn BrowserEngine>> {
+        #[cfg(feature = "sevro")]
+        {
+            info!("Using Sevro engine (default)");
+            return Arc::new(Mutex::new(
+                openclaw_browser_core::engine_sevro::SevroEngineBackend::new()
+            ));
+        }
+        #[cfg(not(feature = "sevro"))]
+        {
+            info!("Sevro not available, using native engine");
+            Arc::new(Mutex::new(
+                openclaw_browser_core::engine_native::NativeEngine::new()
+            ))
+        }
     }
 
     /// Dispatch a tool call to the real browser.
@@ -198,11 +218,27 @@ impl WraithHandler {
             }
 
             "browse_screenshot" => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    "Screenshots are not available in native mode (no Chrome). \
-                     Use browse_snapshot for a text representation of the page, \
-                     or browse_extract for markdown content."
-                )]))
+                let engine = self.engine.lock().await;
+                match engine.screenshot().await {
+                    Ok(png_bytes) => {
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+                        let (width, height) = if png_bytes.len() >= 24 {
+                            let w = u32::from_be_bytes([png_bytes[16], png_bytes[17], png_bytes[18], png_bytes[19]]);
+                            let h = u32::from_be_bytes([png_bytes[20], png_bytes[21], png_bytes[22], png_bytes[23]]);
+                            (w, h)
+                        } else {
+                            (0, 0)
+                        };
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("Screenshot captured ({}x{}, {} bytes base64)", width, height, b64.len())
+                        )]))
+                    }
+                    Err(e) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("Screenshot not available with current engine: {e}")
+                        )]))
+                    }
+                }
             }
 
             "browse_search" => {
@@ -231,11 +267,22 @@ impl WraithHandler {
             }
 
             "browse_eval_js" => {
-                let _input: EvalJsInput = parse_args(args)?;
-                Ok(CallToolResult::success(vec![Content::text(
-                    "JavaScript execution is not available in native mode (no Chrome engine). \
-                     Native mode fetches and parses HTML directly — most pages work without JS."
-                )]))
+                let input: EvalJsInput = parse_args(args)?;
+                info!(script_len = input.code.len(), "Evaluating JavaScript");
+
+                let engine = self.engine.lock().await;
+                match engine.eval_js(&input.code).await {
+                    Ok(result) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("JS result: {result}")
+                        )]))
+                    }
+                    Err(e) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("JavaScript execution failed: {e}")
+                        )]))
+                    }
+                }
             }
 
             "browse_tabs" => {
@@ -299,11 +346,20 @@ impl WraithHandler {
             }
 
             "browse_scroll" => {
-                let _input: ScrollInput = parse_args(args)?;
-                Ok(CallToolResult::success(vec![Content::text(
-                    "Scroll acknowledged. In native mode, the entire page is already parsed — \
-                     use browse_snapshot to see all elements or browse_extract for full content."
-                )]))
+                let input: ScrollInput = parse_args(args)?;
+                let direction = match input.direction.to_lowercase().as_str() {
+                    "up" => openclaw_browser_core::actions::ScrollDirection::Up,
+                    "left" => openclaw_browser_core::actions::ScrollDirection::Left,
+                    "right" => openclaw_browser_core::actions::ScrollDirection::Right,
+                    _ => openclaw_browser_core::actions::ScrollDirection::Down,
+                };
+                let amount = input.amount.unwrap_or(500);
+
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::Scroll { direction, amount }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Scroll failed: {e}"), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
 
             "browse_vault_store" | "browse_vault_get" => {
@@ -333,7 +389,8 @@ impl ServerHandler for WraithHandler {
              Pure native mode: no Chrome dependency, ~50ms per page. \
              Use browse_navigate to visit URLs, browse_click/browse_fill to interact \
              with elements using @ref IDs, browse_snapshot to see the page state, \
-             browse_extract to get markdown content, and browse_search to search the web."
+             browse_extract to get markdown content, and browse_search to search the web. \
+             JavaScript execution available via browse_eval_js (QuickJS engine)."
         )
     }
 

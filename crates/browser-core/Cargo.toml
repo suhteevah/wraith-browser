@@ -6,14 +6,14 @@ license.workspace = true
 description = "Core browser control — unified BrowserEngine trait with multiple backends"
 
 [features]
-default = ["chrome-legacy"]
-chrome-legacy = ["dep:chromiumoxide", "dep:chromiumoxide_cdp"]
+default = ["sevro"]
 sevro = ["dep:sevro-headless"]
-stealth-tls = ["dep:rquest"]
+stealth-tls = ["dep:rquest", "sevro-headless?/stealth-tls"]
+vision-ml = ["dep:ort"]
+tor = ["dep:arti-client", "dep:tor-rtcompat"]
+wasm = ["dep:wasmtime"]
 
 [dependencies]
-chromiumoxide = { workspace = true, optional = true }
-chromiumoxide_cdp = { workspace = true, optional = true }
 sevro-headless = { path = "../../sevro/ports/headless", optional = true }
 tokio.workspace = true
 futures.workspace = true
@@ -32,3 +32,8 @@ regex.workspace = true
 rand.workspace = true
 async-trait.workspace = true
 rquest = { workspace = true, optional = true }
+ort = { workspace = true, optional = true }
+arti-client = { workspace = true, optional = true }
+tor-rtcompat = { workspace = true, optional = true }
+wasmtime = { workspace = true, optional = true }
+openclaw-scripting = { path = "../scripting" }

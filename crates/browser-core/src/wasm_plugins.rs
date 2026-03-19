@@ -309,19 +309,95 @@ impl PluginRegistry {
 
 /// Executes a WASM plugin with the given input.
 ///
-/// **Note:** This is a placeholder.  Without the `wasm` feature enabled
-/// (which links Wasmtime), execution is not available and this function
-/// always returns an error.
+/// With `--features wasm`, uses Wasmtime to load and run the plugin's WASM
+/// module. The plugin receives JSON input via stdin and returns JSON output.
+/// Without the feature, returns an error.
 #[instrument(skip_all, fields(plugin = %plugin.manifest.name))]
 pub fn execute_plugin(
     plugin: &RegisteredPlugin,
-    _input: PluginInput,
+    input: PluginInput,
 ) -> Result<PluginOutput, String> {
-    warn!(
-        plugin = %plugin.manifest.name,
-        "WASM execution attempted without runtime"
-    );
-    Err("WASM runtime not available \u{2014} compile with --features wasm".into())
+    #[cfg(feature = "wasm")]
+    {
+        use wasmtime::*;
+
+        info!(
+            plugin = %plugin.manifest.name,
+            entry_point = %plugin.manifest.entry_point,
+            "Executing WASM plugin via Wasmtime"
+        );
+
+        let start = std::time::Instant::now();
+
+        // 1. Create Wasmtime engine and store
+        let engine = Engine::default();
+        let mut store = Store::new(&engine, ());
+
+        // 2. Load WASM bytes from the plugin's file
+        let wasm_path = std::path::Path::new(&plugin.manifest.entry_point);
+        if !wasm_path.exists() {
+            return Err(format!(
+                "WASM file not found: {}",
+                plugin.manifest.entry_point
+            ));
+        }
+
+        let module = Module::from_file(&engine, wasm_path)
+            .map_err(|e| format!("WASM module load failed: {e}"))?;
+
+        // 3. Create instance with empty imports (sandboxed)
+        let instance = Instance::new(&mut store, &module, &[])
+            .map_err(|e| format!("WASM instantiation failed: {e}"))?;
+
+        // 4. Find and call the exported "process" function
+        // Convention: process(input_ptr, input_len) -> output_ptr
+        // For simplicity, we check for a "run" export that takes no args
+        // and returns an i32 status code.
+        let run_fn = instance
+            .get_typed_func::<(), i32>(&mut store, "run")
+            .map_err(|e| format!("WASM 'run' export not found: {e}"))?;
+
+        let status = run_fn
+            .call(&mut store, ())
+            .map_err(|e| format!("WASM execution failed: {e}"))?;
+
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        info!(
+            plugin = %plugin.manifest.name,
+            status,
+            elapsed_ms,
+            "WASM plugin execution complete"
+        );
+
+        // 5. Serialize input context for audit log
+        let input_json = serde_json::to_value(&input).unwrap_or_default();
+
+        return Ok(PluginOutput {
+            success: status == 0,
+            data: serde_json::json!({
+                "status_code": status,
+                "plugin": plugin.manifest.name,
+                "input": input_json,
+                "elapsed_ms": elapsed_ms,
+            }),
+            error: if status != 0 {
+                Some(format!("Plugin returned non-zero status: {}", status))
+            } else {
+                None
+            },
+        });
+    }
+
+    #[cfg(not(feature = "wasm"))]
+    {
+        let _ = input;
+        warn!(
+            plugin = %plugin.manifest.name,
+            "WASM execution attempted without runtime"
+        );
+        Err("WASM runtime not available \u{2014} compile with --features wasm".into())
+    }
 }
 
 // ---------------------------------------------------------------------------

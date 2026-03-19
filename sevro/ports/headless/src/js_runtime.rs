@@ -26,6 +26,12 @@ pub struct JsRuntime {
     context: Context,
 }
 
+// SAFETY: JsRuntime is always accessed behind Arc<Mutex<SevroEngine>> which
+// guarantees single-threaded access. The Rc/NonNull inside QuickJS are never
+// shared across threads — the Mutex serializes all access.
+unsafe impl Send for JsRuntime {}
+unsafe impl Sync for JsRuntime {}
+
 impl JsRuntime {
     /// Create a new JS runtime with sandboxing limits.
     pub fn new() -> Result<Self, String> {

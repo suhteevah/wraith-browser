@@ -29,14 +29,29 @@
 pub mod tools;
 pub mod server;
 
-use server::WraithHandler;
+pub use server::WraithHandler;
 use tracing::info;
 
-/// Start the MCP server with the given transport mode.
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use openclaw_browser_core::engine::BrowserEngine;
+
+/// Start the MCP server with the given transport mode and default engine.
 pub async fn run(transport: Transport) -> anyhow::Result<()> {
+    run_with_engine(transport, None).await
+}
+
+/// Start the MCP server with a specific engine (or default if None).
+pub async fn run_with_engine(
+    transport: Transport,
+    engine: Option<Arc<Mutex<dyn BrowserEngine>>>,
+) -> anyhow::Result<()> {
     info!(transport = ?transport, "Starting Wraith MCP Server");
 
-    let handler = WraithHandler::new();
+    let handler = match engine {
+        Some(e) => WraithHandler::with_engine(e),
+        None => WraithHandler::new(),
+    };
 
     match transport {
         Transport::Stdio => {

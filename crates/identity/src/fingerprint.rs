@@ -27,7 +27,6 @@
 //! 5. On every headless page load, inject fingerprint overrides via CDP
 
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn, debug, instrument};
 
@@ -191,117 +190,40 @@ impl FingerprintManager {
         Self::default()
     }
 
-    /// Capture a fingerprint from the user's real browser.
-    /// Launches Chrome in non-headless (visible) mode, runs the capture script,
-    /// parses the result, and closes the browser window.
+    /// Capture a fingerprint from a JSON file exported from a real browser.
+    ///
+    /// Chrome-based live capture was removed in Phase 3 (Chrome removal).
+    /// To capture a fingerprint, use the browser's DevTools console to run
+    /// the CAPTURE_SCRIPT, save the output as JSON, then load it here.
+    ///
+    /// Alternatively, use `load_from_file()` to load a previously saved profile.
     #[instrument(skip(self))]
     pub async fn capture_from_real_browser(&mut self) -> IdentityResult<BrowserFingerprint> {
-        info!("Capturing browser fingerprint — launching visible Chrome window");
+        Err(IdentityError::FingerprintFailed(
+            "Live Chrome capture was removed (Chrome dependency eliminated). \
+             Use `load_from_file()` to load a fingerprint JSON exported from your browser's DevTools, \
+             or use one of the built-in profiles via `generate_default_profile()`."
+            .to_string()
+        ))
+    }
 
-        // 1. Launch Chrome in visible (non-headless) mode
-        let config = chromiumoxide::BrowserConfig::builder()
-            .with_head()
-            .window_size(800, 600)
-            .build()
-            .map_err(|e| IdentityError::FingerprintFailed(format!("Browser config failed: {}", e)))?;
+    /// Load a fingerprint from a JSON file (captured via browser DevTools).
+    #[instrument(skip(self))]
+    pub fn load_from_file(&mut self, path: &std::path::Path) -> IdentityResult<BrowserFingerprint> {
+        let data = std::fs::read_to_string(path)
+            .map_err(|e| IdentityError::FingerprintFailed(format!("Failed to read {}: {e}", path.display())))?;
 
-        let (mut browser, mut handler) = chromiumoxide::Browser::launch(config)
-            .await
-            .map_err(|e| IdentityError::FingerprintFailed(format!("Browser launch failed: {}", e)))?;
+        let fp: BrowserFingerprint = serde_json::from_str(&data)
+            .map_err(|e| IdentityError::FingerprintFailed(format!("Invalid fingerprint JSON: {e}")))?;
 
-        let handler_task = tokio::spawn(async move {
-            while handler.next().await.is_some() {}
-        });
-
-        // 2. Navigate to about:blank
-        let page = browser.new_page("about:blank").await
-            .map_err(|e| IdentityError::FingerprintFailed(format!("Page creation failed: {}", e)))?;
-
-        // 3. Run the capture script
-        info!("Executing fingerprint capture script in real browser");
-        let raw_json_str: String = page.evaluate(CAPTURE_SCRIPT).await
-            .map_err(|e| IdentityError::FingerprintFailed(format!("Capture script failed: {}", e)))?
-            .into_value()
-            .map_err(|e| IdentityError::FingerprintFailed(format!("Capture result parse failed: {}", e)))?;
-
-        // 4. Parse the raw JSON into our fingerprint struct
-        let raw: serde_json::Value = serde_json::from_str(&raw_json_str)
-            .map_err(|e| IdentityError::FingerprintFailed(format!("JSON parse failed: {}", e)))?;
-
-        let id = uuid::Uuid::new_v4().to_string();
-        let user_agent = raw["userAgent"].as_str().unwrap_or("").to_string();
-        let source = format!("Captured: {}", &user_agent.get(..60).unwrap_or(&user_agent));
-
-        let fp = BrowserFingerprint {
-            id: id.clone(),
-            name: "Captured Profile".to_string(),
-            user_agent,
-            accept_language: raw["acceptLanguage"].as_str().unwrap_or("en-US,en;q=0.9").to_string(),
-            sec_ch_ua: raw["secChUa"].as_str().map(String::from),
-            sec_ch_ua_platform: raw["secChUaPlatform"].as_str().map(String::from),
-            sec_ch_ua_mobile: raw["secChUaMobile"].as_str().map(String::from),
-            sec_ch_ua_full_version_list: raw["secChUaFullVersionList"].as_str().map(String::from),
-            platform: raw["platform"].as_str().unwrap_or("Win32").to_string(),
-            hardware_concurrency: raw["hardwareConcurrency"].as_u64().unwrap_or(8) as u32,
-            device_memory: raw["deviceMemory"].as_f64(),
-            max_touch_points: raw["maxTouchPoints"].as_u64().unwrap_or(0) as u32,
-            language: raw["language"].as_str().unwrap_or("en-US").to_string(),
-            languages: raw["languages"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_else(|| vec!["en-US".to_string()]),
-            vendor: raw["vendor"].as_str().unwrap_or("Google Inc.").to_string(),
-            do_not_track: raw["doNotTrack"].as_str().map(String::from),
-            screen_width: raw["screenWidth"].as_u64().unwrap_or(1920) as u32,
-            screen_height: raw["screenHeight"].as_u64().unwrap_or(1080) as u32,
-            avail_width: raw["availWidth"].as_u64().unwrap_or(1920) as u32,
-            avail_height: raw["availHeight"].as_u64().unwrap_or(1040) as u32,
-            color_depth: raw["colorDepth"].as_u64().unwrap_or(24) as u32,
-            pixel_depth: raw["pixelDepth"].as_u64().unwrap_or(24) as u32,
-            device_pixel_ratio: raw["devicePixelRatio"].as_f64().unwrap_or(1.0),
-            timezone: raw["timezone"].as_str().unwrap_or("UTC").to_string(),
-            timezone_offset: raw["timezoneOffset"].as_i64().unwrap_or(0) as i32,
-            webgl_renderer: raw["webglRenderer"].as_str().map(String::from),
-            webgl_vendor: raw["webglVendor"].as_str().map(String::from),
-            webgl_unmasked_renderer: raw["webglUnmaskedRenderer"].as_str().map(String::from),
-            webgl_unmasked_vendor: raw["webglUnmaskedVendor"].as_str().map(String::from),
-            canvas_hash: raw["canvasHash"].as_str().map(|s| {
-                // Hash the data URL to a short fingerprint
-                blake3::hash(s.as_bytes()).to_hex()[..16].to_string()
-            }),
-            webgl_hash: None,
-            audio_hash: None,
-            fonts: Vec::new(),
-            plugins: raw["plugins"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default(),
-            mime_types: raw["mimeTypes"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
-                .unwrap_or_default(),
-            webdriver: raw["webdriver"].as_bool().unwrap_or(false),
-            automation_detected: false,
-            connection_type: raw["connectionType"].as_str().map(String::from),
-            connection_downlink: raw["connectionDownlink"].as_f64(),
-            connection_rtt: raw["connectionRtt"].as_u64().map(|v| v as u32),
-            captured_at: Utc::now(),
-            source_browser: source,
-            raw_json: raw,
-        };
-
-        // 5. Close the visible browser
-        let _ = browser.close().await;
-        handler_task.abort();
-
-        // 6. Store and activate the fingerprint
         info!(
-            id = %id,
+            id = %fp.id,
             ua = %fp.user_agent.get(..60).unwrap_or(&fp.user_agent),
-            screen = format!("{}x{}", fp.screen_width, fp.screen_height),
-            tz = %fp.timezone,
-            "Fingerprint captured successfully"
+            "Fingerprint loaded from file"
         );
 
         self.add_profile(fp.clone());
-        self.set_active(&id);
+        self.set_active(&fp.id);
 
         Ok(fp)
     }

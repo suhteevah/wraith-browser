@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum BrowserError {
-    #[error("Chrome launch failed: {0}")]
+    #[error("Engine launch failed: {0}")]
     LaunchFailed(String),
 
     #[error("Navigation failed for {url}: {reason}")]
@@ -14,8 +14,8 @@ pub enum BrowserError {
     #[error("Action timeout after {ms}ms: {action}")]
     Timeout { action: String, ms: u64 },
 
-    #[error("CDP protocol error: {0}")]
-    CdpError(String),
+    #[error("Engine error: {0}")]
+    EngineError(String),
 
     #[error("Tab {tab_id} not found")]
     TabNotFound { tab_id: String },
@@ -25,10 +25,6 @@ pub enum BrowserError {
 
     #[error("JavaScript evaluation failed: {0}")]
     JsEvalFailed(String),
-
-    #[cfg(feature = "chrome-legacy")]
-    #[error(transparent)]
-    Chrome(#[from] chromiumoxide::error::CdpError),
 
     #[error(transparent)]
     Internal(#[from] anyhow::Error),

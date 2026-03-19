@@ -3,8 +3,7 @@
 //! Core browser control layer for Wraith Browser.
 //! Provides a unified `BrowserEngine` trait with multiple backends:
 //! - `NativeEngine` — pure-Rust HTTP client, no external dependencies
-//! - `ChromeEngine` — Chrome via CDP (feature-gated behind `chrome-legacy`)
-//! - `SevroEngine` — Servo fork (future)
+//! - `SevroEngine` — Servo-derived engine with QuickJS, DOM, and layout (default)
 
 // Engine abstraction (always available)
 pub mod engine;
@@ -15,13 +14,7 @@ pub mod error;
 pub mod config;
 pub mod native;
 
-// Chrome backend (feature-gated)
-#[cfg(feature = "chrome-legacy")]
-pub mod session;
-#[cfg(feature = "chrome-legacy")]
-pub mod tab;
-#[cfg(feature = "chrome-legacy")]
-pub mod engine_chrome;
+// Sevro backend (default)
 #[cfg(feature = "sevro")]
 pub mod engine_sevro;
 
@@ -41,10 +34,6 @@ pub mod stealth_http;
 // Re-exports
 pub use engine::{BrowserEngine, EngineCapabilities, ScreenshotCapability};
 pub use engine_native::NativeEngine;
-#[cfg(feature = "chrome-legacy")]
-pub use session::BrowserSession;
-#[cfg(feature = "chrome-legacy")]
-pub use tab::TabHandle;
 pub use dom::DomSnapshot;
 pub use actions::{BrowserAction, ActionResult};
 pub use error::BrowserError;

@@ -24,8 +24,7 @@ rusqlite.workspace = true
 parking_lot.workspace = true
 dirs.workspace = true
 
-# Browser (for fingerprint capture)
-chromiumoxide.workspace = true
+# Async (for BrowserEngine trait compatibility)
 futures.workspace = true
 
 # Core

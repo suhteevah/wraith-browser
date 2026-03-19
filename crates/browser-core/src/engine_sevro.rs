@@ -8,23 +8,72 @@ use crate::actions::{BrowserAction, ActionResult};
 use crate::engine::{BrowserEngine, EngineCapabilities, ScreenshotCapability};
 use crate::error::{BrowserResult, BrowserError};
 use async_trait::async_trait;
-use tracing::{info, instrument};
+use tracing::{info, debug, instrument};
 
 /// Browser engine backed by Sevro (stripped Servo fork).
+///
+/// Includes an integrated Rhai scripting engine that triggers userscripts
+/// on navigation events (OnNavigate, Always triggers).
 pub struct SevroEngineBackend {
     engine: sevro_headless::SevroEngine,
+    /// Rhai scripting engine for userscripts
+    scripts: openclaw_scripting::ScriptEngine,
 }
 
 impl SevroEngineBackend {
     pub fn new() -> Self {
         Self {
             engine: sevro_headless::SevroEngine::default(),
+            scripts: openclaw_scripting::ScriptEngine::new(),
         }
     }
 
     pub fn with_config(config: sevro_headless::SevroConfig) -> Self {
         Self {
             engine: sevro_headless::SevroEngine::new(config),
+            scripts: openclaw_scripting::ScriptEngine::new(),
+        }
+    }
+
+    /// Access the scripting engine to load/manage Rhai scripts.
+    pub fn scripting(&mut self) -> &mut openclaw_scripting::ScriptEngine {
+        &mut self.scripts
+    }
+
+    /// Run triggered scripts for the current page.
+    fn run_page_scripts(&self, url: &str, title: &str) {
+        let context = openclaw_scripting::ScriptContext {
+            url: url.to_string(),
+            domain: url::Url::parse(url)
+                .map(|u| u.host_str().unwrap_or("").to_string())
+                .unwrap_or_default(),
+            title: title.to_string(),
+            html: self.engine.page_source().unwrap_or("").to_string(),
+            text_content: String::new(),
+            links: Vec::new(),
+            custom_vars: std::collections::HashMap::new(),
+        };
+
+        let trigger = openclaw_scripting::ScriptTrigger::OnNavigate {
+            url_pattern: url.to_string(),
+        };
+
+        let results = self.scripts.run_triggered(&trigger, &context);
+        for (name, result) in &results {
+            match result {
+                Ok(r) if r.success => {
+                    debug!(script = %name, output = ?r.output, "Script executed successfully");
+                }
+                Ok(_) => {
+                    debug!(script = %name, "Script completed with failure status");
+                }
+                Err(e) => {
+                    debug!(script = %name, error = %e, "Script execution error");
+                }
+            }
+        }
+        if !results.is_empty() {
+            info!(count = results.len(), url = %url, "Triggered scripts executed");
         }
     }
 }
@@ -46,7 +95,12 @@ impl BrowserEngine for SevroEngineBackend {
                 url: url.to_string(),
                 reason: "Cancelled".to_string(),
             }),
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // Run any Rhai scripts triggered by this URL
+                let title = self.engine.current_url().unwrap_or("").to_string();
+                self.run_page_scripts(url, &title);
+                Ok(())
+            }
             Err(e) => Err(BrowserError::NavigationFailed {
                 url: url.to_string(),
                 reason: e,
@@ -148,7 +202,7 @@ impl BrowserEngine for SevroEngineBackend {
     async fn page_source(&self) -> BrowserResult<String> {
         self.engine.page_source()
             .map(|s| s.to_string())
-            .ok_or_else(|| BrowserError::CdpError("No page loaded".to_string()))
+            .ok_or_else(|| BrowserError::EngineError("No page loaded".to_string()))
     }
 
     async fn current_url(&self) -> Option<String> {

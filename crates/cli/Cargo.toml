@@ -9,8 +9,12 @@ description = "OpenClaw Browser — an AI-agent-first web browser written in Rus
 name = "openclaw-browser"
 path = "src/main.rs"
 
+[features]
+default = ["sevro"]
+sevro = ["openclaw-browser-core/sevro", "openclaw-mcp-server/sevro"]
+
 [dependencies]
-openclaw-browser-core = { path = "../browser-core" }
+openclaw-browser-core = { path = "../browser-core", default-features = false }
 openclaw-content-extract = { path = "../content-extract" }
 openclaw-identity = { path = "../identity" }
 openclaw-search = { path = "../search-engine" }
