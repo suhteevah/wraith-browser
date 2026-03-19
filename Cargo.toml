@@ -85,6 +85,7 @@ zeroize = { version = "1", features = ["derive"] }
 secrecy = { version = "0.10", features = ["serde"] }
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 dirs = "6"
+async-trait = "0.1"
 
 # Knowledge graph
 petgraph = "0.8"

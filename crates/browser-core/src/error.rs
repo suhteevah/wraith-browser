@@ -26,6 +26,7 @@ pub enum BrowserError {
     #[error("JavaScript evaluation failed: {0}")]
     JsEvalFailed(String),
 
+    #[cfg(feature = "chrome-legacy")]
     #[error(transparent)]
     Chrome(#[from] chromiumoxide::error::CdpError),
 

@@ -18,6 +18,10 @@ struct Cli {
     /// Enable verbose logging
     #[arg(short, long, global = true)]
     verbose: bool,
+
+    /// Browser engine: "auto", "native", "chrome"
+    #[arg(long, global = true, default_value = "auto")]
+    engine: String,
 }
 
 #[derive(Subcommand)]
@@ -256,29 +260,30 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Navigate { url, format } => {
             info!(url = %url, format = %format, "Navigating");
-            let config = openclaw_browser_core::BrowserConfig::default();
-            let session = openclaw_browser_core::BrowserSession::launch(config).await?;
-            let _tab_id = session.new_tab(&url).await?;
-            let tab = session.active_tab().await?;
+            let engine = openclaw_browser_core::engine::create_engine(&cli.engine).await?;
+            {
+                let mut eng = engine.lock().await;
+                eng.navigate(&url).await?;
 
-            match format.as_str() {
-                "snapshot" => {
-                    let snapshot = tab.snapshot().await?;
-                    println!("{}", snapshot.to_agent_text());
+                match format.as_str() {
+                    "snapshot" => {
+                        let snapshot = eng.snapshot().await?;
+                        println!("{}", snapshot.to_agent_text());
+                    }
+                    "markdown" => {
+                        let html = eng.page_source().await?;
+                        let content = openclaw_content_extract::extract(&html, &url)?;
+                        println!("{}", content.markdown);
+                    }
+                    "json" => {
+                        let snapshot = eng.snapshot().await?;
+                        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+                    }
+                    _ => anyhow::bail!("Unknown format: {}", format),
                 }
-                "markdown" => {
-                    let html = tab.page_source().await?;
-                    let content = openclaw_content_extract::extract(&html, &url)?;
-                    println!("{}", content.markdown);
-                }
-                "json" => {
-                    let snapshot = tab.snapshot().await?;
-                    println!("{}", serde_json::to_string_pretty(&snapshot)?);
-                }
-                _ => anyhow::bail!("Unknown format: {}", format),
+
+                eng.shutdown().await?;
             }
-
-            session.shutdown().await?;
         }
 
         Commands::Task { description, url, max_steps } => {
@@ -289,8 +294,7 @@ async fn main() -> anyhow::Result<()> {
                 .map(|v| v.to_lowercase() == "ollama")
                 .unwrap_or(false);
 
-            let config = openclaw_browser_core::BrowserConfig::default();
-            let session = openclaw_browser_core::BrowserSession::launch(config).await?;
+            let engine = openclaw_browser_core::engine::create_engine(&cli.engine).await?;
 
             let task = openclaw_agent_loop::BrowsingTask {
                 description: description.clone(),
@@ -327,7 +331,7 @@ async fn main() -> anyhow::Result<()> {
                 };
                 let backend = openclaw_agent_loop::llm::OllamaBackend::new()
                     .with_base_url(ollama_url);
-                let mut agent = openclaw_agent_loop::Agent::new(agent_config, session, backend);
+                let mut agent = openclaw_agent_loop::Agent::new(agent_config, engine.clone(), backend);
                 if let Some(c) = cache { agent = agent.with_cache(c); }
                 agent.run(task).await
             } else {
@@ -338,7 +342,7 @@ async fn main() -> anyhow::Result<()> {
                          or use OPENCLAW_LLM=ollama for local models."
                     ))?;
                 let backend = openclaw_agent_loop::llm::ClaudeBackend::new(api_key);
-                let mut agent = openclaw_agent_loop::Agent::new(agent_config, session, backend);
+                let mut agent = openclaw_agent_loop::Agent::new(agent_config, engine.clone(), backend);
                 if let Some(c) = cache { agent = agent.with_cache(c); }
                 agent.run(task).await
             };
@@ -369,17 +373,16 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Extract { url, max_tokens } => {
             info!(url = %url, "Extracting content");
-            let config = openclaw_browser_core::BrowserConfig::default();
-            let session = openclaw_browser_core::BrowserSession::launch(config).await?;
-            let _tab_id = session.new_tab(&url).await?;
-            let tab = session.active_tab().await?;
-            let html = tab.page_source().await?;
+            let engine = openclaw_browser_core::engine::create_engine(&cli.engine).await?;
+            let mut eng = engine.lock().await;
+            eng.navigate(&url).await?;
+            let html = eng.page_source().await?;
             let content = openclaw_content_extract::extract_budgeted(&html, &url, max_tokens)?;
             println!("# {}\n", content.title);
             println!("{}", content.markdown);
             println!("\n---\nTokens: ~{} | Links: {} | Confidence: {:.0}%",
                 content.estimated_tokens, content.links.len(), content.confidence * 100.0);
-            session.shutdown().await?;
+            eng.shutdown().await?;
         }
 
         // ═══════════════════════════════════════════════════════════

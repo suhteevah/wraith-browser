@@ -1,7 +1,6 @@
 //! MCP server handler — implements the rmcp ServerHandler trait.
 //! Wired to a real NativeClient for Chrome-free browsing.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::model::{
@@ -16,16 +15,16 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::{info, warn, debug};
 
-use openclaw_browser_core::NativeClient;
+use openclaw_browser_core::engine::BrowserEngine;
 use openclaw_browser_core::actions::{BrowserAction, ActionResult};
 
 use crate::tools::*;
 
-/// The Wraith MCP server handler — backed by a real NativeClient.
+/// The Wraith MCP server handler — backed by any BrowserEngine.
 pub struct WraithHandler {
     tools: Vec<Tool>,
-    /// The native browser client (shared, async-mutex for interior mutability)
-    browser: Arc<Mutex<NativeClient>>,
+    /// The browser engine (shared, async-mutex for interior mutability)
+    engine: Arc<Mutex<dyn BrowserEngine>>,
 }
 
 impl Default for WraithHandler {
@@ -87,19 +86,13 @@ impl WraithHandler {
                 &schema_for!(VaultGetInput), ro_closed),
         ];
 
-        info!(tool_count = tools.len(), "Wraith MCP handler initialized with NativeClient");
+        info!(tool_count = tools.len(), "Wraith MCP handler initialized");
 
-        // Create browser and load saved cookies
-        let mut browser = NativeClient::new();
-        let cookie_path = cookie_file_path();
-        if let Err(e) = browser.load_cookies(&cookie_path) {
-            warn!(error = %e, "Failed to load saved cookies (starting fresh)");
-        }
+        let engine: Arc<Mutex<dyn BrowserEngine>> = Arc::new(Mutex::new(
+            openclaw_browser_core::engine_native::NativeEngine::new()
+        ));
 
-        Self {
-            tools,
-            browser: Arc::new(Mutex::new(browser)),
-        }
+        Self { tools, engine }
     }
 
     /// Dispatch a tool call to the real browser.
@@ -115,27 +108,14 @@ impl WraithHandler {
                 let input: NavigateInput = parse_args(args)?;
                 info!(url = %input.url, "Navigating");
 
-                let mut browser = self.browser.lock().await;
-                let snapshot = browser.navigate(&input.url).await
+                let mut engine = self.engine.lock().await;
+                engine.navigate(&input.url).await
                     .map_err(|e| ErrorData::internal_error(format!("Navigation failed: {e}"), None))?;
 
-                // Auto-save cookies after navigation
-                let _ = browser.save_cookies(&cookie_file_path());
+                let snapshot = engine.snapshot().await
+                    .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?;
 
-                let agent_text = snapshot.to_agent_text();
-                let needs_js = browser.needs_javascript();
-
-                let mut response = agent_text;
-                if needs_js {
-                    response.push_str("\n\n⚠️ THIS PAGE REQUIRES JAVASCRIPT — content above may be incomplete or empty.\n");
-                    response.push_str("This is a JavaScript-rendered SPA (React/Next.js/Vue). Native mode cannot execute JS.\n\n");
-                    response.push_str("ALTERNATIVES:\n");
-                    response.push_str("  1. Try the site's API directly if available (many job sites have public APIs)\n");
-                    response.push_str("  2. Try a mobile/simplified version of the URL (add ?force_classic=true, m.site.com, etc.)\n");
-                    response.push_str("  3. Use browse_search to find the information via web search instead\n");
-                    response.push_str("  4. Look for the data in the HTML source — some SPAs embed JSON data in script tags\n");
-                }
-
+                let response = snapshot.to_agent_text();
                 Ok(CallToolResult::success(vec![Content::text(response)]))
             }
 
@@ -143,14 +123,14 @@ impl WraithHandler {
                 let input: ClickInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, "Clicking element");
 
-                let mut browser = self.browser.lock().await;
-                let result = browser.execute(BrowserAction::Click { ref_id: input.ref_id }).await
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id }).await
                     .map_err(|e| ErrorData::internal_error(format!("Click failed: {e}"), None))?;
 
                 match result {
                     ActionResult::Navigated { url: _, title: _ } => {
                         // After navigation from a click, return the new page snapshot
-                        let snapshot = browser.snapshot()
+                        let snapshot = engine.snapshot().await
                             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                         Ok(CallToolResult::success(vec![Content::text(snapshot.to_agent_text())]))
                     }
@@ -164,8 +144,8 @@ impl WraithHandler {
                 let input: FillInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, text_len = input.text.len(), "Filling field");
 
-                let mut browser = self.browser.lock().await;
-                let result = browser.execute(BrowserAction::Fill {
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::Fill {
                     ref_id: input.ref_id,
                     text: input.text,
                 }).await
@@ -176,8 +156,8 @@ impl WraithHandler {
 
             "browse_snapshot" => {
                 debug!("Taking DOM snapshot");
-                let browser = self.browser.lock().await;
-                let snapshot = browser.snapshot()
+                let engine = self.engine.lock().await;
+                let snapshot = engine.snapshot().await
                     .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?;
 
                 Ok(CallToolResult::success(vec![Content::text(snapshot.to_agent_text())]))
@@ -187,15 +167,15 @@ impl WraithHandler {
                 let input: ExtractInput = parse_args(args)?;
                 info!(max_tokens = ?input.max_tokens, "Extracting content");
 
-                let browser = self.browser.lock().await;
-                let html = browser.page_source()
+                let engine = self.engine.lock().await;
+                let html = engine.page_source().await
                     .map_err(|e| ErrorData::internal_error(format!("No page loaded: {e}"), None))?;
-                let url = browser.current_url().unwrap_or("");
+                let url = engine.current_url().await.unwrap_or_default();
 
                 let result = if let Some(max_tokens) = input.max_tokens {
-                    openclaw_content_extract::extract_budgeted(html, url, max_tokens)
+                    openclaw_content_extract::extract_budgeted(&html, &url, max_tokens)
                 } else {
-                    openclaw_content_extract::extract(html, url)
+                    openclaw_content_extract::extract(&html, &url)
                 };
 
                 match result {
@@ -259,9 +239,9 @@ impl WraithHandler {
             }
 
             "browse_tabs" => {
-                let browser = self.browser.lock().await;
-                let url = browser.current_url().unwrap_or("(no page loaded)");
-                let title = browser.snapshot()
+                let engine = self.engine.lock().await;
+                let url = engine.current_url().await.unwrap_or_else(|| "(no page loaded)".to_string());
+                let title = engine.snapshot().await
                     .map(|s| s.title.clone())
                     .unwrap_or_default();
 
@@ -276,13 +256,13 @@ impl WraithHandler {
             }
 
             "browse_back" => {
-                let mut browser = self.browser.lock().await;
-                let result = browser.execute(BrowserAction::GoBack).await
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::GoBack).await
                     .map_err(|e| ErrorData::internal_error(format!("Back failed: {e}"), None))?;
 
                 match result {
                     ActionResult::Navigated { .. } => {
-                        let snapshot = browser.snapshot()
+                        let snapshot = engine.snapshot().await
                             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                         Ok(CallToolResult::success(vec![Content::text(snapshot.to_agent_text())]))
                     }
@@ -294,15 +274,15 @@ impl WraithHandler {
                 let input: KeyPressInput = parse_args(args)?;
                 // In native mode, Enter on a form triggers submit
                 if input.key.eq_ignore_ascii_case("enter") {
-                    let mut browser = self.browser.lock().await;
+                    let mut engine = self.engine.lock().await;
                     // Get the current snapshot and find a submit button or regular button
-                    if let Ok(snapshot) = browser.snapshot() {
+                    if let Ok(snapshot) = engine.snapshot().await {
                         let submit_el = snapshot.elements.iter().find(|el| {
                             el.role == "submit" || el.role == "button"
                         });
                         if let Some(el) = submit_el {
                             let ref_id = el.ref_id;
-                            let result = browser.execute(BrowserAction::Click { ref_id }).await;
+                            let result = engine.execute_action(BrowserAction::Click { ref_id }).await;
                             if let Ok(r) = result {
                                 return Ok(CallToolResult::success(vec![Content::text(format_action_result(&r))]));
                             }
@@ -421,10 +401,4 @@ fn make_tool(
         .with_annotations(annotations)
 }
 
-/// Get the path for cookie persistence.
-fn cookie_file_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("wraith-browser")
-        .join("cookies.json")
-}
+// Cookie persistence is handled by the engine layer now.

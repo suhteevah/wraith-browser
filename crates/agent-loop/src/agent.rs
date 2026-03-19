@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use crate::{AgentConfig, BrowsingTask, error::AgentError, history::StepHistory, llm::LlmBackend};
-use openclaw_browser_core::BrowserSession;
+use openclaw_browser_core::engine::BrowserEngine;
 use openclaw_browser_core::actions::{BrowserAction, ScrollDirection};
 use tracing::{info, warn, debug, instrument};
 
@@ -24,10 +24,10 @@ pub enum ParsedAction {
     Fail(String),
 }
 
-/// The AI browsing agent. Owns a browser session and drives tasks to completion.
+/// The AI browsing agent. Owns a browser engine and drives tasks to completion.
 pub struct Agent<L: LlmBackend> {
     pub config: AgentConfig,
-    pub session: BrowserSession,
+    pub engine: Arc<tokio::sync::Mutex<dyn BrowserEngine>>,
     pub llm: L,
     pub history: StepHistory,
     /// Optional knowledge store for auto-caching visited pages.
@@ -35,10 +35,10 @@ pub struct Agent<L: LlmBackend> {
 }
 
 impl<L: LlmBackend> Agent<L> {
-    pub fn new(config: AgentConfig, session: BrowserSession, llm: L) -> Self {
+    pub fn new(config: AgentConfig, engine: Arc<tokio::sync::Mutex<dyn BrowserEngine>>, llm: L) -> Self {
         Self {
             config,
-            session,
+            engine,
             llm,
             history: StepHistory::new(),
             cache: None,
@@ -56,15 +56,7 @@ impl<L: LlmBackend> Agent<L> {
         let Some(ref cache) = self.cache else { return };
 
         // Get the page source for extraction
-        let tab = match self.session.active_tab().await {
-            Ok(t) => t,
-            Err(e) => {
-                debug!(error = %e, "Auto-cache: couldn't get active tab");
-                return;
-            }
-        };
-
-        let html = match tab.page_source().await {
+        let html = match self.engine.lock().await.page_source().await {
             Ok(h) => h,
             Err(e) => {
                 debug!(error = %e, "Auto-cache: couldn't get page source");
@@ -143,7 +135,7 @@ impl<L: LlmBackend> Agent<L> {
         // Navigate to start URL if provided
         if let Some(ref url) = task.start_url {
             info!(url = %url, "Navigating to start URL");
-            self.session.new_tab(url).await
+            self.engine.lock().await.navigate(url).await
                 .map_err(AgentError::Browser)?;
         }
 
@@ -151,9 +143,7 @@ impl<L: LlmBackend> Agent<L> {
             info!(step, total_steps = self.config.max_steps, "Agent step");
 
             // 1. OBSERVE — snapshot the current page state
-            let tab = self.session.active_tab().await
-                .map_err(AgentError::Browser)?;
-            let snapshot = tab.snapshot().await
+            let snapshot = self.engine.lock().await.snapshot().await
                 .map_err(AgentError::Browser)?;
 
             let observation = snapshot.to_agent_text();
@@ -214,70 +204,65 @@ impl<L: LlmBackend> Agent<L> {
         })
     }
 
-    /// Execute a parsed action against the browser.
-    async fn execute_action(&mut self, action: &ParsedAction) -> Result<(), AgentError> {
-        let mut tab = self.session.active_tab().await
-            .map_err(AgentError::Browser)?;
-
+    /// Execute a parsed action against the browser engine.
+    async fn execute_action(&self, action: &ParsedAction) -> Result<(), AgentError> {
         match action {
             ParsedAction::Navigate(url) => {
-                tab.navigate(url).await
+                self.engine.lock().await.navigate(url).await
                     .map_err(AgentError::Browser)?;
-                let title = tab.title.clone().unwrap_or_default();
-                self.auto_cache_page(url, &title).await;
+                self.auto_cache_page(url, "").await;
             }
             ParsedAction::Click(ref_id) => {
-                tab.execute(BrowserAction::Click { ref_id: *ref_id }).await
+                self.engine.lock().await.execute_action(BrowserAction::Click { ref_id: *ref_id }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Fill(ref_id, text) => {
-                tab.execute(BrowserAction::Fill {
+                self.engine.lock().await.execute_action(BrowserAction::Fill {
                     ref_id: *ref_id,
                     text: text.clone(),
                 }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Select(ref_id, value) => {
-                tab.execute(BrowserAction::Select {
+                self.engine.lock().await.execute_action(BrowserAction::Select {
                     ref_id: *ref_id,
                     value: value.clone(),
                 }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::ScrollDown(amount) => {
-                tab.execute(BrowserAction::Scroll {
+                self.engine.lock().await.execute_action(BrowserAction::Scroll {
                     direction: ScrollDirection::Down,
                     amount: *amount,
                 }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::ScrollUp(amount) => {
-                tab.execute(BrowserAction::Scroll {
+                self.engine.lock().await.execute_action(BrowserAction::Scroll {
                     direction: ScrollDirection::Up,
                     amount: *amount,
                 }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::KeyPress(key) => {
-                tab.execute(BrowserAction::KeyPress {
+                self.engine.lock().await.execute_action(BrowserAction::KeyPress {
                     key: key.clone(),
                 }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Back => {
-                tab.execute(BrowserAction::GoBack).await
+                self.engine.lock().await.execute_action(BrowserAction::GoBack).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Screenshot => {
-                tab.execute(BrowserAction::Screenshot { full_page: false }).await
+                self.engine.lock().await.execute_action(BrowserAction::Screenshot { full_page: false }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Extract => {
-                tab.execute(BrowserAction::ExtractContent).await
+                self.engine.lock().await.execute_action(BrowserAction::ExtractContent).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Search(_) => {
-                // Search is handled at orchestrator level, not browser action
                 debug!(action = ?action, "Search action (handled by orchestrator)");
             }
             ParsedAction::Done(_) | ParsedAction::Fail(_) => {

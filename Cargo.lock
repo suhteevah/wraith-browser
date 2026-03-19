@@ -2063,6 +2063,7 @@ name = "openclaw-agent-loop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "blake3",
  "chrono",
  "openclaw-browser-core",
@@ -2108,6 +2109,7 @@ name = "openclaw-browser-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "chromiumoxide",
  "chromiumoxide_cdp",

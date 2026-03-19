@@ -21,4 +21,5 @@ chrono.workspace = true
 uuid.workspace = true
 blake3.workspace = true
 url.workspace = true
+async-trait.workspace = true
 regex.workspace = true
