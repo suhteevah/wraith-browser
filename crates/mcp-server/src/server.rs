@@ -152,13 +152,40 @@ impl WraithHandler {
     }
 
     /// Build the default engine: Sevro → NativeEngine fallback.
+    /// Reads config from environment variables:
+    /// - `WRAITH_FLARESOLVERR` — FlareSolverr URL (e.g., "http://localhost:8191")
+    /// - `WRAITH_PROXY` — HTTP proxy URL
+    /// - `WRAITH_FALLBACK_PROXY` — Fallback proxy for IP bans
     fn default_engine() -> Arc<Mutex<dyn BrowserEngine>> {
         #[cfg(feature = "sevro")]
         {
+            let flaresolverr = std::env::var("WRAITH_FLARESOLVERR").ok();
+            let proxy = std::env::var("WRAITH_PROXY").ok();
+            let fallback_proxy = std::env::var("WRAITH_FALLBACK_PROXY").ok();
+
+            if flaresolverr.is_some() {
+                info!(solver = ?flaresolverr, "FlareSolverr configured via WRAITH_FLARESOLVERR");
+            }
+            if proxy.is_some() {
+                info!(proxy = ?proxy, "Proxy configured via WRAITH_PROXY");
+            }
+
+            // Use the engine factory which handles SevroConfig internally
+            let opts = openclaw_browser_core::engine::EngineOptions {
+                proxy_url: proxy,
+                flaresolverr_url: flaresolverr,
+                fallback_proxy_url: fallback_proxy,
+            };
+
             info!("Using Sevro engine (default)");
-            return Arc::new(Mutex::new(
-                openclaw_browser_core::engine_sevro::SevroEngineBackend::new()
-            ));
+            // create_engine_with_options is async but we need sync here;
+            // construct directly instead
+            let mut config = openclaw_browser_core::config::BrowserConfig::default();
+            let _ = config; // suppress unused
+
+            // Direct construction via SevroEngineBackend
+            use openclaw_browser_core::engine_sevro::SevroEngineBackend;
+            return Arc::new(Mutex::new(SevroEngineBackend::new_with_options(opts)));
         }
         #[cfg(not(feature = "sevro"))]
         {

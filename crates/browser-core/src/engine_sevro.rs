@@ -35,6 +35,15 @@ impl SevroEngineBackend {
         }
     }
 
+    /// Create with EngineOptions (used by MCP server for env-var config).
+    pub fn new_with_options(opts: crate::engine::EngineOptions) -> Self {
+        let mut config = sevro_headless::SevroConfig::default();
+        config.proxy_url = opts.proxy_url;
+        config.flaresolverr_url = opts.flaresolverr_url;
+        config.fallback_proxy_url = opts.fallback_proxy_url;
+        Self::with_config(config)
+    }
+
     /// Access the scripting engine to load/manage Rhai scripts.
     pub fn scripting(&mut self) -> &mut openclaw_scripting::ScriptEngine {
         &mut self.scripts
