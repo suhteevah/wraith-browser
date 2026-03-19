@@ -72,7 +72,7 @@ impl WraithHandler {
                 &schema_for!(SearchInput), ro_open),
             make_tool("browse_eval_js",
                 "Execute JavaScript code on the current page and return the result.",
-                &schema_for!(EvalJsInput), rw_destructive),
+                &schema_for!(EvalJsInput), rw_destructive.clone()),
             make_tool("browse_tabs",
                 "Show the current page URL and title.",
                 &schema_for!(TabsInput), ro_closed.clone()),
@@ -81,16 +81,70 @@ impl WraithHandler {
                 &schema_for!(BackInput), rw_open.clone()),
             make_tool("browse_key_press",
                 "Press a keyboard key on the current page.",
-                &schema_for!(KeyPressInput), rw_open),
+                &schema_for!(KeyPressInput), rw_open.clone()),
             make_tool("browse_scroll",
                 "Scroll the current page up or down.",
                 &schema_for!(ScrollInput), rw_closed.clone()),
             make_tool("browse_vault_store",
                 "Store a credential (password, API key, token) in the encrypted vault.",
-                &schema_for!(VaultStoreInput), rw_closed),
+                &schema_for!(VaultStoreInput), rw_closed.clone()),
             make_tool("browse_vault_get",
                 "Retrieve a credential from the encrypted vault for a given domain.",
-                &schema_for!(VaultGetInput), ro_closed),
+                &schema_for!(VaultGetInput), ro_closed.clone()),
+            make_tool("browse_vault_list",
+                "List all stored credentials (secrets stay encrypted, only shows domain/identity/kind).",
+                &schema_for!(VaultListInput), ro_closed.clone()),
+            make_tool("browse_vault_delete",
+                "Delete a credential by ID from the encrypted vault.",
+                &schema_for!(VaultDeleteInput), rw_destructive.clone()),
+            make_tool("browse_vault_totp",
+                "Generate a current TOTP 2FA code for a domain.",
+                &schema_for!(VaultTotpInput), ro_closed.clone()),
+            make_tool("browse_vault_rotate",
+                "Rotate a credential's secret value.",
+                &schema_for!(VaultRotateInput), rw_closed.clone()),
+            make_tool("browse_vault_audit",
+                "View recent vault audit log entries.",
+                &schema_for!(VaultAuditInput), ro_closed.clone()),
+            make_tool("browse_select",
+                "Select a dropdown option by @ref ID and value.",
+                &schema_for!(SelectInput), rw_open.clone()),
+            make_tool("browse_type",
+                "Type text into an element with realistic keystroke delays (for bot detection evasion).",
+                &schema_for!(TypeTextInput), rw_open.clone()),
+            make_tool("browse_hover",
+                "Hover over an element by @ref ID.",
+                &schema_for!(HoverInput), rw_open.clone()),
+            make_tool("browse_wait",
+                "Wait for a CSS selector to appear or a fixed time in milliseconds.",
+                &schema_for!(WaitInput), ro_closed.clone()),
+            make_tool("browse_forward",
+                "Go forward in browser history.",
+                &schema_for!(ForwardInput), rw_open.clone()),
+            make_tool("browse_reload",
+                "Reload the current page.",
+                &schema_for!(ReloadInput), rw_open.clone()),
+            make_tool("browse_task",
+                "Run an autonomous multi-step browsing task using the AI agent loop.",
+                &schema_for!(TaskInput), rw_open.clone()),
+            make_tool("cache_search",
+                "Search the knowledge cache for previously visited pages.",
+                &schema_for!(CacheSearchInput), ro_closed.clone()),
+            make_tool("cache_get",
+                "Check if a URL is in the knowledge cache and return cached content.",
+                &schema_for!(CacheGetInput), ro_closed.clone()),
+            make_tool("script_load",
+                "Load a Rhai userscript that triggers on navigation or manually.",
+                &schema_for!(ScriptLoadInput), rw_closed.clone()),
+            make_tool("script_list",
+                "List all loaded Rhai userscripts.",
+                &schema_for!(ScriptListInput), ro_closed.clone()),
+            make_tool("script_run",
+                "Run a loaded Rhai script by name against the current page.",
+                &schema_for!(ScriptRunInput), rw_closed.clone()),
+            make_tool("browse_config",
+                "Show current engine configuration (engine type, proxy, stealth status).",
+                &schema_for!(ConfigInput), ro_closed),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -366,17 +420,7 @@ impl WraithHandler {
                 let input: VaultStoreInput = parse_args(args)?;
                 info!(domain = %input.domain, kind = %input.kind, "Storing credential");
 
-                let vault_path = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw")
-                    .join("vault.db");
-
-                let vault = openclaw_identity::CredentialVault::open(&vault_path)
-                    .map_err(|e| ErrorData::internal_error(format!("Vault open failed: {e}"), None))?;
-
-                // Auto-unlock with empty passphrase for MCP mode
-                // (the vault creates itself on first use)
-                let _ = vault.unlock(&secrecy::SecretString::from("".to_string()));
+                let vault = open_vault()?;
 
                 let kind = match input.kind.to_lowercase().as_str() {
                     "password" => openclaw_identity::CredentialKind::Password,
@@ -416,15 +460,7 @@ impl WraithHandler {
                 let input: VaultGetInput = parse_args(args)?;
                 info!(domain = %input.domain, "Retrieving credential");
 
-                let vault_path = dirs::home_dir()
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw")
-                    .join("vault.db");
-
-                let vault = openclaw_identity::CredentialVault::open(&vault_path)
-                    .map_err(|e| ErrorData::internal_error(format!("Vault open failed: {e}"), None))?;
-
-                let _ = vault.unlock(&secrecy::SecretString::from("".to_string()));
+                let vault = open_vault()?;
 
                 let kind = input.kind.as_deref().map(|k| match k.to_lowercase().as_str() {
                     "password" => openclaw_identity::CredentialKind::Password,
@@ -450,6 +486,247 @@ impl WraithHandler {
                         )]))
                     }
                 }
+            }
+
+            // === Vault: list, delete, totp, rotate, audit ===
+
+            "browse_vault_list" => {
+                let vault = open_vault()?;
+                match vault.list_credentials() {
+                    Ok(creds) => {
+                        if creds.is_empty() {
+                            Ok(CallToolResult::success(vec![Content::text("No credentials stored.")]))
+                        } else {
+                            let mut out = format!("{} credential(s):\n\n", creds.len());
+                            for c in &creds {
+                                out.push_str(&format!("  {} | {} | {:?} | {} | {} uses\n",
+                                    &c.id[..8], c.domain, c.kind, c.identity, c.use_count));
+                            }
+                            Ok(CallToolResult::success(vec![Content::text(out)]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Vault list failed: {e}"))]))
+                }
+            }
+
+            "browse_vault_delete" => {
+                let input: VaultDeleteInput = parse_args(args)?;
+                let vault = open_vault()?;
+                match vault.delete(&input.id) {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Credential {} deleted.", input.id))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Delete failed: {e}"))]))
+                }
+            }
+
+            "browse_vault_totp" => {
+                let input: VaultTotpInput = parse_args(args)?;
+                let vault = open_vault()?;
+                match vault.generate_totp(&input.domain) {
+                    Ok(code) => Ok(CallToolResult::success(vec![Content::text(format!("TOTP code for {}: {}", input.domain, code))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("TOTP generation failed: {e}"))]))
+                }
+            }
+
+            "browse_vault_rotate" => {
+                let input: VaultRotateInput = parse_args(args)?;
+                let vault = open_vault()?;
+                let new_secret = secrecy::SecretString::from(input.new_secret);
+                match vault.rotate(&input.id, &new_secret) {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Credential {} rotated.", input.id))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Rotate failed: {e}"))]))
+                }
+            }
+
+            "browse_vault_audit" => {
+                let input: VaultAuditInput = parse_args(args)?;
+                let vault = open_vault()?;
+                let limit = input.limit.unwrap_or(20);
+                match vault.audit_history(limit) {
+                    Ok(entries) => {
+                        if entries.is_empty() {
+                            Ok(CallToolResult::success(vec![Content::text("No audit log entries.")]))
+                        } else {
+                            let mut out = format!("{} audit entries:\n\n", entries.len());
+                            for e in &entries {
+                                out.push_str(&format!("  {} | {} | {} | {}\n",
+                                    e.timestamp, e.action,
+                                    e.domain.as_deref().unwrap_or("-"),
+                                    if e.success { "OK" } else { "FAIL" }));
+                            }
+                            Ok(CallToolResult::success(vec![Content::text(out)]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Audit failed: {e}"))]))
+                }
+            }
+
+            // === Browser actions: select, type, hover, wait, forward, reload ===
+
+            "browse_select" => {
+                let input: SelectInput = parse_args(args)?;
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::Select { ref_id: input.ref_id, value: input.value }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Select failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            "browse_type" => {
+                let input: TypeTextInput = parse_args(args)?;
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::TypeText {
+                    ref_id: input.ref_id,
+                    text: input.text,
+                    delay_ms: input.delay_ms.unwrap_or(50),
+                }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Type failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            "browse_hover" => {
+                let input: HoverInput = parse_args(args)?;
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::Hover { ref_id: input.ref_id }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Hover failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            "browse_wait" => {
+                let input: WaitInput = parse_args(args)?;
+                let mut engine = self.engine.lock().await;
+                if let Some(selector) = input.selector {
+                    let result = engine.execute_action(BrowserAction::WaitForSelector {
+                        selector,
+                        timeout_ms: input.ms.unwrap_or(5000),
+                    }).await
+                        .map_err(|e| ErrorData::internal_error(format!("Wait failed: {e}"), None))?;
+                    Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+                } else {
+                    let ms = input.ms.unwrap_or(1000);
+                    let result = engine.execute_action(BrowserAction::Wait { ms }).await
+                        .map_err(|e| ErrorData::internal_error(format!("Wait failed: {e}"), None))?;
+                    Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+                }
+            }
+
+            "browse_forward" => {
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::GoForward).await
+                    .map_err(|e| ErrorData::internal_error(format!("Forward failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            "browse_reload" => {
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::Reload).await
+                    .map_err(|e| ErrorData::internal_error(format!("Reload failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            // === Agent task ===
+
+            "browse_task" => {
+                let input: TaskInput = parse_args(args)?;
+                info!(task = %input.description, "Running autonomous task");
+
+                let api_key = std::env::var("ANTHROPIC_API_KEY")
+                    .or_else(|_| std::env::var("CLAUDE_API_KEY"))
+                    .map_err(|_| ErrorData::internal_error(
+                        "No API key — set ANTHROPIC_API_KEY or CLAUDE_API_KEY", None
+                    ))?;
+
+                let backend = openclaw_agent_loop::llm::ClaudeBackend::new(api_key);
+                let config = openclaw_agent_loop::AgentConfig {
+                    max_steps: input.max_steps.unwrap_or(50),
+                    ..Default::default()
+                };
+
+                let task = openclaw_agent_loop::BrowsingTask {
+                    description: input.description,
+                    start_url: input.url,
+                    timeout_secs: None,
+                    context: None,
+                };
+
+                let mut agent = openclaw_agent_loop::Agent::new(config, self.engine.clone(), backend);
+                match agent.run(task).await {
+                    Ok(output) => Ok(CallToolResult::success(vec![Content::text(output)])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Task failed: {e}"))]))
+                }
+            }
+
+            // === Cache ===
+
+            "cache_search" => {
+                let input: CacheSearchInput = parse_args(args)?;
+                let cache_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw").join("knowledge");
+
+                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    Ok(store) => {
+                        let max = input.max_results.unwrap_or(10);
+                        match store.search_knowledge(&input.query, max) {
+                            Ok(results) => {
+                                if results.is_empty() {
+                                    Ok(CallToolResult::success(vec![Content::text("No cached results found.")]))
+                                } else {
+                                    let mut out = format!("{} results:\n\n", results.len());
+                                    for r in &results {
+                                        out.push_str(&format!("  {} — {}\n    {}\n\n",
+                                            r.title, r.url, r.snippet.get(..200).unwrap_or(&r.snippet)));
+                                    }
+                                    Ok(CallToolResult::success(vec![Content::text(out)]))
+                                }
+                            }
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Search failed: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache not available: {e}"))]))
+                }
+            }
+
+            "cache_get" => {
+                let input: CacheGetInput = parse_args(args)?;
+                let cache_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw").join("knowledge");
+
+                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    Ok(store) => {
+                        match store.get_page(&input.url) {
+                            Ok(Some(page)) => {
+                                Ok(CallToolResult::success(vec![Content::text(
+                                    format!("Cached: {} ({})\nFetched: {}\nStale: {}\nTokens: ~{}",
+                                        page.title, page.url, page.last_fetched,
+                                        store.is_stale(&page), page.token_count)
+                                )]))
+                            }
+                            Ok(None) => Ok(CallToolResult::success(vec![Content::text("URL not in cache.")])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache not available: {e}"))]))
+                }
+            }
+
+            // === Scripting ===
+
+            "script_load" | "script_list" | "script_run" => {
+                Ok(CallToolResult::success(vec![Content::text(
+                    "Scripting tools require the Sevro engine with scripting support. \
+                     Scripts are loaded via the engine's scripting() API."
+                )]))
+            }
+
+            // === Config ===
+
+            "browse_config" => {
+                let engine = self.engine.lock().await;
+                let caps = engine.capabilities();
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Engine capabilities:\n  JavaScript: {}\n  Screenshots: {:?}\n  Layout: {}\n  Cookies: {}\n  Stealth: {}",
+                        caps.javascript, caps.screenshots, caps.layout, caps.cookies, caps.stealth)
+                )]))
             }
 
             _ => {
@@ -502,6 +779,20 @@ impl ServerHandler for WraithHandler {
     fn get_tool(&self, name: &str) -> Option<Tool> {
         self.tools.iter().find(|t| t.name == name).cloned()
     }
+}
+
+/// Open and auto-unlock the vault for MCP operations.
+fn open_vault() -> Result<openclaw_identity::CredentialVault, ErrorData> {
+    let vault_path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".openclaw")
+        .join("vault.db");
+
+    let vault = openclaw_identity::CredentialVault::open(&vault_path)
+        .map_err(|e| ErrorData::internal_error(format!("Vault open failed: {e}"), None))?;
+
+    let _ = vault.unlock(&secrecy::SecretString::from("".to_string()));
+    Ok(vault)
 }
 
 /// Parse JSON args into a typed input, returning ErrorData on failure.

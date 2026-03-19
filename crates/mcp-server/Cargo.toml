@@ -14,6 +14,7 @@ openclaw-browser-core = { path = "../browser-core", default-features = false }
 base64.workspace = true
 openclaw-content-extract = { path = "../content-extract" }
 openclaw-identity = { path = "../identity" }
+openclaw-cache = { path = "../cache" }
 openclaw-search = { path = "../search-engine" }
 openclaw-agent-loop = { path = "../agent-loop" }
 secrecy = { workspace = true }

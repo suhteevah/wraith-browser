@@ -125,3 +125,134 @@ pub struct VaultGetInput {
     /// Optional credential type filter
     pub kind: Option<String>,
 }
+
+/// Tool: list all stored credentials (secrets stay encrypted)
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VaultListInput {}
+
+/// Tool: delete a credential by ID
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VaultDeleteInput {
+    /// Credential ID to delete
+    pub id: String,
+}
+
+/// Tool: generate a TOTP 2FA code
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VaultTotpInput {
+    /// Domain to generate TOTP code for
+    pub domain: String,
+}
+
+/// Tool: rotate a credential's secret
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VaultRotateInput {
+    /// Credential ID to rotate
+    pub id: String,
+    /// New secret value
+    pub new_secret: String,
+}
+
+/// Tool: view vault audit log
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VaultAuditInput {
+    /// Number of entries to show (default: 20)
+    pub limit: Option<usize>,
+}
+
+/// Tool: run an autonomous browsing task
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskInput {
+    /// Task description for the AI agent
+    pub description: String,
+    /// Starting URL (optional)
+    pub url: Option<String>,
+    /// Maximum steps (default: 50)
+    pub max_steps: Option<usize>,
+}
+
+/// Tool: search the knowledge cache
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CacheSearchInput {
+    /// Search query
+    pub query: String,
+    /// Maximum results (default: 10)
+    pub max_results: Option<usize>,
+}
+
+/// Tool: check if a URL is cached
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CacheGetInput {
+    /// URL to check
+    pub url: String,
+}
+
+/// Tool: select a dropdown option
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SelectInput {
+    /// Element ref ID from snapshot
+    pub ref_id: u32,
+    /// Value to select
+    pub value: String,
+}
+
+/// Tool: type text with realistic delays
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TypeTextInput {
+    /// Element ref ID from snapshot
+    pub ref_id: u32,
+    /// Text to type
+    pub text: String,
+    /// Delay between keystrokes in ms (default: 50)
+    pub delay_ms: Option<u32>,
+}
+
+/// Tool: hover over an element
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HoverInput {
+    /// Element ref ID from snapshot
+    pub ref_id: u32,
+}
+
+/// Tool: wait for a condition
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WaitInput {
+    /// CSS selector to wait for (optional)
+    pub selector: Option<String>,
+    /// Milliseconds to wait (default: 1000)
+    pub ms: Option<u64>,
+}
+
+/// Tool: reload the current page
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReloadInput {}
+
+/// Tool: go forward in browser history
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ForwardInput {}
+
+/// Tool: load a Rhai userscript
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScriptLoadInput {
+    /// Script name
+    pub name: String,
+    /// Rhai source code
+    pub source: String,
+    /// Trigger: "always", "manual", or a URL pattern for on_navigate
+    pub trigger: Option<String>,
+}
+
+/// Tool: list loaded scripts
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScriptListInput {}
+
+/// Tool: run a script by name
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScriptRunInput {
+    /// Script name to execute
+    pub name: String,
+}
+
+/// Tool: get engine configuration and status
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConfigInput {}
