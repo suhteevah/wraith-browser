@@ -10,6 +10,7 @@ rusqlite.workspace = true
 tantivy.workspace = true
 blake3.workspace = true
 flate2.workspace = true
+zstd.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 serde.workspace = true

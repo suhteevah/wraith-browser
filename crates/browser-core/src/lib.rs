@@ -36,6 +36,7 @@ pub mod vision;
 pub mod stealth_evasions;
 pub mod tor;
 pub mod telemetry;
+pub mod stealth_http;
 
 // Re-exports
 pub use engine::{BrowserEngine, EngineCapabilities, ScreenshotCapability};

@@ -9,6 +9,7 @@ description = "Core browser control — unified BrowserEngine trait with multipl
 default = ["chrome-legacy"]
 chrome-legacy = ["dep:chromiumoxide", "dep:chromiumoxide_cdp"]
 sevro = ["dep:sevro-headless"]
+stealth-tls = ["dep:rquest"]
 
 [dependencies]
 chromiumoxide = { workspace = true, optional = true }
@@ -30,3 +31,4 @@ scraper.workspace = true
 regex.workspace = true
 rand.workspace = true
 async-trait.workspace = true
+rquest = { workspace = true, optional = true }

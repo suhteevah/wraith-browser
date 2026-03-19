@@ -88,6 +88,12 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 dirs = "6"
 async-trait = "0.1"
 
+# TLS fingerprint-matching HTTP client (BoringSSL, browser impersonation)
+rquest = { version = "5.1", features = ["cookies", "gzip", "brotli"] }
+
+# Fast compression (replaces gzip/flate2)
+zstd = "0.13"
+
 # Knowledge graph
 petgraph = "0.8"
 
