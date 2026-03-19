@@ -59,6 +59,7 @@ pub fn decompress(data: &[u8]) -> CacheResult<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn test_zstd_roundtrip() {

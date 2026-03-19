@@ -94,6 +94,9 @@ rquest = { version = "5.1", features = ["cookies", "gzip", "brotli"] }
 # Fast compression (replaces gzip/flate2)
 zstd = "0.13"
 
+# Embeddable JS engine (QuickJS via Rust FFI)
+rquickjs = { version = "0.11", features = ["classes", "properties", "futures", "macro"] }
+
 # Knowledge graph
 petgraph = "0.8"
 
