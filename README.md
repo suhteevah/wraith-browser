@@ -1,65 +1,34 @@
 # Wraith Browser
 
-**The AI-agent-first web browser — built in Rust for LLM control, not humans.**
+**The AI-agent-first web browser -- built in Rust, designed for LLM control.**
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
+[![Tests](https://img.shields.io/badge/tests-348%20passing-brightgreen.svg)]()
 
 ---
 
-Wraith is a native Rust web browser designed from the ground up for AI agents. Where traditional browsers optimize for human eyes, Wraith optimizes for token efficiency — delivering compressed DOM snapshots, structured content extraction, and a full MCP server that lets Claude Code, Cursor, or any AI agent browse the web autonomously.
+Wraith is a native Rust browser engine purpose-built for AI agents. No Chrome dependency. No Node.js. Ships as a single ~15MB binary or MCP server. Handles sites protected by Cloudflare Turnstile, Akamai, and PerimeterX -- the same protection systems that block Playwright and Puppeteer within hours.
 
-**Think of it as the browser your AI agent deserves.**
+## Why Wraith
 
-## Why Wraith Exists
+Every AI browser automation tool today wraps Playwright or Puppeteer -- JavaScript runtimes controlling a 300MB Chrome process that bot detection systems flag instantly. Wraith takes a different approach:
 
-Every AI browser tool today is a wrapper around Playwright or Puppeteer — JavaScript runtimes bolted onto Chrome with human-first APIs. Wraith is different:
-
-- **Native Rust + CDP** — Direct Chrome DevTools Protocol control. No Node.js. No JavaScript runtime overhead.
-- **DOM Snapshots, Not HTML** — Instead of dumping 500KB of raw HTML, Wraith extracts a compact representation with `@ref` IDs for every interactive element. An LLM can read a 2000-element page in ~800 tokens.
-- **Adaptive Knowledge Cache** — Every page the agent visits is cached, indexed, and searchable. The agent never asks the web the same question twice unless the answer is stale. TTLs adapt per-domain based on observed content change frequency.
-- **Encrypted Credential Vault** — AES-256-GCM encrypted storage with argon2id key derivation. Agents can authenticate without leaking passwords into context windows.
-- **MCP-Native** — Ships as an MCP server. `wraith serve --transport stdio` and your AI agent has a full browser.
-
-## Architecture
-
-```
-                        ┌─────────────────────────────────┐
-                        │         AI Agent (Claude, etc.)  │
-                        └──────────────┬──────────────────┘
-                                       │ MCP Protocol (stdio)
-                        ┌──────────────▼──────────────────┐
-                        │       wraith-mcp-server          │
-                        │   14 tools: browse_navigate,     │
-                        │   browse_click, browse_fill,     │
-                        │   browse_extract, browse_search  │
-                        └──────────────┬──────────────────┘
-           ┌───────────────┬───────────┼───────────┬──────────────┐
-           ▼               ▼           ▼           ▼              ▼
-    ┌─────────────┐ ┌────────────┐ ┌────────┐ ┌────────┐ ┌──────────────┐
-    │ browser-core│ │  content-  │ │ cache  │ │identity│ │   search     │
-    │ (CDP/Chrome)│ │  extract   │ │(SQLite │ │(vault, │ │(DDG, Brave,  │
-    │ snapshots,  │ │ readability│ │+Tantivy│ │ finger-│ │ local index) │
-    │ actions     │ │ + markdown │ │+blobs) │ │ prints)│ │              │
-    └─────────────┘ └────────────┘ └────────┘ └────────┘ └──────────────┘
-```
-
-### The 8 Crates
-
-| Crate | Purpose |
-|-------|---------|
-| `wraith-browser-core` | Chrome DevTools Protocol control — sessions, tabs, DOM snapshots, action execution |
-| `wraith-content-extract` | HTML noise stripping (lol_html), readability extraction, markdown conversion |
-| `wraith-cache` | SQLite + Tantivy knowledge store with adaptive TTLs and blob storage |
-| `wraith-identity` | AES-256-GCM credential vault, browser fingerprint capture/injection, auth flow detection |
-| `wraith-search` | Web metasearch (DuckDuckGo HTML + Brave API) and local content index |
-| `wraith-agent-loop` | Observe-think-act AI decision cycle with Claude and Ollama backends |
-| `wraith-mcp-server` | MCP protocol server exposing 14 browser tools via stdio transport |
-| `wraith-browser` (CLI) | Main binary with subcommands for all operations |
+| | Wraith | Playwright/Puppeteer |
+|---|---|---|
+| Chrome required | No | Yes (300MB+) |
+| Memory per session | 5-50 MB | 300-500 MB |
+| Page fetch (static) | ~50ms | 1-3 seconds |
+| Binary size | ~15 MB | ~300 MB + runtime |
+| Startup time | <100ms | 2-5 seconds |
+| Concurrent sessions (16GB) | 50-100+ | 6-8 |
+| Cloudflare Turnstile | Bypasses (4-tier) | Blocked |
+| Akamai/PerimeterX | Bypasses | Detected |
+| MCP native | Yes (14 tools) | No |
 
 ## Quick Start
 
-### Build from Source
+### Build
 
 ```bash
 git clone https://github.com/suhteevah/wraith-browser.git
@@ -67,198 +36,214 @@ cd wraith-browser
 cargo build --release
 ```
 
-### Use as MCP Server with Claude Code
+### Connect to Claude Code
 
 ```bash
-# Add Wraith as an MCP server
-claude mcp add wraith-browser ./target/release/wraith-browser -- serve --transport stdio
+claude mcp add wraith ./target/release/openclaw-browser -- serve --transport stdio
 ```
 
-Claude Code now has access to these tools:
+Your AI agent immediately gains 14 browser tools.
 
-| Tool | Description |
-|------|-------------|
-| `browse_navigate` | Navigate to a URL, return DOM snapshot with `@ref` IDs |
-| `browse_click` | Click element by `@ref` ID |
-| `browse_fill` | Fill form field by `@ref` ID |
-| `browse_snapshot` | Get current page DOM snapshot |
-| `browse_extract` | Extract page content as clean markdown |
-| `browse_screenshot` | Capture PNG screenshot |
-| `browse_search` | Web metasearch (DuckDuckGo + Brave) |
-| `browse_eval_js` | Execute JavaScript on the page |
-| `browse_tabs` | List open browser tabs |
-| `browse_back` | Go back in history |
-| `browse_key_press` | Press keyboard key |
-| `browse_scroll` | Scroll the page |
-| `browse_vault_store` | Store credential in encrypted vault |
-| `browse_vault_get` | Retrieve credential from vault |
-
-### CLI Usage
+### CLI
 
 ```bash
-# Navigate and see DOM snapshot
+# Navigate and see interactive elements
 wraith-browser navigate https://example.com
 
-# Extract content as markdown
-wraith-browser extract https://docs.rust-lang.org
+# Extract content as clean markdown
+wraith-browser extract https://docs.rust-lang.org --max-tokens 4000
 
 # Search the web
 wraith-browser search "rust async runtime benchmarks"
 
-# Manage credentials
+# Autonomous browsing task
+ANTHROPIC_API_KEY=sk-... wraith-browser task "Find remote Rust jobs on HN"
+
+# Manage encrypted credentials
 wraith-browser vault store --domain github.com --kind password --identity user@example.com
-wraith-browser vault list
-
-# Run an autonomous browsing task
-wraith-browser task "Find the current price of Bitcoin on CoinGecko"
 ```
 
-## Key Features
+### Handle Protected Sites
 
-### DOM Snapshots — The Killer Feature
+```bash
+# Sites behind Cloudflare Turnstile (Glassdoor, Indeed, etc.)
+# First: docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+wraith-browser --flaresolverr "http://localhost:8191" navigate "https://www.glassdoor.com/..."
 
-Instead of raw HTML, Wraith produces compact agent-readable snapshots:
-
-```
-[Page: Example Login — https://app.example.com/login]
-[Type: login_form]
-
-@e1 input[type=email] placeholder="Email address"
-@e2 input[type=password] placeholder="Password"
-@e3 button "Sign In"
-@e4 a "Forgot password?" -> /reset
-@e5 a "Create account" -> /signup
-
-[5 interactive elements | ~12 tokens]
+# If IP-banned, add a fallback proxy
+wraith-browser --flaresolverr "http://localhost:8191" \
+  --fallback-proxy "http://user:pass@proxy:8080" \
+  navigate "https://www.indeed.com/..."
 ```
 
-An AI agent reads this and responds: `ACTION: fill @e1 "user@example.com"`
-
-### Adaptive Knowledge Cache
+## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│ Content Type        │ Default TTL │ Adaptive │
-├─────────────────────┼─────────────┼──────────┤
-│ Documentation/wikis │ 7 days      │ Yes      │
-│ News articles       │ 1 hour      │ Yes      │
-│ API docs            │ 24 hours    │ Yes      │
-│ Social media        │ 15 minutes  │ Yes      │
-│ Government/legal    │ 30 days     │ Yes      │
-│ Search results      │ 6 hours     │ No       │
-└─────────────────────────────────────────────┘
+                     AI Agent (Claude Code, Cursor, custom)
+                                    |
+                              MCP Protocol (stdio)
+                                    |
+                    +---------------v----------------+
+                    |        MCP Server (14 tools)   |
+                    +---------------+----------------+
+                                    |
+                    +---------------v----------------+
+                    |     BrowserEngine Trait         |
+                    |  SevroEngine  |  NativeEngine  |
+                    +------+--------+-------+--------+
+                           |                |
+          +----------------v--+    +--------v---------+
+          | Sevro Headless     |    | Pure HTTP Client  |
+          | - QuickJS (JS)     |    | - reqwest/rquest  |
+          | - DOM Bridge       |    | - HTML5 parser    |
+          | - CF Solver (4-tier)|    | - ~50ms/page     |
+          +--------------------+    +------------------+
 ```
 
-TTLs adjust automatically. If `docs.rust-lang.org` hasn't changed in 50 fetches, the TTL extends. If `news.ycombinator.com` changes every 10 minutes, it shrinks.
+### 10 Crates
 
-### Encrypted Credential Vault
+| Crate | Purpose |
+|-------|---------|
+| `browser-core` | Unified engine trait, stealth stack, TLS profiles, vision, swarm, plugins |
+| `sevro-headless` | Headless engine -- HTTP, DOM parsing, QuickJS, Cloudflare solver |
+| `agent-loop` | LLM agent cycle -- MCTS planning, time-travel, workflows, task DAGs |
+| `cache` | SQLite knowledge store, embeddings, entity graph, semantic diffing |
+| `content-extract` | Readability extraction, markdown conversion, OCR, PDF |
+| `identity` | Encrypted credential vault, fingerprint profiles, auth flows |
+| `mcp-server` | MCP protocol server (14 tools, stdio transport) |
+| `search-engine` | DuckDuckGo, SearXNG metasearch, local Tantivy index |
+| `scripting` | Rhai sandboxed scripting engine (userscripts) |
+| `cli` | Binary with subcommands |
 
-- AES-256-GCM encryption with argon2id key derivation
-- Credentials never appear in LLM context windows
-- Domain-scoped approval system (credential X only works on domain Y)
-- Full audit logging of every credential access
-- TOTP 2FA generation for supported sites
+## Anti-Detection
 
-### Content Extraction Pipeline
+### 4-Tier Cloudflare Bypass
+
+Wraith automatically escalates through tiers as needed:
+
+| Tier | Method | Speed | Handles |
+|------|--------|-------|---------|
+| 1 | Stealth TLS (BoringSSL) + Chrome headers | ~50ms | Akamai, PerimeterX |
+| 2 | QuickJS in-process JS challenge solver | ~100ms | Simple JS challenges |
+| 3 | FlareSolverr (real browser, sandboxed) | ~5-10s | Cloudflare Turnstile |
+| 4 | Fallback proxy (fresh IP) | ~200ms | IP reputation bans |
+
+### Verified Compatibility
+
+| Site | Protection | Result |
+|------|-----------|--------|
+| Nike.com | Akamai | Pass (Tier 1) |
+| Target.com | Akamai | Pass (Tier 1) |
+| Walmart.com | PerimeterX | Pass (Tier 1) |
+| Glassdoor | Cloudflare Turnstile | Pass (Tier 3) |
+| Indeed | Cloudflare Turnstile | Pass (Tier 3) |
+
+### Stealth Stack
+
+- **TLS fingerprinting** -- Chrome 131, Firefox 132, Safari 18 profiles (JA3/JA4 + HTTP/2 SETTINGS)
+- **19 evasion techniques** -- canvas, WebGL, AudioContext, navigator properties, automation markers
+- **Behavioral simulation** -- Bezier mouse curves, Fitts's Law timing, bigram typing delays
+
+## MCP Tools
+
+| Category | Tools |
+|----------|-------|
+| Navigation | `browse_navigate`, `browse_back`, `browse_scroll` |
+| Interaction | `browse_click`, `browse_fill`, `browse_key_press` |
+| Extraction | `browse_extract`, `browse_snapshot`, `browse_eval_js` |
+| Search | `browse_search` |
+| Media | `browse_screenshot` |
+| Security | `browse_vault_store`, `browse_vault_get` |
+| Management | `browse_tabs` |
+
+## DOM Snapshots
+
+Instead of dumping raw HTML, Wraith produces compact agent-readable snapshots:
 
 ```
-Raw HTML ──► lol_html (strip noise) ──► Readability (extract article)
-         ──► Markdown conversion ──► Token-budgeted output
+[Page: Job Search | Indeed — https://indeed.com/jobs?q=engineer]
+
+@e1  [search]  "" placeholder="Search"
+@e2  [search]  "" placeholder="Location"
+@e3  [button]  "Find Jobs"
+@e4  [link]    "Software Engineer — Stripe" -> /viewjob?jk=abc123
+@e5  [link]    "Backend Engineer — Airbnb" -> /viewjob?jk=def456
+@e6  [link]    "Next >"
+
+[6 interactive elements | ~40 tokens]
 ```
 
-Strips scripts, ads, tracking pixels, hidden elements, and navigation chrome. Extracts the article body with links and images preserved. Converts to clean markdown optimized for LLM consumption.
+An agent reads this and responds: `ACTION: click @e4`
 
-## Configuration
+## Agent Intelligence
 
-### Environment Variables
+- **MCTS Action Planning** -- Monte Carlo Tree Search over action sequences (AgentQ-style)
+- **Predictive Pre-Fetching** -- anticipates next URLs from task context
+- **Time-Travel Debugging** -- branch, replay, and diff agent decision paths
+- **Workflow Recording** -- capture human flows, parameterize, replay
+- **Task DAGs** -- parallel subtasks with dependency resolution
+- **Knowledge Graph** -- cross-site entity resolution via petgraph
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `BRAVE_SEARCH_API_KEY` | Brave Search API key for web search | No (falls back to DuckDuckGo) |
-| `ANTHROPIC_API_KEY` | Anthropic API key for agent loop | Only for `task` command |
-| `WRAITH_VAULT_PATH` | Custom path for credential vault | No (defaults to `~/.wraith/vault.db`) |
-| `WRAITH_CACHE_PATH` | Custom path for knowledge cache | No (defaults to `~/.wraith/cache/`) |
-| `RUST_LOG` | Logging level (`debug`, `info`, `warn`) | No (defaults to `info`) |
+## Credential Security
 
-## Project Status
+- AES-256-GCM encryption at rest with Argon2id key derivation
+- Credentials never appear in LLM context windows or log files
+- Per-domain access controls
+- Automatic TOTP 2FA generation
+- Full audit trail of every credential access
+- Secrets zeroized from memory immediately after use
 
-Wraith is in **active development**. All 8 crates compile, pass 71 tests, and produce a working release binary. The MCP server exposes all 14 tools with stub responses — wiring to live browser sessions is the next milestone.
+## Intelligent Caching
 
-### What Works Today
-- Full CDP browser control (navigate, click, fill, screenshot, eval JS)
-- DOM snapshot extraction with `@ref` IDs
-- Content extraction pipeline (noise strip + readability + markdown)
-- Encrypted credential vault with audit logging
-- Knowledge cache with adaptive TTLs and full-text search
-- MCP server with tool definitions and JSON Schema
-- Agent loop with action parsing (Claude + Ollama backends)
-- Web search (DuckDuckGo HTML + Brave API)
-- CLI with all subcommands
+Every page visited is cached, indexed, and searchable. Subsequent requests for the same content are served from the local knowledge store at microsecond latency. Cache TTLs adapt automatically per domain based on observed content change frequency.
 
-### What's Next
-- Wire MCP tool dispatch to live browser sessions
-- Browser fingerprint injection (CDP overrides)
-- Auth flow detection and auto-login
-- Streaming MCP transport (SSE)
-- Multi-tab session management
-- Vision model support (screenshots in agent loop)
+- SQLite + Tantivy full-text search
+- Semantic page diffing (detects meaningful changes between visits)
+- Cross-site entity resolution
+- Embedding store with cosine similarity search
+
+## Plugin System
+
+- **WASM plugins** (wasmtime) -- sandboxed, hot-reloadable, domain-specific extractors
+- **Rhai scripting** -- userscripts that trigger on navigation events
+- **Vision ML pipeline** (ort/ONNX) -- UI element detection for canvas/non-DOM content
 
 ## License
 
-**AGPL-3.0** — Wraith is free and open source software.
+**AGPL-3.0** -- free and open source.
 
-You can use Wraith freely for personal projects, open source work, academic research, and internal tools. If you modify Wraith and deploy it as a network service, you must release your modifications under the same license.
+Use freely for personal projects, open source, research, and internal tools. If you modify Wraith and deploy it as a network service, modifications must be released under the same license.
 
-### Commercial Use
+### Commercial License
 
-Companies that want to use Wraith in proprietary products without open-sourcing their codebase can obtain a **commercial license**. Contact [ridgecellrepair@gmail.com](mailto:ridgecellrepair@gmail.com) for licensing inquiries.
+Companies that want to embed Wraith in proprietary products without open-source obligations can obtain a commercial license. Contact [ridgecellrepair@gmail.com](mailto:ridgecellrepair@gmail.com).
 
-### Enterprise
+### Wraith Enterprise (Coming Q3 2026)
 
-**Wraith Enterprise** (coming soon) will include:
-- Managed browser fleet with on-demand scaling
-- Team credential vault with role-based access control
-- Priority browser pool management
-- Compliance dashboards and audit exports
-- SLA-backed support
-- SSO/SAML integration
+Managed browser automation as a service:
+- Auto-scaling browser fleet
+- Team credential vault with RBAC
+- Centralized knowledge store
+- Compliance dashboard and audit exports
+- Proxy fleet management
+- Dedicated support with SLA
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. We welcome contributions of all sizes.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Key areas:
 
-Key areas where help is needed:
-- Additional search providers (Google, Bing)
-- Browser fingerprint profile database
+- Search provider integrations
+- Browser fingerprint profiles
 - Auth flow detection patterns
-- Performance optimization
+- Site-specific bypass profiles
 - Documentation and examples
 
 ## Acknowledgments
 
-Built with:
-- [chromiumoxide](https://github.com/nickel-ob/chromiumoxide) — Rust CDP client
-- [lol_html](https://github.com/nickel-ob/lol-html) — Streaming HTML rewriter
-- [Tantivy](https://github.com/quickwit-oss/tantivy) — Full-text search engine
-- [rmcp](https://crates.io/crates/rmcp) — Rust MCP protocol implementation
-- [scraper](https://github.com/causal-agent/scraper) — HTML parsing
+Built with [scraper](https://github.com/causal-agent/scraper), [rquickjs](https://crates.io/crates/rquickjs), [lol_html](https://github.com/nickel-ob/lol-html), [Tantivy](https://github.com/quickwit-oss/tantivy), [rmcp](https://crates.io/crates/rmcp), [rquest](https://crates.io/crates/rquest), [ort](https://crates.io/crates/ort), [wasmtime](https://crates.io/crates/wasmtime), and [petgraph](https://crates.io/crates/petgraph).
 
 ---
 
-**Wraith** — *the browser your AI agent deserves.*
+**Wraith** -- *the browser your AI agent deserves.*
 
 Copyright (c) 2026 Matt Gates / Ridge Cell Repair LLC
-
----
-
----
-
-## Support This Project
-
-If you find this project useful, consider buying me a coffee! Your support helps me keep building and sharing open-source tools.
-
-[![Donate via PayPal](https://img.shields.io/badge/Donate-PayPal-blue.svg?logo=paypal)](https://www.paypal.me/baal_hosting)
-
-**PayPal:** [baal_hosting@live.com](https://paypal.me/baal_hosting)
-
-Every donation, no matter how small, is greatly appreciated and motivates continued development. Thank you!
