@@ -10,6 +10,7 @@ members = [
     "crates/agent-loop",
     "crates/cli",
     "crates/scripting",
+    "sevro/ports/headless",
 ]
 
 [workspace.package]

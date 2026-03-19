@@ -53,3 +53,9 @@ lpt6
 lpt7
 lpt8
 lpt9
+sevro/components/
+sevro/third_party/
+sevro/support/
+sevro/docs/
+sevro/resources/
+sevro/.git/

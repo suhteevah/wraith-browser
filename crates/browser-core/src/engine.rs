@@ -99,13 +99,23 @@ pub async fn create_engine(name: &str) -> BrowserResult<Arc<Mutex<dyn BrowserEng
                 "Chrome engine not available — compile with --features chrome-legacy".to_string()
             ))
         }
+        #[cfg(feature = "sevro")]
+        "sevro" => {
+            Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::new())))
+        }
+        #[cfg(not(feature = "sevro"))]
         "sevro" => {
             Err(crate::error::BrowserError::CdpError(
-                "Sevro engine not yet implemented".to_string()
+                "Sevro engine not available — compile with --features sevro".to_string()
             ))
         }
         "auto" => {
-            // Future: try sevro first
+            // Try sevro first (best: native Rust, no Chrome)
+            #[cfg(feature = "sevro")]
+            {
+                return Ok(Arc::new(Mutex::new(crate::engine_sevro::SevroEngineBackend::new())));
+            }
+            // Then try Chrome
             #[cfg(feature = "chrome-legacy")]
             {
                 match crate::engine_chrome::ChromeEngine::launch(

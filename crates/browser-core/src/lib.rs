@@ -22,6 +22,8 @@ pub mod session;
 pub mod tab;
 #[cfg(feature = "chrome-legacy")]
 pub mod engine_chrome;
+#[cfg(feature = "sevro")]
+pub mod engine_sevro;
 
 // BLUEPRINT feature modules
 pub mod selectors;
