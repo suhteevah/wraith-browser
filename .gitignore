@@ -62,3 +62,14 @@ sevro/.git/
 wraith-sevro-response.pdf
 CAPABILITIES.md
 wraith-enterprise-package*.pdf
+
+# Internal planning docs (DO NOT COMMIT)
+BLUEPRINT.md
+HANDOFF.md
+SOUL.md
+CAPABILITIES.md
+wraith-sevro-response.pdf
+wraith-enterprise-package*.pdf
+docs/superpowers/
+*.plan.md
+*.spec.md
