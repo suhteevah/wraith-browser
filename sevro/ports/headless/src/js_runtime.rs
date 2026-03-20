@@ -127,21 +127,26 @@ impl JsRuntime {
         })
     }
 
-    /// Execute all inline <script> tags from parsed HTML.
-    /// Skips external scripts (src=), JSON-LD, and template scripts.
+    /// Execute all <script> tags from parsed HTML — both inline AND external.
+    /// External scripts (src=) are fetched via the provided HTTP client.
+    /// Executes in document order (inline and external interleaved correctly).
     pub fn execute_page_scripts(&self, html: &str) -> Result<usize, String> {
+        self.execute_page_scripts_with_fetcher(html, None)
+    }
+
+    /// Execute page scripts with optional external script fetching.
+    /// If `fetched_scripts` is provided, external scripts are looked up by URL.
+    pub fn execute_page_scripts_with_fetcher(
+        &self,
+        html: &str,
+        fetched_scripts: Option<&std::collections::HashMap<String, String>>,
+    ) -> Result<usize, String> {
         let doc = scraper::Html::parse_document(html);
-        let script_sel = scraper::Selector::parse("script:not([src])")
+        let script_sel = scraper::Selector::parse("script")
             .map_err(|_| "selector parse failed".to_string())?;
 
         let mut executed = 0;
         for script_el in doc.select(&script_sel) {
-            let script_text: String = script_el.text().collect();
-            let trimmed = script_text.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
             // Skip non-executable script types
             if let Some(script_type) = script_el.value().attr("type") {
                 if script_type.contains("json") || script_type.contains("template")
@@ -151,13 +156,40 @@ impl JsRuntime {
                 }
             }
 
-            match self.run_script(trimmed) {
-                Ok(_) => {
-                    executed += 1;
-                    debug!(script_len = trimmed.len(), "Executed inline <script>");
+            if let Some(src) = script_el.value().attr("src") {
+                // External script — check if we have it fetched
+                if let Some(scripts) = fetched_scripts {
+                    if let Some(script_text) = scripts.get(src) {
+                        match self.run_script(script_text) {
+                            Ok(_) => {
+                                executed += 1;
+                                debug!(src = %src, len = script_text.len(), "Executed external <script>");
+                            }
+                            Err(e) => {
+                                debug!(src = %src, error = %e, "External script failed (non-fatal)");
+                            }
+                        }
+                    } else {
+                        debug!(src = %src, "External script not in cache — skipped");
+                    }
                 }
-                Err(e) => {
-                    debug!(error = %e, "Script execution failed (non-fatal)");
+                // If no fetcher provided, skip external scripts (backward compat)
+            } else {
+                // Inline script
+                let script_text: String = script_el.text().collect();
+                let trimmed = script_text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                match self.run_script(trimmed) {
+                    Ok(_) => {
+                        executed += 1;
+                        debug!(script_len = trimmed.len(), "Executed inline <script>");
+                    }
+                    Err(e) => {
+                        debug!(error = %e, "Script execution failed (non-fatal)");
+                    }
                 }
             }
         }

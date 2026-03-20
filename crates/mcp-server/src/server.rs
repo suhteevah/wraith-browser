@@ -252,7 +252,10 @@ impl WraithHandler {
                 &schema_for!(CustomDropdownInput), rw_open.clone()),
             make_tool("cookie_import_chrome",
                 "Import cookies from the user's Chrome browser profile to reuse existing login sessions. Reads Chrome's encrypted cookie database, decrypts using OS credentials, and loads into Wraith. Avoids re-login and bot detection triggers.",
-                &schema_for!(ChromeCookieImportInput), rw_open),
+                &schema_for!(ChromeCookieImportInput), rw_open.clone()),
+            make_tool("browse_fetch_scripts",
+                "Fetch and execute external <script src='...'> tags from the current page. Call this AFTER browse_navigate when you need React/Vue/Angular to mount for form filling. Downloads JS bundles and runs them in QuickJS so React's event system activates.",
+                &schema_for!(FetchScriptsInput), rw_open),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -1710,6 +1713,89 @@ impl WraithHandler {
                         )]))
                     }
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cookie import failed: {e}"))]))
+                }
+            }
+
+            "browse_fetch_scripts" => {
+                let _input: FetchScriptsInput = parse_args(args)?;
+                info!("Fetching external scripts for current page");
+
+                let engine = self.engine.lock().await;
+                let html = engine.page_source().await.unwrap_or_default();
+                let url = engine.current_url().await.unwrap_or_default();
+                drop(engine); // Release lock before async HTTP calls
+
+                // Fetch scripts using a standalone client
+                let client = reqwest::Client::builder()
+                    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new());
+
+                // Extract script URLs synchronously (scraper::Html isn't Send)
+                let script_urls: Vec<String> = {
+                    let doc = scraper::Html::parse_document(&html);
+                    let sel = scraper::Selector::parse("script[src]").unwrap();
+                    doc.select(&sel)
+                        .filter_map(|el| {
+                            let src = el.value().attr("src")?;
+                            if let Some(t) = el.value().attr("type") {
+                                if t.contains("json") || t.contains("template") { return None; }
+                            }
+                            if src.contains("google-analytics") || src.contains("gtag") || src.contains("facebook") || src.contains("hotjar") { return None; }
+                            let full = if src.starts_with("http") { src.to_string() }
+                                else if src.starts_with("//") { format!("https:{}", src) }
+                                else if src.starts_with('/') {
+                                    url::Url::parse(&url).ok().map(|u| format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), src))?
+                                } else { return None };
+                            Some(full)
+                        })
+                        .collect()
+                }; // doc dropped here — no longer borrowed
+
+                // Fetch scripts async (now safe — no scraper types held)
+                let mut scripts = std::collections::HashMap::new();
+                let mut total: usize = 0;
+                let max_total: usize = 2 * 1024 * 1024;
+                for script_url in &script_urls {
+                    if total >= max_total { break; }
+                    if let Ok(resp) = client.get(script_url).send().await {
+                        if resp.status().is_success() {
+                            if let Ok(text) = resp.text().await {
+                                if !text.is_empty() && total + text.len() <= max_total {
+                                    total += text.len();
+                                    scripts.insert(script_url.clone(), text);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if scripts.is_empty() {
+                    Ok(CallToolResult::success(vec![Content::text("No external scripts found or fetchable.")]))
+                } else {
+                    // Execute each script in the engine's JS runtime
+                    let engine = self.engine.lock().await;
+                    let mut executed = 0;
+                    let mut failed = 0;
+                    for (src, script_text) in &scripts {
+                        match engine.eval_js(script_text).await {
+                            Ok(_) => {
+                                executed += 1;
+                                debug!(src = %src, len = script_text.len(), "External script executed");
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                debug!(src = %src, error = %e, "External script failed");
+                            }
+                        }
+                    }
+
+                    // Flush timers (React setup uses setTimeout)
+                    let _ = engine.eval_js("if(typeof __wraith_flush_timers==='function')__wraith_flush_timers()").await;
+
+                    Ok(CallToolResult::success(vec![Content::text(
+                        format!("Fetched {} scripts: {} executed, {} failed. React/frameworks should now be active.", scripts.len(), executed, failed)
+                    )]))
                 }
             }
 

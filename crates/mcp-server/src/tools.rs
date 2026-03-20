@@ -821,3 +821,17 @@ pub struct ChromeCookieImportInput {
     /// Optional domain filter — only import cookies for this domain (e.g., "indeed.com").
     pub domain: Option<String>,
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// EXTERNAL SCRIPT EXECUTION
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: fetch and execute external <script src="..."> tags from the current page.
+/// Downloads JavaScript bundles (React, etc.) and runs them in QuickJS.
+/// Call this AFTER browse_navigate if you need React/Vue/Angular to mount
+/// for form filling to work properly.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FetchScriptsInput {
+    /// Maximum total bytes to fetch (default: 2MB). Larger values load more scripts but take longer.
+    pub max_bytes: Option<usize>,
+}

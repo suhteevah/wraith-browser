@@ -37,3 +37,4 @@ url.workspace = true
 reqwest.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
+scraper.workspace = true

@@ -247,6 +247,9 @@ impl SevroEngine {
             warn!(status, url = %url, body_len = html.len(), "HTTP error status — parsing body anyway");
         }
 
+        // Parse HTML and run inline scripts
+        // External script fetching happens via the MCP browse_fetch_scripts tool
+        // to avoid async borrowing issues with the engine
         self.load_page(&html, &final_url);
 
         // If no challenge, we're done
@@ -525,6 +528,15 @@ impl SevroEngine {
 
     /// Load HTML into the DOM engine and execute scripts.
     fn load_page(&mut self, html: &str, url: &str) {
+        self.load_page_with_scripts(html, url, None);
+    }
+
+    fn load_page_with_scripts(
+        &mut self,
+        html: &str,
+        url: &str,
+        fetched_scripts: Option<&std::collections::HashMap<String, String>>,
+    ) {
         let parsed = Html::parse_document(html);
         self.dom_nodes = extract_dom_nodes(&parsed);
         self.parsed_dom = Some(parsed);
@@ -544,7 +556,7 @@ impl SevroEngine {
                     serde_json::to_string(url).unwrap_or_default()
                 ));
 
-                match js.execute_page_scripts(html) {
+                match js.execute_page_scripts_with_fetcher(html, fetched_scripts) {
                     Ok(n) => debug!(scripts = n, "Page scripts executed"),
                     Err(e) => debug!(error = %e, "Script execution failed (non-fatal)"),
                 }
@@ -745,6 +757,95 @@ impl SevroEngine {
 
     pub fn config(&self) -> &SevroConfig {
         &self.config
+    }
+
+    /// Fetch all external `<script src="...">` URLs from HTML.
+    /// Returns a map of URL -> script content for scripts that were successfully fetched.
+    /// Skips analytics, tracking, and non-JS scripts. Limits to 2MB total.
+    pub async fn fetch_external_scripts(client: &reqwest::Client, html: &str, base_url: &str) -> std::collections::HashMap<String, String> {
+        let mut scripts = std::collections::HashMap::new();
+        let mut total_bytes: usize = 0;
+        let max_total: usize = 2 * 1024 * 1024; // 2MB limit
+
+        let doc = Html::parse_document(html);
+        let sel = match scraper::Selector::parse("script[src]") {
+            Ok(s) => s,
+            Err(_) => return scripts,
+        };
+
+        for el in doc.select(&sel) {
+            if total_bytes >= max_total {
+                debug!("Script fetch budget exhausted ({}B)", total_bytes);
+                break;
+            }
+
+            let src = match el.value().attr("src") {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Skip known analytics/tracking scripts
+            if src.contains("google-analytics") || src.contains("gtag")
+                || src.contains("facebook") || src.contains("hotjar")
+                || src.contains("segment") || src.contains("sentry")
+                || src.contains("clarity") || src.contains("intercom")
+            {
+                debug!(src = %src, "Skipping analytics script");
+                continue;
+            }
+
+            // Skip non-JS types
+            if let Some(t) = el.value().attr("type") {
+                if t.contains("json") || t.contains("template") {
+                    continue;
+                }
+            }
+
+            // Resolve relative URLs
+            let full_url = if src.starts_with("http") {
+                src.to_string()
+            } else if src.starts_with("//") {
+                format!("https:{}", src)
+            } else if src.starts_with('/') {
+                if let Ok(base) = url::Url::parse(base_url) {
+                    format!("{}://{}{}", base.scheme(), base.host_str().unwrap_or(""), src)
+                } else {
+                    continue;
+                }
+            } else {
+                continue; // Skip relative paths without base
+            };
+
+            // Fetch the script
+            match client.get(&full_url)
+                .header("Accept", "application/javascript, text/javascript, */*")
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.text().await {
+                        Ok(text) if !text.is_empty() => {
+                            let len = text.len();
+                            if total_bytes + len <= max_total {
+                                debug!(src = %src, len, "Fetched external script");
+                                scripts.insert(src.to_string(), text);
+                                total_bytes += len;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(resp) => {
+                    debug!(src = %src, status = %resp.status(), "Script fetch failed");
+                }
+                Err(e) => {
+                    debug!(src = %src, error = %e, "Script fetch error");
+                }
+            }
+        }
+
+        info!(fetched = scripts.len(), total_bytes, "External scripts fetched");
+        scripts
     }
 
     /// Go back in history.
