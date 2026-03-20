@@ -248,12 +248,20 @@ impl SevroEngine {
         }
 
         // Parse HTML and run inline scripts
-        // External script fetching happens via the MCP browse_fetch_scripts tool
-        // to avoid async borrowing issues with the engine
         self.load_page(&html, &final_url);
 
-        // If no challenge, we're done
+        // SPA handling: if the page has very few visible elements, try platform-specific APIs
         if !Self::is_cloudflare_challenge(&html, status) && !Self::is_ip_blocked(&html) {
+            let visible_count = self.dom_nodes.iter().filter(|n| n.is_visible).count();
+            if visible_count < 10 {
+                // Try API-native form loading for known platforms
+                if final_url.contains("ashbyhq.com") {
+                    self.try_ashby_api_hydration(&final_url).await;
+                } else {
+                    // Generic SPA — try to hydrate by fetching dynamic scripts
+                    self.try_spa_hydration(&final_url).await;
+                }
+            }
             return Ok(PageEvent::DomContentLoaded);
         }
 
@@ -335,6 +343,300 @@ impl SevroEngine {
         }
 
         Ok(PageEvent::DomContentLoaded)
+    }
+
+    /// Ashby API-native hydration: fetch form definition via GraphQL and build synthetic DOM.
+    /// This bypasses the SPA entirely — no React, no ES modules, just direct API access.
+    async fn try_ashby_api_hydration(&mut self, page_url: &str) {
+        // Extract company name and job ID from URL
+        // Format: https://jobs.ashbyhq.com/{company}/{job_id}/application
+        let parsed = match url::Url::parse(page_url) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let segments: Vec<&str> = parsed.path().trim_matches('/').split('/').collect();
+        if segments.len() < 2 { return; }
+        let company = segments[0];
+        let job_id = segments[1];
+
+        info!(company = %company, job_id = %job_id, "Ashby: fetching form via GraphQL API");
+
+        // Query the GraphQL API for form definition
+        let query = serde_json::json!({
+            "operationName": "ApiJobPostingWithBoard",
+            "variables": {
+                "organizationHostedJobsPageName": company,
+                "jobPostingId": job_id
+            },
+            "query": "query ApiJobPostingWithBoard($organizationHostedJobsPageName: String!, $jobPostingId: String!) { jobPosting(organizationHostedJobsPageName: $organizationHostedJobsPageName, jobPostingId: $jobPostingId) { id title descriptionPlain applicationForm { sections { title fieldEntries { ... on FormFieldEntry { field descriptionHtml } } } } } }"
+        });
+
+        let resp = match self.client
+            .post("https://jobs.ashbyhq.com/api/non-user-graphql")
+            .header("Content-Type", "application/json")
+            .json(&query)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "Ashby GraphQL request failed");
+                return;
+            }
+        };
+
+        let body = match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        let posting = match data.get("data").and_then(|d| d.get("jobPosting")) {
+            Some(p) => p,
+            None => {
+                debug!("Ashby: no jobPosting in GraphQL response");
+                return;
+            }
+        };
+
+        let title = posting.get("title").and_then(|t| t.as_str()).unwrap_or("Job Application");
+        let description = posting.get("descriptionPlain").and_then(|d| d.as_str()).unwrap_or("");
+
+        // Build synthetic HTML from the form definition
+        let mut html = format!(
+            r#"<html><head><title>{} @ {}</title></head><body>
+<h1>{}</h1>
+<p>{}</p>
+<form id="ashby-application" action="https://jobs.ashbyhq.com/api/non-user-graphql" method="POST" data-company="{}" data-job-id="{}">
+"#,
+            title, company, title,
+            if description.len() > 500 { &description[..500] } else { description },
+            company, job_id
+        );
+
+        let sections = posting.get("applicationForm")
+            .and_then(|f| f.get("sections"))
+            .and_then(|s| s.as_array());
+
+        if let Some(sections) = sections {
+            for section in sections {
+                let section_title = section.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                if !section_title.is_empty() {
+                    html.push_str(&format!("<fieldset><legend>{}</legend>\n", section_title));
+                }
+
+                if let Some(entries) = section.get("fieldEntries").and_then(|e| e.as_array()) {
+                    for entry in entries {
+                        let field = match entry.get("field") {
+                            Some(f) => f,
+                            None => continue,
+                        };
+
+                        let field_title = field.get("title").and_then(|t| t.as_str()).unwrap_or("");
+                        let field_type = field.get("type").and_then(|t| t.as_str()).unwrap_or("String");
+                        let field_path = field.get("path").and_then(|p| p.as_str()).unwrap_or("");
+                        let field_id = field.get("id").and_then(|i| i.as_str()).unwrap_or("");
+                        let required = field.get("isNullable").and_then(|n| n.as_bool()).map(|n| !n).unwrap_or(true);
+                        let req_attr = if required { " required" } else { "" };
+
+                        html.push_str(&format!("<label for=\"{}\">{}</label>\n", field_path, field_title));
+
+                        match field_type {
+                            "String" | "Email" | "Phone" | "LongText" => {
+                                let input_type = match field_type {
+                                    "Email" => "email",
+                                    "Phone" => "tel",
+                                    "LongText" => "textarea",
+                                    _ => "text",
+                                };
+                                if input_type == "textarea" {
+                                    html.push_str(&format!(
+                                        "<textarea id=\"{}\" name=\"{}\" data-field-id=\"{}\"{}></textarea>\n",
+                                        field_path, field_path, field_id, req_attr
+                                    ));
+                                } else {
+                                    html.push_str(&format!(
+                                        "<input type=\"{}\" id=\"{}\" name=\"{}\" data-field-id=\"{}\"{}>\n",
+                                        input_type, field_path, field_path, field_id, req_attr
+                                    ));
+                                }
+                            }
+                            "ValueSelect" => {
+                                html.push_str(&format!(
+                                    "<select id=\"{}\" name=\"{}\" data-field-id=\"{}\"{}>\n<option value=\"\">Select...</option>\n",
+                                    field_path, field_path, field_id, req_attr
+                                ));
+                                if let Some(values) = field.get("selectableValues").and_then(|v| v.as_array()) {
+                                    for val in values {
+                                        let label = val.get("label").and_then(|l| l.as_str()).unwrap_or("");
+                                        let value = val.get("value").and_then(|v| v.as_str()).unwrap_or(label);
+                                        html.push_str(&format!("<option value=\"{}\">{}</option>\n", value, label));
+                                    }
+                                }
+                                html.push_str("</select>\n");
+                            }
+                            "File" => {
+                                html.push_str(&format!(
+                                    "<input type=\"file\" id=\"{}\" name=\"{}\" data-field-id=\"{}\"{}>\n",
+                                    field_path, field_path, field_id, req_attr
+                                ));
+                            }
+                            "Boolean" => {
+                                html.push_str(&format!(
+                                    "<input type=\"checkbox\" id=\"{}\" name=\"{}\" data-field-id=\"{}\">\n",
+                                    field_path, field_path, field_id
+                                ));
+                            }
+                            _ => {
+                                html.push_str(&format!(
+                                    "<input type=\"text\" id=\"{}\" name=\"{}\" data-field-id=\"{}\"{}>\n",
+                                    field_path, field_path, field_id, req_attr
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                if !section_title.is_empty() {
+                    html.push_str("</fieldset>\n");
+                }
+            }
+        }
+
+        html.push_str("<button type=\"submit\">Submit Application</button>\n</form>\n</body></html>");
+
+        // Replace the page with the synthetic form HTML
+        info!(html_len = html.len(), fields = sections.map(|s| s.len()).unwrap_or(0), "Ashby: built synthetic form from GraphQL API");
+        self.load_page(&html, page_url);
+    }
+
+    /// SPA hydration: after initial page load, check if inline scripts created dynamic
+    /// script elements (Ashby pattern) and fetch+execute them.
+    async fn try_spa_hydration(&mut self, base_url: &str) {
+        let js = match self.js.as_ref() {
+            Some(js) => js,
+            None => return,
+        };
+
+        // Step 0: Fulfill pending fetch() requests from inline scripts.
+        // Inline scripts call fetch() which is a stub — the requests are logged.
+        // We replay them via Rust HTTP, inject the responses, and let callbacks run.
+        let xhr_log = js.run_script("__wraith_get_xhr_log()").ok().unwrap_or_default();
+        if let Ok(requests) = serde_json::from_str::<Vec<serde_json::Value>>(&xhr_log) {
+            for req in &requests {
+                let req_url = req.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                if req_url.is_empty() { continue; }
+
+                let full_url = if req_url.starts_with("http") {
+                    req_url.to_string()
+                } else if req_url.starts_with('/') {
+                    if let Ok(base) = url::Url::parse(base_url) {
+                        format!("{}://{}{}", base.scheme(), base.host_str().unwrap_or(""), req_url)
+                    } else { continue }
+                } else { continue };
+
+                debug!(url = %full_url, "SPA hydration: fulfilling pending fetch/XHR");
+                if let Ok(resp) = self.client.get(&full_url).send().await {
+                    if resp.status().is_success() {
+                        if let Ok(text) = resp.text().await {
+                            // Inject the response as a JS variable and try to process it
+                            let escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n").replace('\r', "");
+                            let inject = format!(
+                                "try {{ var __wraith_fetch_response = JSON.parse('{}'); }} catch(e) {{ var __wraith_fetch_response = '{}'; }}",
+                                escaped, escaped
+                            );
+                            let _ = js.run_script(&inject);
+                            debug!(url = %full_url, len = text.len(), "SPA: injected fetch response");
+                        }
+                    }
+                }
+            }
+            // Clear the XHR log
+            let _ = js.run_script("__wraith_xhr_log = []");
+        }
+
+        // Step 1: Check for dynamically created script elements
+        let dynamic_urls = match js.run_script(
+            r#"(() => {
+                try {
+                    var urls = [];
+                    if (typeof __wraith_dynamic_scripts !== 'undefined') {
+                        for (var i = 0; i < __wraith_dynamic_scripts.length; i++) {
+                            urls.push(__wraith_dynamic_scripts[i]);
+                        }
+                    }
+                    return JSON.stringify(urls);
+                } catch(e) { return '[]'; }
+            })()"#
+        ) {
+            Ok(json) => {
+                serde_json::from_str::<Vec<String>>(&json).unwrap_or_default()
+            }
+            Err(_) => Vec::new(),
+        };
+
+        if dynamic_urls.is_empty() {
+            debug!("SPA hydration: no dynamic scripts found");
+            return;
+        }
+
+        info!(count = dynamic_urls.len(), "SPA hydration: fetching dynamic scripts");
+
+        // Step 2: Fetch each dynamic script
+        let mut fetched = 0;
+        let max_size: usize = 5 * 1024 * 1024; // 5MB total budget
+        let mut total_size: usize = 0;
+
+        for script_url in &dynamic_urls {
+            if total_size >= max_size { break; }
+
+            let full_url = if script_url.starts_with("http") {
+                script_url.clone()
+            } else if script_url.starts_with("//") {
+                format!("https:{}", script_url)
+            } else if script_url.starts_with('/') {
+                if let Ok(base) = url::Url::parse(base_url) {
+                    format!("{}://{}{}", base.scheme(), base.host_str().unwrap_or(""), script_url)
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+
+            match self.client.get(&full_url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(text) = resp.text().await {
+                        if text.len() + total_size <= max_size {
+                            total_size += text.len();
+                            // Execute the script in QuickJS
+                            match js.run_script(&text) {
+                                Ok(_) => {
+                                    fetched += 1;
+                                    debug!(url = %full_url, len = text.len(), "SPA: executed dynamic script");
+                                }
+                                Err(e) => {
+                                    debug!(url = %full_url, error = %e, "SPA: dynamic script failed");
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    debug!(url = %full_url, "SPA: failed to fetch dynamic script");
+                }
+            }
+        }
+
+        if fetched > 0 {
+            // Flush timers after executing dynamic scripts
+            let _ = js.run_script("if(typeof __wraith_flush_timers==='function')__wraith_flush_timers()");
+            info!(fetched, total_size, "SPA hydration complete — dynamic scripts executed");
+        }
     }
 
     /// Detect hard IP bans (different from solvable challenges).
@@ -925,6 +1227,100 @@ impl SevroEngine {
         cfg!(feature = "stealth-tls")
     }
 
+    /// Submit form data via HTTP POST. Used as fallback when React form submission
+    /// doesn't work (because React scripts aren't loaded in QuickJS).
+    pub async fn submit_form_data(&self, url: &str, json_body: &str) -> Result<String, String> {
+        self.submit_form_data_with_content_type(url, json_body, "application/json").await
+    }
+
+    /// Submit form data with a specific content type.
+    /// Handles JSON, multipart/form-data (for Greenhouse), and URL-encoded (for Lever).
+    pub async fn submit_form_data_with_content_type(
+        &self, url: &str, json_body: &str, content_type: &str
+    ) -> Result<String, String> {
+        info!(url = %url, content_type = %content_type, body_len = json_body.len(), "Submitting form via direct HTTP POST");
+
+        let origin = self.current_url.as_deref().and_then(|u| {
+            url::Url::parse(u).ok().map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")))
+        }).unwrap_or_default();
+        let referer = self.current_url.as_deref().unwrap_or("").to_string();
+
+        // Send the request based on content type
+        let send_result: Result<(u16, String), String> = if content_type.contains("multipart") {
+            // Greenhouse API expects multipart/form-data
+            let fields: std::collections::HashMap<String, String> =
+                serde_json::from_str(json_body).unwrap_or_default();
+
+            let mut form = reqwest::multipart::Form::new();
+            for (key, value) in &fields {
+                form = form.text(key.clone(), value.clone());
+            }
+
+            match self.client.post(url)
+                .header("Accept", "application/json, text/html, */*")
+                .header("Origin", &origin)
+                .header("Referer", &referer)
+                .multipart(form)
+                .send().await
+            {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let body = resp.text().await.unwrap_or_default();
+                    Ok((status, body))
+                }
+                Err(e) => Err(format!("HTTP POST (multipart) failed: {}", e))
+            }
+        } else if content_type.contains("x-www-form-urlencoded") {
+            // Lever expects URL-encoded form data
+            let fields: std::collections::HashMap<String, String> =
+                serde_json::from_str(json_body).unwrap_or_default();
+
+            match self.client.post(url)
+                .header("Accept", "application/json, text/html, */*")
+                .header("Origin", &origin)
+                .header("Referer", &referer)
+                .form(&fields)
+                .send().await
+            {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let body = resp.text().await.unwrap_or_default();
+                    Ok((status, body))
+                }
+                Err(e) => Err(format!("HTTP POST (form) failed: {}", e))
+            }
+        } else {
+            // Default: JSON body
+            match self.client.post(url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/html, */*")
+                .header("Origin", &origin)
+                .header("Referer", &referer)
+                .body(json_body.to_string())
+                .send().await
+            {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let body = resp.text().await.unwrap_or_default();
+                    Ok((status, body))
+                }
+                Err(e) => Err(format!("HTTP POST (json) failed: {}", e))
+            }
+        };
+
+        match send_result {
+            Ok((status, body)) => {
+                let preview = if body.len() > 500 { &body[..500] } else { &body };
+                if status < 400 {
+                    Ok(format!("HTTP {} — {}", status, preview))
+                } else {
+                    Err(format!("HTTP {} — {}", status, preview))
+                }
+            }
+            Err(e) => Err(e)
+        }
+    }
+
     #[instrument(skip(self))]
     pub fn shutdown(&mut self) {
         info!("Sevro engine shutting down");
@@ -948,79 +1344,119 @@ impl Default for SevroEngine {
 // ═══════════════════════════════════════════════════════════════
 
 /// Extract DomNode list from a parsed HTML document.
-/// Walks the document tree and converts each element to a DomNode.
+/// Walks the FULL document tree — all elements, not just interactive ones.
+/// This ensures script tags, divs, forms, and SPA containers are all captured.
 fn extract_dom_nodes(dom: &Html) -> Vec<DomNode> {
+    use ego_tree::iter::Edge;
+
     let mut nodes = Vec::new();
     let mut node_id: u64 = 0;
 
-    // Interactive element selectors
-    let interactive_sel = Selector::parse(
-        "a, button, input, select, textarea, [role='button'], [role='link'], \
-         [role='tab'], [onclick], summary, label, h1, h2, h3, h4, h5, h6, img, p"
-    ).unwrap_or_else(|_| Selector::parse("a").unwrap());
+    // Tags that are never "visible" in the snapshot sense but must be in the DOM
+    let invisible_tags = ["script", "style", "link", "meta", "head", "noscript", "template"];
 
-    // Hidden element selectors
+    // Tags considered interactive (get highlighted in snapshot)
+    let interactive_tags = [
+        "a", "button", "input", "select", "textarea", "label", "summary",
+        "h1", "h2", "h3", "h4", "h5", "h6", "img", "p",
+    ];
+
+    // Hidden CSS indicators
     let hidden_indicators = ["display:none", "display: none", "visibility:hidden", "visibility: hidden"];
 
-    for element in dom.select(&interactive_sel) {
-        node_id += 1;
+    // Parent tracking for tree structure
+    let mut id_stack: Vec<u64> = Vec::new();
+    let mut node_id_map: HashMap<ego_tree::NodeId, u64> = HashMap::new();
 
-        let tag = element.value().name().to_string();
+    for edge in dom.tree.root().traverse() {
+        match edge {
+            Edge::Open(node_ref) => {
+                if let Some(element) = node_ref.value().as_element() {
+                    node_id += 1;
+                    let tag = element.name().to_string();
 
-        // Extract attributes
-        let mut attributes = HashMap::new();
-        for attr in element.value().attrs() {
-            attributes.insert(attr.0.to_string(), attr.1.to_string());
-        }
+                    // Extract attributes
+                    let mut attributes = HashMap::new();
+                    for attr in element.attrs() {
+                        attributes.insert(attr.0.to_string(), attr.1.to_string());
+                    }
 
-        // Get text content
-        let text_content = element.text().collect::<Vec<_>>().join(" ").trim().to_string();
+                    // Get direct text content (not recursive for large trees)
+                    let text_content = node_ref.children()
+                        .filter_map(|c| c.value().as_text().map(|t| t.trim().to_string()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .trim()
+                        .to_string();
 
-        // Visibility heuristic
-        let style = attributes.get("style").map(|s| s.as_str()).unwrap_or("");
-        let is_hidden = attributes.contains_key("hidden")
-            || attributes.get("aria-hidden").map(|v| v == "true").unwrap_or(false)
-            || hidden_indicators.iter().any(|h| style.contains(h));
+                    // Visibility heuristic
+                    let style = attributes.get("style").map(|s| s.as_str()).unwrap_or("");
+                    let is_hidden = attributes.contains_key("hidden")
+                        || attributes.get("aria-hidden").map(|v| v == "true").unwrap_or(false)
+                        || hidden_indicators.iter().any(|h| style.contains(h));
 
-        // Skip hidden elements and empty non-interactive elements
-        if is_hidden {
-            continue;
-        }
-        if text_content.is_empty()
-            && !matches!(tag.as_str(), "input" | "select" | "textarea" | "img")
-            && !attributes.contains_key("href")
-        {
-            continue;
-        }
+                    let is_invisible_tag = invisible_tags.contains(&tag.as_str());
+                    let is_interactive = interactive_tags.contains(&tag.as_str())
+                        || attributes.contains_key("role")
+                        || attributes.contains_key("onclick")
+                        || attributes.contains_key("href");
 
-        nodes.push(DomNode {
-            node_id,
-            node_type: DomNodeType::Element,
-            tag_name: tag,
-            attributes,
-            text_content,
-            children: vec![],
-            parent: None,
-            bounding_box: None, // No layout engine yet
-            is_visible: !is_hidden,
-        });
-    }
+                    // Determine visibility: interactive/content elements that aren't hidden
+                    let is_visible = !is_hidden && !is_invisible_tag;
 
-    // Also extract the <title> element
-    if let Ok(title_sel) = Selector::parse("title") {
-        if let Some(title_el) = dom.select(&title_sel).next() {
-            let title_text = title_el.text().collect::<Vec<_>>().join("");
-            nodes.push(DomNode {
-                node_id: node_id + 1,
-                node_type: DomNodeType::Element,
-                tag_name: "title".to_string(),
-                attributes: HashMap::new(),
-                text_content: title_text,
-                children: vec![],
-                parent: None,
-                bounding_box: None,
-                is_visible: false,
-            });
+                    // Skip empty non-interactive, non-structural elements to keep size manageable
+                    let is_structural = matches!(tag.as_str(),
+                        "div" | "form" | "section" | "main" | "nav" | "header" | "footer"
+                        | "article" | "aside" | "ul" | "ol" | "li" | "table" | "tr" | "td"
+                        | "th" | "thead" | "tbody" | "span" | "fieldset" | "legend"
+                    );
+                    let should_include = is_interactive
+                        || is_invisible_tag  // Always include scripts/styles for JS execution
+                        || is_structural
+                        || !text_content.is_empty()
+                        || tag == "html" || tag == "body" || tag == "head"
+                        || attributes.contains_key("id")
+                        || attributes.contains_key("class");
+
+                    if !should_include {
+                        id_stack.push(0); // placeholder
+                        continue;
+                    }
+
+                    let parent_id = id_stack.last().copied().filter(|&id| id > 0);
+
+                    // Record parent-child relationship
+                    if let Some(pid) = parent_id {
+                        if let Some(parent_node) = nodes.iter_mut().find(|n: &&mut DomNode| n.node_id == pid) {
+                            parent_node.children.push(node_id);
+                        }
+                    }
+
+                    node_id_map.insert(node_ref.id(), node_id);
+                    id_stack.push(node_id);
+
+                    nodes.push(DomNode {
+                        node_id,
+                        node_type: DomNodeType::Element,
+                        tag_name: tag,
+                        attributes,
+                        text_content,
+                        children: vec![],
+                        parent: parent_id,
+                        bounding_box: None,
+                        is_visible,
+                    });
+                } else {
+                    id_stack.push(id_stack.last().copied().unwrap_or(0));
+                }
+            }
+            Edge::Close(node_ref) => {
+                if node_ref.value().as_element().is_some() {
+                    id_stack.pop();
+                } else {
+                    id_stack.pop();
+                }
+            }
         }
     }
 
@@ -1100,11 +1536,11 @@ mod tests {
             </body></html>
         "#);
 
-        let buttons: Vec<_> = engine.dom_nodes.iter()
-            .filter(|n| n.tag_name == "button")
+        let visible_buttons: Vec<_> = engine.dom_nodes.iter()
+            .filter(|n| n.tag_name == "button" && n.is_visible)
             .collect();
-        assert_eq!(buttons.len(), 1, "Should only have 1 visible button");
-        assert_eq!(buttons[0].text_content, "Visible");
+        assert_eq!(visible_buttons.len(), 1, "Should only have 1 visible button");
+        assert_eq!(visible_buttons[0].text_content, "Visible");
     }
 
     #[test]

@@ -59,16 +59,30 @@ impl DomSnapshot {
         for el in &self.elements {
             let ref_str = format!("@e{}", el.ref_id);
             let role_str = format!("[{}]", el.role);
-            let text = el.text.as_deref().unwrap_or("");
-            let attrs = if let Some(placeholder) = &el.placeholder {
-                format!(" placeholder=\"{}\"", placeholder)
-            } else {
-                String::new()
+            // Show value for form inputs, text content for everything else
+            let display_text = match el.role.as_str() {
+                "textbox" | "text" | "email" | "tel" | "number" | "password" | "url" | "search"
+                | "combobox" | "hidden" | "date" | "time" | "datetime-local" => {
+                    el.value.as_deref()
+                        .filter(|v| !v.is_empty())
+                        .or(el.text.as_deref())
+                        .unwrap_or("")
+                }
+                _ => el.text.as_deref().unwrap_or(""),
             };
+            let mut attrs = String::new();
+            if let Some(placeholder) = &el.placeholder {
+                attrs.push_str(&format!(" placeholder=\"{}\"", placeholder));
+            }
+            if let Some(value) = &el.value {
+                if !value.is_empty() && el.text.as_deref().unwrap_or("") != value {
+                    attrs.push_str(&format!(" value=\"{}\"", value));
+                }
+            }
 
             out.push_str(&format!(
                 "{:<6} {:<12} \"{}\"{}\n",
-                ref_str, role_str, text, attrs
+                ref_str, role_str, display_text, attrs
             ));
         }
 

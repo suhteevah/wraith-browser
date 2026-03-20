@@ -2,10 +2,31 @@
 // Provides document.*, window.*, navigator.*, setTimeout, fetch stubs.
 
 var __wraith_nodes = {node_json};
-var __wraith_node_index = {};
+var __wraith_node_index = {};  // by HTML id
+var __wraith_ref_index = {};   // by @e ref_id (matches snapshot numbering)
+var __wraith_forms = [];
+
+// Tag → prototype mapping (set up after HTMLElement types are defined below)
+var __wraith_tag_proto_map = {};
+function __wraith_init_proto_map() {
+    if (typeof window === 'undefined') return;
+    __wraith_tag_proto_map = {
+        'input': window.HTMLInputElement ? window.HTMLInputElement.prototype : null,
+        'textarea': window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : null,
+        'select': window.HTMLSelectElement ? window.HTMLSelectElement.prototype : null,
+        'form': window.HTMLFormElement ? window.HTMLFormElement.prototype : null,
+        'button': window.HTMLButtonElement ? window.HTMLButtonElement.prototype : null,
+        'a': window.HTMLAnchorElement ? window.HTMLAnchorElement.prototype : null,
+        'img': window.HTMLImageElement ? window.HTMLImageElement.prototype : null,
+        'div': window.HTMLDivElement ? window.HTMLDivElement.prototype : null,
+        'span': window.HTMLSpanElement ? window.HTMLSpanElement.prototype : null
+    };
+}
+
 for (var i = 0; i < __wraith_nodes.length; i++) {
     var n = __wraith_nodes[i];
     if (n.id) __wraith_node_index[n.id] = n;
+    if (n.__ref_id) __wraith_ref_index[n.__ref_id] = n;
     n.tagName = (n.tag || '').toUpperCase();
     n.nodeName = (n.tag || '').toUpperCase();
     n.nodeType = 1;
@@ -19,33 +40,161 @@ for (var i = 0; i < __wraith_nodes.length; i++) {
     n.closest = function() { return null; };
     n.contains = function() { return false; };
     n.dataset = {};
+    n.setAttribute = function(k, v) { if (!this.attrs) this.attrs = {}; this.attrs[k] = v; };
+    n.getAttribute = function(k) { return this.attrs ? this.attrs[k] : null; };
+    n.hasAttribute = function(k) { return this.attrs ? k in this.attrs : false; };
+    n.removeAttribute = function(k) { if (this.attrs) delete this.attrs[k]; };
+    n.getBoundingClientRect = function() {
+        var vis = this.isVisible !== false;
+        return { x: 0, y: 0, width: vis ? 100 : 0, height: vis ? 30 : 0, top: 0, left: 0, right: vis ? 100 : 0, bottom: vis ? 30 : 0 };
+    };
+    n.parentNode = null;
+    n.parentElement = null;
+    n.children = [];
+    n.childNodes = [];
+    n.firstChild = null;
+    n.lastChild = null;
+    n.nextSibling = null;
+    n.previousSibling = null;
+    n.ownerDocument = null;
+    // Track forms
+    if (n.tag === 'form') __wraith_forms.push(n);
+}
+
+// Build parent/child relationships from nodeId references
+var __wraith_nodeid_map = {};
+for (var i = 0; i < __wraith_nodes.length; i++) {
+    __wraith_nodeid_map[__wraith_nodes[i].nodeId] = __wraith_nodes[i];
+}
+for (var i = 0; i < __wraith_nodes.length; i++) {
+    var n = __wraith_nodes[i];
+    if (n.parentId && __wraith_nodeid_map[n.parentId]) {
+        n.parentNode = __wraith_nodeid_map[n.parentId];
+        n.parentElement = n.parentNode;
+    }
+    if (n.childIds) {
+        for (var c = 0; c < n.childIds.length; c++) {
+            var child = __wraith_nodeid_map[n.childIds[c]];
+            if (child) {
+                n.children.push(child);
+                n.childNodes.push(child);
+            }
+        }
+        if (n.children.length > 0) {
+            n.firstChild = n.children[0];
+            n.lastChild = n.children[n.children.length - 1];
+        }
+    }
+}
+// Set sibling relationships
+for (var i = 0; i < __wraith_nodes.length; i++) {
+    var n = __wraith_nodes[i];
+    if (n.parentNode && n.parentNode.children) {
+        var siblings = n.parentNode.children;
+        for (var s = 0; s < siblings.length; s++) {
+            if (siblings[s] === n) {
+                if (s > 0) n.previousSibling = siblings[s - 1];
+                if (s < siblings.length - 1) n.nextSibling = siblings[s + 1];
+                break;
+            }
+        }
+    }
+}
+
+// Second pass: apply prototypes after HTMLElement types are defined
+function __wraith_apply_prototypes() {
+    __wraith_init_proto_map();
+    for (var i = 0; i < __wraith_nodes.length; i++) {
+        var n = __wraith_nodes[i];
+        var proto = __wraith_tag_proto_map[n.tag];
+        if (proto) {
+            // Copy prototype methods/properties onto node (can't use Object.setPrototypeOf in all QuickJS versions)
+            var propNames = Object.getOwnPropertyNames(proto);
+            for (var j = 0; j < propNames.length; j++) {
+                var pn = propNames[j];
+                if (pn === 'constructor') continue;
+                // Don't overwrite existing methods like dispatchEvent/addEventListener
+                if (typeof n[pn] !== 'undefined' && pn !== 'value') continue;
+                var desc = Object.getOwnPropertyDescriptor(proto, pn);
+                if (desc) {
+                    Object.defineProperty(n, pn, desc);
+                }
+            }
+        }
+        // For inputs/textareas, ensure _value tracks the current value from attrs
+        if (n.tag === 'input' || n.tag === 'textarea' || n.tag === 'select') {
+            if (n.value !== undefined && !n._value) {
+                n._value = n.value;
+            }
+        }
+    }
 }
 
 // === document ===
 if (typeof document === 'undefined') var document = {};
 
+// Shared selector matching function
+function __wraith_matches_selector(n, s) {
+    if (s === '*') return true;
+    if (s.charAt(0) === '#' && n.id === s.substring(1)) return true;
+    if (s.charAt(0) === '.' && n.className && n.className.indexOf(s.substring(1)) >= 0) return true;
+    if (/^\w+$/.test(s) && s === n.tag) return true;
+    var am = s.match(/^(\w*)\[(\w[\w-]*)(?:=["']?([^"'\]]+)["']?)?\]$/);
+    if (am) {
+        var tagMatch = !am[1] || n.tag === am[1];
+        var attrMatch = am[3] !== undefined
+            ? (n.attrs && n.attrs[am[2]] === am[3])
+            : (n.attrs && am[2] in n.attrs);
+        if (tagMatch && attrMatch) return true;
+    }
+    return false;
+}
+
 document.querySelector = function(sel) {
-    for (var i = 0; i < __wraith_nodes.length; i++) {
-        var n = __wraith_nodes[i];
-        if (sel.startsWith('#') && n.id === sel.substring(1)) return n;
-        if (sel.startsWith('.') && n.className && n.className.indexOf(sel.substring(1)) >= 0) return n;
-        if (sel === n.tag) return n;
-        var m = sel.match(/^(\w+)\[(\w+)=["']?([^"'\]]+)["']?\]$/);
-        if (m && n.tag === m[1] && n.attrs && n.attrs[m[2]] === m[3]) return n;
+    var parts = sel.split(',');
+    for (var p = 0; p < parts.length; p++) {
+        var s = parts[p].replace(/^\s+|\s+$/g, '');
+        for (var i = 0; i < __wraith_nodes.length; i++) {
+            if (__wraith_matches_selector(__wraith_nodes[i], s)) return __wraith_nodes[i];
+        }
     }
     return null;
 };
 
 document.querySelectorAll = function(sel) {
+    var parts = sel.split(',');
     var results = [];
-    for (var i = 0; i < __wraith_nodes.length; i++) {
-        var n = __wraith_nodes[i];
-        if (sel.startsWith('#') && n.id === sel.substring(1)) results.push(n);
-        else if (sel.startsWith('.') && n.className && n.className.indexOf(sel.substring(1)) >= 0) results.push(n);
-        else if (sel === n.tag) results.push(n);
+    var seen = {};
+    for (var p = 0; p < parts.length; p++) {
+        var s = parts[p].replace(/^\s+|\s+$/g, '');
+        for (var i = 0; i < __wraith_nodes.length; i++) {
+            if (seen[i]) continue;
+            if (__wraith_matches_selector(__wraith_nodes[i], s)) {
+                results.push(__wraith_nodes[i]);
+                seen[i] = true;
+            }
+        }
     }
+    // Add NodeList-like properties
+    results.item = function(i) { return results[i] || null; };
     return results;
 };
+
+// Also add querySelectorAll/querySelector to all element nodes
+for (var i = 0; i < __wraith_nodes.length; i++) {
+    (function(node) {
+        node.querySelectorAll = function(sel) {
+            // Search among this node's descendants
+            var all = document.querySelectorAll(sel);
+            // For simplicity, return all matches (proper descendant filtering would need tree traversal)
+            return all;
+        };
+        node.querySelector = function(sel) {
+            var all = document.querySelectorAll(sel);
+            return all.length > 0 ? all[0] : null;
+        };
+    })(__wraith_nodes[i]);
+}
 
 document.getElementById = function(id) {
     return __wraith_node_index[id] || null;
@@ -79,9 +228,43 @@ document.createDocumentFragment = function() {
 
 document.title = "{title}";
 document.readyState = "complete";
-document.body = document.querySelector('body') || { appendChild: function() {}, innerHTML: '' };
-document.head = document.querySelector('head') || { appendChild: function() {} };
-document.documentElement = document.querySelector('html') || { lang: 'en' };
+// Ensure document.body/head/documentElement have full node methods
+var __wraith_ensure_node_methods = function(obj) {
+    if (!obj.dispatchEvent) obj.dispatchEvent = function(ev) { return true; };
+    if (!obj.addEventListener) obj.addEventListener = function() {};
+    if (!obj.removeEventListener) obj.removeEventListener = function() {};
+    if (!obj.focus) obj.focus = function() {};
+    if (!obj.blur) obj.blur = function() {};
+    if (!obj.click) obj.click = function() {};
+    if (!obj.appendChild) obj.appendChild = function(c) {
+        if (!this.children) this.children = [];
+        this.children.push(c);
+        if (c && c.tag) { c.parentNode = this; c.parentElement = this; }
+        return c;
+    };
+    if (!obj.removeChild) obj.removeChild = function() {};
+    if (!obj.insertBefore) obj.insertBefore = function(n) { if (!this.children) this.children = []; this.children.unshift(n); };
+    if (!obj.setAttribute) obj.setAttribute = function(k, v) { if (!this.attrs) this.attrs = {}; this.attrs[k] = v; };
+    if (!obj.getAttribute) obj.getAttribute = function(k) { return this.attrs ? this.attrs[k] : null; };
+    if (!obj.getBoundingClientRect) obj.getBoundingClientRect = function() { return { x: 0, y: 0, width: 1920, height: 1080, top: 0, left: 0, right: 1920, bottom: 1080 }; };
+    if (!obj.contains) obj.contains = function() { return false; };
+    if (!obj.closest) obj.closest = function() { return null; };
+    if (!obj.querySelectorAll) obj.querySelectorAll = document.querySelectorAll;
+    if (!obj.querySelector) obj.querySelector = document.querySelector;
+    return obj;
+};
+document.body = __wraith_ensure_node_methods(document.querySelector('body') || { tag: 'body', tagName: 'BODY', nodeName: 'BODY', nodeType: 1, children: [], childNodes: [] });
+document.head = __wraith_ensure_node_methods(document.querySelector('head') || { tag: 'head', tagName: 'HEAD', nodeName: 'HEAD', nodeType: 1, children: [], childNodes: [] });
+document.documentElement = __wraith_ensure_node_methods(document.querySelector('html') || { tag: 'html', tagName: 'HTML', nodeName: 'HTML', nodeType: 1, lang: 'en', children: [], childNodes: [] });
+
+// document.forms collection (HTMLCollection-like)
+document.forms = __wraith_forms;
+document.forms.namedItem = function(name) {
+    for (var i = 0; i < __wraith_forms.length; i++) {
+        if (__wraith_forms[i].name === name || __wraith_forms[i].id === name) return __wraith_forms[i];
+    }
+    return null;
+};
 
 // Event listeners (no-op stubs)
 document.addEventListener = function() {};
@@ -179,12 +362,19 @@ function __wraith_flush_timers() {
 }
 
 // === fetch stub ===
-// Returns a thenable that resolves with a Response-like object.
-// For actual HTTP, the Rust side handles networking.
+// Logs requests for Rust-side fulfillment, returns empty response.
+// Rust reads __wraith_xhr_log after script execution and replays the requests.
 window.fetch = function(url, options) {
+    var method = (options && options.method) || 'GET';
+    var body = (options && options.body) || '';
+
+    // Log the fetch for Rust to replay
+    if (typeof __wraith_xhr_log !== 'undefined') {
+        __wraith_xhr_log.push({ method: method, url: String(url), body: String(body), type: 'fetch' });
+    }
+
     return {
         then: function(resolve, reject) {
-            // Stub: return empty response
             if (resolve) {
                 resolve({
                     ok: true,
@@ -437,6 +627,94 @@ window.crypto = {
     }
 };
 
+// === HTML Element type hierarchy (for React native value setter pattern) ===
+window.HTMLElement = function() {};
+window.HTMLElement.prototype.focus = function() {};
+window.HTMLElement.prototype.blur = function() {};
+window.HTMLElement.prototype.click = function() {};
+window.HTMLElement.prototype.dispatchEvent = function(ev) { return true; };
+window.HTMLElement.prototype.addEventListener = function() {};
+window.HTMLElement.prototype.removeEventListener = function() {};
+window.HTMLElement.prototype.setAttribute = function(k, v) { if (!this.attrs) this.attrs = {}; this.attrs[k] = v; };
+window.HTMLElement.prototype.getAttribute = function(k) { return this.attrs ? this.attrs[k] : null; };
+
+window.HTMLInputElement = function() {};
+window.HTMLInputElement.prototype = new window.HTMLElement();
+window.HTMLInputElement.prototype.constructor = window.HTMLInputElement;
+Object.defineProperty(window.HTMLInputElement.prototype, 'value', {
+    get: function() { return this._value || ''; },
+    set: function(v) {
+        this._value = String(v);
+    },
+    configurable: true
+});
+
+window.HTMLTextAreaElement = function() {};
+window.HTMLTextAreaElement.prototype = new window.HTMLElement();
+window.HTMLTextAreaElement.prototype.constructor = window.HTMLTextAreaElement;
+Object.defineProperty(window.HTMLTextAreaElement.prototype, 'value', {
+    get: function() { return this._value || ''; },
+    set: function(v) {
+        this._value = String(v);
+    },
+    configurable: true
+});
+
+window.HTMLSelectElement = function() {};
+window.HTMLSelectElement.prototype = new window.HTMLElement();
+window.HTMLSelectElement.prototype.constructor = window.HTMLSelectElement;
+Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
+    get: function() { return this._value || ''; },
+    set: function(v) { this._value = String(v); },
+    configurable: true
+});
+
+window.HTMLFormElement = function() {};
+window.HTMLFormElement.prototype = new window.HTMLElement();
+window.HTMLFormElement.prototype.constructor = window.HTMLFormElement;
+window.HTMLFormElement.prototype.submit = function() {};
+window.HTMLFormElement.prototype.reset = function() {};
+
+window.HTMLButtonElement = function() {};
+window.HTMLButtonElement.prototype = new window.HTMLElement();
+window.HTMLButtonElement.prototype.constructor = window.HTMLButtonElement;
+
+window.HTMLAnchorElement = function() {};
+window.HTMLAnchorElement.prototype = new window.HTMLElement();
+window.HTMLAnchorElement.prototype.constructor = window.HTMLAnchorElement;
+
+window.HTMLImageElement = function() {};
+window.HTMLImageElement.prototype = new window.HTMLElement();
+window.HTMLImageElement.prototype.constructor = window.HTMLImageElement;
+
+window.HTMLDivElement = function() {};
+window.HTMLDivElement.prototype = new window.HTMLElement();
+window.HTMLDivElement.prototype.constructor = window.HTMLDivElement;
+
+window.HTMLSpanElement = function() {};
+window.HTMLSpanElement.prototype = new window.HTMLElement();
+window.HTMLSpanElement.prototype.constructor = window.HTMLSpanElement;
+
+// Alias to global scope
+var HTMLElement = window.HTMLElement;
+var HTMLInputElement = window.HTMLInputElement;
+var HTMLTextAreaElement = window.HTMLTextAreaElement;
+var HTMLSelectElement = window.HTMLSelectElement;
+var HTMLFormElement = window.HTMLFormElement;
+
+// Now apply typed prototypes to existing nodes
+__wraith_apply_prototypes();
+
+// Set ownerDocument on all nodes
+for (var i = 0; i < __wraith_nodes.length; i++) {
+    __wraith_nodes[i].ownerDocument = document;
+}
+
+// Lookup element by @e ref_id (used by browse_click, browse_fill, etc.)
+function __wraith_get_by_ref(ref_id) {
+    return __wraith_ref_index[ref_id] || null;
+}
+
 // === Canvas stub (fingerprint-compatible) ===
 window.HTMLCanvasElement = function() {};
 window.HTMLCanvasElement.prototype.getContext = function(type) {
@@ -461,10 +739,32 @@ window.HTMLCanvasElement.prototype.getContext = function(type) {
     return null;
 };
 
-// Make createElement return canvas-like objects when tag is 'canvas'
+// Track dynamically created script elements (for SPA bootstrapping like Ashby)
+var __wraith_dynamic_scripts = [];
+
+// Make createElement return enriched objects
 var __wraith_orig_createElement = document.createElement;
 document.createElement = function(tag) {
     var el = __wraith_orig_createElement(tag);
+    // Ensure all created elements have full node methods
+    el.dispatchEvent = function(ev) { return true; };
+    el.addEventListener = function() {};
+    el.removeEventListener = function() {};
+    el.getBoundingClientRect = function() { return { x: 0, y: 0, width: 100, height: 30, top: 0, left: 0, right: 100, bottom: 30 }; };
+    el.focus = function() {};
+    el.blur = function() {};
+    el.click = function() {};
+    el.closest = function() { return null; };
+    el.contains = function() { return false; };
+    el.parentNode = null;
+    el.children = [];
+    el.childNodes = [];
+    el.ownerDocument = document;
+    el.isVisible = true;
+    el.nodeType = 1;
+    el.tagName = tag.toUpperCase();
+    el.nodeName = tag.toUpperCase();
+
     if (tag === 'canvas') {
         el.width = 300;
         el.height = 150;
@@ -473,6 +773,22 @@ document.createElement = function(tag) {
     }
     if (tag === 'style' || tag === 'link') {
         el.sheet = { insertRule: function() {}, cssRules: [] };
+    }
+    if (tag === 'script') {
+        // Track script elements — when src is set, record it for browse_fetch_scripts
+        var _src = '';
+        Object.defineProperty(el, 'src', {
+            get: function() { return _src; },
+            set: function(v) {
+                _src = v;
+                if (!el.attrs) el.attrs = {};
+                el.attrs.src = v;
+                __wraith_dynamic_scripts.push(v);
+                // Also add to the DOM nodes so querySelectorAll('script') finds it
+                __wraith_nodes.push(el);
+            },
+            configurable: true
+        });
     }
     return el;
 };
@@ -515,14 +831,66 @@ var XMLHttpRequest = window.XMLHttpRequest;
 var __wraith_xhr_log = [];
 function __wraith_get_xhr_log() { return JSON.stringify(__wraith_xhr_log); }
 
-// === Event constructor ===
+// === Event constructors ===
 window.Event = function(type, opts) {
     this.type = type;
     this.bubbles = opts ? !!opts.bubbles : false;
     this.cancelable = opts ? !!opts.cancelable : false;
-    this.preventDefault = function() {};
+    this.defaultPrevented = false;
+    this.target = null;
+    this.currentTarget = null;
+    this.eventPhase = 0;
+    this.timeStamp = Date.now();
+    this.preventDefault = function() { this.defaultPrevented = true; };
     this.stopPropagation = function() {};
+    this.stopImmediatePropagation = function() {};
 };
+var Event = window.Event;
+
+window.InputEvent = function(type, opts) {
+    window.Event.call(this, type, opts);
+    this.data = opts ? opts.data || null : null;
+    this.inputType = opts ? opts.inputType || 'insertText' : 'insertText';
+    this.isComposing = false;
+};
+window.InputEvent.prototype = Object.create(window.Event.prototype);
+window.InputEvent.prototype.constructor = window.InputEvent;
+var InputEvent = window.InputEvent;
+
+window.KeyboardEvent = function(type, opts) {
+    window.Event.call(this, type, opts);
+    this.key = opts ? opts.key || '' : '';
+    this.code = opts ? opts.code || '' : '';
+    this.keyCode = opts ? opts.keyCode || 0 : 0;
+    this.which = opts ? opts.which || this.keyCode : 0;
+    this.ctrlKey = opts ? !!opts.ctrlKey : false;
+    this.shiftKey = opts ? !!opts.shiftKey : false;
+    this.altKey = opts ? !!opts.altKey : false;
+    this.metaKey = opts ? !!opts.metaKey : false;
+    this.repeat = false;
+    this.isComposing = false;
+};
+window.KeyboardEvent.prototype = Object.create(window.Event.prototype);
+window.KeyboardEvent.prototype.constructor = window.KeyboardEvent;
+var KeyboardEvent = window.KeyboardEvent;
+
+window.FocusEvent = function(type, opts) {
+    window.Event.call(this, type, opts);
+    this.relatedTarget = opts ? opts.relatedTarget || null : null;
+};
+window.FocusEvent.prototype = Object.create(window.Event.prototype);
+window.FocusEvent.prototype.constructor = window.FocusEvent;
+var FocusEvent = window.FocusEvent;
+
+window.MouseEvent = function(type, opts) {
+    window.Event.call(this, type, opts);
+    this.clientX = opts ? opts.clientX || 0 : 0;
+    this.clientY = opts ? opts.clientY || 0 : 0;
+    this.button = opts ? opts.button || 0 : 0;
+};
+window.MouseEvent.prototype = Object.create(window.Event.prototype);
+window.MouseEvent.prototype.constructor = window.MouseEvent;
+var MouseEvent = window.MouseEvent;
 
 // === URL constructor stub ===
 if (typeof URL === 'undefined') {
@@ -583,41 +951,69 @@ if (typeof Promise === 'undefined') {
 // Used by browse_fill to set values on React-controlled inputs
 
 function __wraith_react_set_value(el, value) {
-    // Try native setter first (bypasses React's controlled input)
-    var descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
-        || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
-    if (descriptor && descriptor.set) {
-        descriptor.set.call(el, value);
-    } else {
-        el.value = value;
+    try {
+        // Step 1: Use native setter to bypass React's synthetic wrapper
+        // This is the standard Puppeteer/Selenium technique for React forms
+        var descriptor = null;
+        try {
+            descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+        } catch(e) {}
+        if (!descriptor) {
+            try { descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value'); } catch(e) {}
+        }
+        if (descriptor && descriptor.set) {
+            descriptor.set.call(el, value);
+        } else {
+            el.value = value;
+        }
+    } catch(e) {
+        try { el.value = value; } catch(e2) { el._value = String(value); }
     }
 
-    // Dispatch events React listens for
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
+    // Step 2: Invalidate React's _valueTracker so React sees the change
+    // React 16+ attaches a _valueTracker to controlled inputs that caches the last value.
+    // If we don't invalidate it, React thinks the value hasn't changed and ignores the event.
+    try {
+        var tracker = el._valueTracker;
+        if (tracker) {
+            tracker.setValue('');
+        }
+    } catch(e) {}
+
+    // Step 3: Dispatch events React's synthetic event system listens for
+    try {
+        el.dispatchEvent(new Event('focus', { bubbles: true }));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+    } catch(e) {}
 
     // Try to find and call React's onChange directly via fiber
-    var keys = Object.keys(el);
-    for (var i = 0; i < keys.length; i++) {
-        var k = keys[i];
-        if (k.startsWith('__reactProps$')) {
-            var props = el[k];
-            if (props && props.onChange) {
-                props.onChange({ target: el, currentTarget: el, type: 'change' });
-                return 'react_props';
-            }
-        }
-        if (k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')) {
-            var fiber = el[k];
-            while (fiber) {
-                if (fiber.memoizedProps && fiber.memoizedProps.onChange) {
-                    fiber.memoizedProps.onChange({ target: el, currentTarget: el, type: 'change' });
-                    return 'react_fiber';
+    try {
+        var keys = Object.keys(el);
+        for (var i = 0; i < keys.length; i++) {
+            var k = keys[i];
+            if (k.indexOf('__reactProps$') === 0) {
+                var props = el[k];
+                if (props && props.onChange) {
+                    props.onChange({ target: el, currentTarget: el, type: 'change' });
+                    return 'react_props';
                 }
-                fiber = fiber.return;
+            }
+            if (k.indexOf('__reactFiber$') === 0 || k.indexOf('__reactInternalInstance$') === 0) {
+                var fiber = el[k];
+                var depth = 0;
+                while (fiber && depth < 50) {
+                    if (fiber.memoizedProps && fiber.memoizedProps.onChange) {
+                        fiber.memoizedProps.onChange({ target: el, currentTarget: el, type: 'change' });
+                        return 'react_fiber';
+                    }
+                    fiber = fiber.return;
+                    depth++;
+                }
             }
         }
-    }
+    } catch(e) {}
     return 'native_events';
 }
 

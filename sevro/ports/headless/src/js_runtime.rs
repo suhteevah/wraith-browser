@@ -215,6 +215,9 @@ impl Default for JsRuntime {
 
 /// Convert DomNodes to a JSON-friendly format for injection into JS.
 fn build_node_json(nodes: &[DomNode]) -> Vec<serde_json::Value> {
+    // Assign ref_ids that match the snapshot: 1-based index over visible elements
+    let mut ref_counter = 0u32;
+
     nodes.iter()
         .filter(|n| n.node_type == DomNodeType::Element)
         .map(|n| {
@@ -222,6 +225,13 @@ fn build_node_json(nodes: &[DomNode]) -> Vec<serde_json::Value> {
             obj.insert("nodeId".to_string(), serde_json::json!(n.node_id));
             obj.insert("tag".to_string(), serde_json::json!(n.tag_name));
             obj.insert("textContent".to_string(), serde_json::json!(n.text_content));
+            obj.insert("isVisible".to_string(), serde_json::json!(n.is_visible));
+
+            // Assign ref_id matching snapshot logic (visible elements get sequential IDs)
+            if n.is_visible {
+                ref_counter += 1;
+                obj.insert("__ref_id".to_string(), serde_json::json!(ref_counter));
+            }
 
             if let Some(id) = n.attributes.get("id") {
                 obj.insert("id".to_string(), serde_json::json!(id));
@@ -234,6 +244,17 @@ fn build_node_json(nodes: &[DomNode]) -> Vec<serde_json::Value> {
             }
             if let Some(value) = n.attributes.get("value") {
                 obj.insert("value".to_string(), serde_json::json!(value));
+            }
+            if let Some(name) = n.attributes.get("name") {
+                obj.insert("name".to_string(), serde_json::json!(name));
+            }
+
+            // Parent/child relationships for DOM traversal
+            if let Some(parent_id) = n.parent {
+                obj.insert("parentId".to_string(), serde_json::json!(parent_id));
+            }
+            if !n.children.is_empty() {
+                obj.insert("childIds".to_string(), serde_json::json!(n.children));
             }
 
             let attrs: serde_json::Map<String, serde_json::Value> = n.attributes.iter()
@@ -369,6 +390,76 @@ mod tests {
         assert_eq!(rt.run_script("const x = 42; x").unwrap(), "42");
         assert_eq!(rt.run_script("let arr = [1,2,3]; arr.map(x => x*2).join(',')").unwrap(), "2,4,6");
         assert_eq!(rt.run_script("const [a, ...rest] = [1,2,3]; rest.length").unwrap(), "2");
+    }
+
+    #[test]
+    fn html_input_element_prototype_value() {
+        let rt = JsRuntime::new().unwrap();
+        rt.setup_dom_bridge(&make_test_nodes()).unwrap();
+
+        // Gap #4: HTMLInputElement.prototype must exist
+        let result = rt.run_script("typeof window.HTMLInputElement").unwrap();
+        assert_eq!(result, "function");
+
+        // The value descriptor must be gettable from the prototype
+        let result = rt.run_script(
+            "var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); typeof desc.set"
+        ).unwrap();
+        assert_eq!(result, "function");
+
+        // Input nodes should have the value descriptor applied
+        let result = rt.run_script(
+            "var el = document.getElementById('email-input'); \
+             var desc = Object.getOwnPropertyDescriptor(el, 'value') || \
+                        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value'); \
+             desc.set.call(el, 'test@example.com'); \
+             el.value"
+        ).unwrap();
+        assert_eq!(result, "test@example.com");
+    }
+
+    #[test]
+    fn react_set_value_helper() {
+        let rt = JsRuntime::new().unwrap();
+        rt.setup_dom_bridge(&make_test_nodes()).unwrap();
+
+        // __wraith_react_set_value should work without crashing
+        let result = rt.run_script(
+            "var el = document.getElementById('email-input'); \
+             __wraith_react_set_value(el, 'hello@world.com')"
+        ).unwrap();
+        // Should return 'native_events' since no React fiber exists on test nodes
+        assert_eq!(result, "native_events");
+
+        // Value should be set
+        let result = rt.run_script(
+            "document.getElementById('email-input').value"
+        ).unwrap();
+        assert_eq!(result, "hello@world.com");
+    }
+
+    #[test]
+    fn document_forms_collection() {
+        let mut nodes = make_test_nodes();
+        nodes.push(DomNode {
+            node_id: 4,
+            node_type: DomNodeType::Element,
+            tag_name: "form".to_string(),
+            attributes: HashMap::from([("id".to_string(), "login-form".to_string())]),
+            text_content: String::new(),
+            children: vec![],
+            parent: Some(1),
+            bounding_box: None,
+            is_visible: true,
+        });
+        let rt = JsRuntime::new().unwrap();
+        rt.setup_dom_bridge(&nodes).unwrap();
+
+        let result = rt.run_script("document.forms.length").unwrap();
+        assert_eq!(result, "1");
+
+        let result = rt.run_script("document.forms[0].id").unwrap();
+        assert_eq!(result, "login-form");
     }
 
     #[test]

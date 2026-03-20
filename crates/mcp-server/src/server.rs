@@ -1731,26 +1731,46 @@ impl WraithHandler {
                     .build()
                     .unwrap_or_else(|_| reqwest::Client::new());
 
-                // Extract script URLs synchronously (scraper::Html isn't Send)
-                let script_urls: Vec<String> = {
+                // Extract both external script URLs and inline script content
+                let (script_urls, inline_scripts): (Vec<String>, Vec<String>) = {
                     let doc = scraper::Html::parse_document(&html);
-                    let sel = scraper::Selector::parse("script[src]").unwrap();
-                    doc.select(&sel)
-                        .filter_map(|el| {
-                            let src = el.value().attr("src")?;
-                            if let Some(t) = el.value().attr("type") {
-                                if t.contains("json") || t.contains("template") { return None; }
+                    let sel = scraper::Selector::parse("script").unwrap();
+
+                    let mut urls = Vec::new();
+                    let mut inlines = Vec::new();
+
+                    for el in doc.select(&sel) {
+                        // Skip JSON-LD, templates, etc.
+                        if let Some(t) = el.value().attr("type") {
+                            if t.contains("json") || t.contains("template") || t.contains("importmap") {
+                                continue;
                             }
-                            if src.contains("google-analytics") || src.contains("gtag") || src.contains("facebook") || src.contains("hotjar") { return None; }
+                        }
+
+                        if let Some(src) = el.value().attr("src") {
+                            // External script
+                            if src.contains("google-analytics") || src.contains("gtag")
+                                || src.contains("facebook") || src.contains("hotjar") { continue; }
                             let full = if src.starts_with("http") { src.to_string() }
                                 else if src.starts_with("//") { format!("https:{}", src) }
                                 else if src.starts_with('/') {
-                                    url::Url::parse(&url).ok().map(|u| format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), src))?
-                                } else { return None };
-                            Some(full)
-                        })
-                        .collect()
-                }; // doc dropped here — no longer borrowed
+                                    if let Ok(u) = url::Url::parse(&url) {
+                                        format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), src)
+                                    } else { continue }
+                                } else { continue };
+                            urls.push(full);
+                        } else {
+                            // Inline script — get the text content
+                            let text: String = el.text().collect::<Vec<_>>().join("");
+                            let trimmed = text.trim();
+                            if !trimmed.is_empty() && trimmed.len() > 10 {
+                                inlines.push(trimmed.to_string());
+                            }
+                        }
+                    }
+
+                    (urls, inlines)
+                }; // doc dropped here
 
                 // Fetch scripts async (now safe — no scraper types held)
                 let mut scripts = std::collections::HashMap::new();
@@ -1770,13 +1790,68 @@ impl WraithHandler {
                     }
                 }
 
-                if scripts.is_empty() {
-                    Ok(CallToolResult::success(vec![Content::text("No external scripts found or fetchable.")]))
+                if scripts.is_empty() && inline_scripts.is_empty() {
+                    Ok(CallToolResult::success(vec![Content::text("No scripts found (external or inline).")]))
                 } else {
-                    // Execute each script in the engine's JS runtime
                     let engine = self.engine.lock().await;
                     let mut executed = 0;
                     let mut failed = 0;
+                    let mut dynamic_urls: Vec<String> = Vec::new();
+
+                    // First: execute inline scripts (these may bootstrap SPAs like Ashby)
+                    for (idx, inline) in inline_scripts.iter().enumerate() {
+                        match engine.eval_js(inline).await {
+                            Ok(_) => {
+                                executed += 1;
+                                debug!(idx = idx, len = inline.len(), "Inline script executed");
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                debug!(idx = idx, error = %e, "Inline script failed");
+                            }
+                        }
+                    }
+
+                    // Check if inline scripts dynamically created new script elements
+                    // (Ashby pattern: inline script creates <script src="bundle.js">)
+                    if let Ok(dynamic_json) = engine.eval_js(
+                        r#"(() => {
+                            try {
+                                var urls = [];
+                                var scripts = document.querySelectorAll('script');
+                                for (var i = 0; i < scripts.length; i++) {
+                                    var s = scripts[i];
+                                    if (s.attrs && s.attrs.src) urls.push(s.attrs.src);
+                                }
+                                return JSON.stringify(urls);
+                            } catch(e) { return '[]'; }
+                        })()"#
+                    ).await {
+                        if let Ok(urls) = serde_json::from_str::<Vec<String>>(&dynamic_json) {
+                            for dyn_url in urls {
+                                if !scripts.contains_key(&dyn_url) && dyn_url.starts_with("http") {
+                                    dynamic_urls.push(dyn_url);
+                                }
+                            }
+                        }
+                    }
+
+                    // Fetch dynamically discovered scripts
+                    for dyn_url in &dynamic_urls {
+                        if total >= max_total { break; }
+                        if let Ok(resp) = client.get(dyn_url).send().await {
+                            if resp.status().is_success() {
+                                if let Ok(text) = resp.text().await {
+                                    if !text.is_empty() && total + text.len() <= max_total {
+                                        total += text.len();
+                                        scripts.insert(dyn_url.clone(), text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Then: execute external scripts (fetched + dynamically discovered)
                     for (src, script_text) in &scripts {
                         match engine.eval_js(script_text).await {
                             Ok(_) => {
@@ -1793,8 +1868,10 @@ impl WraithHandler {
                     // Flush timers (React setup uses setTimeout)
                     let _ = engine.eval_js("if(typeof __wraith_flush_timers==='function')__wraith_flush_timers()").await;
 
+                    let total_found = inline_scripts.len() + script_urls.len() + dynamic_urls.len();
                     Ok(CallToolResult::success(vec![Content::text(
-                        format!("Fetched {} scripts: {} executed, {} failed. React/frameworks should now be active.", scripts.len(), executed, failed)
+                        format!("Found {} scripts ({} inline, {} external, {} dynamic): {} executed, {} failed.",
+                            total_found, inline_scripts.len(), script_urls.len(), dynamic_urls.len(), executed, failed)
                     )]))
                 }
             }

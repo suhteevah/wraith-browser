@@ -10,6 +10,78 @@ use crate::error::{BrowserResult, BrowserError};
 use async_trait::async_trait;
 use tracing::{info, debug, instrument};
 
+/// Detect the correct API submission endpoint for known ATS platforms.
+/// Returns (submit_url, content_type).
+fn detect_ats_submit_endpoint(page_url: &str, form_action: &str) -> (String, String) {
+    // If form has an explicit action, use it
+    if !form_action.is_empty() && form_action != "#" {
+        if form_action.starts_with("http") {
+            return (form_action.to_string(), "application/json".to_string());
+        }
+        if let Ok(base) = url::Url::parse(page_url) {
+            if let Ok(resolved) = base.join(form_action) {
+                return (resolved.to_string(), "application/json".to_string());
+            }
+        }
+    }
+
+    // Greenhouse: job-boards.greenhouse.io/{company}/jobs/{job_id}
+    //          or job-boards.eu.greenhouse.io/{company}/jobs/{job_id}
+    // API: POST same URL with /applications suffix (or embedded API)
+    if page_url.contains("greenhouse.io") {
+        if let Ok(parsed) = url::Url::parse(page_url) {
+            let host = parsed.host_str().unwrap_or("");
+            let path = parsed.path();
+            // Extract company and job_id from path: /{company}/jobs/{job_id}
+            let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
+            if segments.len() >= 3 && segments[1] == "jobs" {
+                let company = segments[0];
+                let job_id = segments[2];
+
+                // Greenhouse's actual submission endpoint
+                // The board API is at boards-api.greenhouse.io
+                let api_host = if host.contains(".eu.") {
+                    "boards-api.eu.greenhouse.io"
+                } else {
+                    "boards-api.greenhouse.io"
+                };
+
+                let api_url = format!(
+                    "https://{}/v1/boards/{}/jobs/{}/applications",
+                    api_host, company, job_id
+                );
+                info!(api_url = %api_url, company = %company, job_id = %job_id, "Detected Greenhouse API endpoint");
+                return (api_url, "multipart/form-data".to_string());
+            }
+        }
+    }
+
+    // Lever: jobs.lever.co/{company}/{job_id}/apply
+    // API: POST to same URL (Lever accepts form POST on the apply page)
+    if page_url.contains("lever.co") {
+        let submit = if page_url.ends_with("/apply") {
+            page_url.to_string()
+        } else {
+            format!("{}/apply", page_url.trim_end_matches('/'))
+        };
+        return (submit, "application/x-www-form-urlencoded".to_string());
+    }
+
+    // Ashby: jobs.ashbyhq.com/{company}/{job_id}/application/submit
+    if page_url.contains("ashbyhq.com") {
+        if let Ok(parsed) = url::Url::parse(page_url) {
+            let path = parsed.path();
+            // Find job ID and construct API URL
+            let submit = format!("{}://{}{}/application/submit",
+                parsed.scheme(), parsed.host_str().unwrap_or(""), path.trim_end_matches('/'));
+            return (submit, "application/json".to_string());
+        }
+    }
+
+    // Default: POST to the page URL
+    (page_url.to_string(), "application/json".to_string())
+}
+
 /// Browser engine backed by Sevro (stripped Servo fork).
 ///
 /// Includes an integrated Rhai scripting engine that triggers userscripts
@@ -120,10 +192,51 @@ impl BrowserEngine for SevroEngineBackend {
     async fn snapshot(&self) -> BrowserResult<DomSnapshot> {
         let sevro_nodes = self.engine.dom_snapshot_with_layout();
 
+        // Query QuickJS for current input values (browse_fill sets values in JS, not Rust)
+        let js_values: std::collections::HashMap<u32, String> = match self.engine.eval_js(
+            r#"(() => {
+                try {
+                    var result = {};
+                    var keys = Object.keys(__wraith_ref_index);
+                    for (var i = 0; i < keys.length; i++) {
+                        var ref_id = keys[i];
+                        var el = __wraith_ref_index[ref_id];
+                        if (!el) continue;
+                        if (el.tag === 'input' || el.tag === 'textarea' || el.tag === 'select') {
+                            var val = '';
+                            try { val = el._value || ''; } catch(e) {}
+                            if (!val) { try { val = el.value || ''; } catch(e) {} }
+                            if (val) result[ref_id] = val;
+                        }
+                    }
+                    return JSON.stringify(result);
+                } catch(e) {
+                    return '{"__error":"' + String(e) + '"}';
+                }
+            })()"#
+        ).await {
+            Ok(json) => {
+                debug!(js_values_json = %json, "Snapshot: read JS input values");
+                serde_json::from_str::<std::collections::HashMap<String, String>>(&json)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|(k, v)| {
+                        if k == "__error" { debug!(error = %v, "Snapshot JS error"); return None; }
+                        k.parse::<u32>().ok().map(|id| (id, v))
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                debug!(error = %e, "Snapshot: failed to read JS input values");
+                std::collections::HashMap::new()
+            }
+        };
+
         let elements: Vec<DomElement> = sevro_nodes.iter()
             .filter(|n| n.node_type == sevro_headless::DomNodeType::Element && n.is_visible)
             .enumerate()
             .map(|(i, node)| {
+                let ref_id = (i + 1) as u32;
                 let role = match node.tag_name.as_str() {
                     "a" => "link".to_string(),
                     "button" => "button".to_string(),
@@ -135,13 +248,17 @@ impl BrowserEngine for SevroEngineBackend {
                     other => other.to_string(),
                 };
 
+                // Prefer JS-set value over HTML attribute value
+                let value = js_values.get(&ref_id).cloned()
+                    .or_else(|| node.attributes.get("value").cloned());
+
                 DomElement {
-                    ref_id: (i + 1) as u32,
+                    ref_id,
                     role,
                     text: if node.text_content.is_empty() { None } else { Some(node.text_content.clone()) },
                     href: node.attributes.get("href").cloned(),
                     placeholder: node.attributes.get("placeholder").cloned(),
-                    value: node.attributes.get("value").cloned(),
+                    value,
                     enabled: true,
                     visible: node.is_visible,
                     aria_label: node.attributes.get("aria-label").cloned(),
@@ -181,23 +298,19 @@ impl BrowserEngine for SevroEngineBackend {
                 Ok(ActionResult::Navigated { url, title: String::new() })
             }
             BrowserAction::Click { ref_id } => {
-                // Click via JS with proper event dispatch (React-compatible)
+                // Click via JS — ref_id matches snapshot's @e numbering via __wraith_ref_index
                 let js = format!(
                     r#"(() => {{
-                        var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick], summary, label');
-                        var visible = Array.from(els).filter(el => {{
-                            var r = el.getBoundingClientRect();
-                            return r.width > 0 && r.height > 0;
-                        }});
-                        var el = visible[{ref_id} - 1];
-                        if (!el) return 'NOT_FOUND';
-                        el.focus();
-                        el.click();
-                        el.dispatchEvent(new Event('click', {{ bubbles: true }}));
-                        var href = el.getAttribute('href');
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (!el) return 'NOT_FOUND: @e{ref_id} not in ref_index (' + Object.keys(__wraith_ref_index).length + ' refs)';
+                        try {{ el.focus(); }} catch(e) {{}}
+                        try {{ el.click(); }} catch(e) {{}}
+                        try {{ el.dispatchEvent(new Event('click', {{ bubbles: true }})); }} catch(e) {{}}
+                        var href = el.attrs ? el.attrs.href : null;
                         if (href) return 'CLICKED_LINK: ' + href;
-                        return 'CLICKED: ' + (el.textContent || '').trim().substring(0, 50);
-                    }})()"#
+                        return 'CLICKED: ' + (el.textContent || el.tag || '').substring(0, 50);
+                    }})()"#,
+                    ref_id = ref_id,
                 );
                 match self.engine.eval_js(&js).await {
                     Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
@@ -208,58 +321,27 @@ impl BrowserEngine for SevroEngineBackend {
                 }
             }
             BrowserAction::Fill { ref_id, text } => {
-                // Set value + dispatch React-compatible events via JS
+                // Set value + dispatch React-compatible events via ref_id lookup
+                let text_escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
                 let js = format!(
                     r#"(() => {{
-                        var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [contenteditable]');
-                        var visible = Array.from(els).filter(el => {{
-                            var r = el.getBoundingClientRect();
-                            return r.width > 0 && r.height > 0;
-                        }});
-                        var el = visible[{ref_id} - 1];
-                        if (!el) return 'NOT_FOUND';
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (!el) return 'NOT_FOUND: @e{ref_id} not in ref_index (' + Object.keys(__wraith_ref_index).length + ' refs)';
 
                         // Focus the element first
-                        el.focus();
+                        try {{ el.focus(); }} catch(e) {{}}
 
-                        // Set the native value
-                        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
-                        );
-                        var nativeTextareaValueSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLTextAreaElement.prototype, 'value'
-                        );
+                        // Use __wraith_react_set_value which handles native setter + events + fiber
+                        var result = __wraith_react_set_value(el, '{text_escaped}');
 
-                        if (el.tagName === 'TEXTAREA' && nativeTextareaValueSetter) {{
-                            nativeTextareaValueSetter.set.call(el, '{text_escaped}');
-                        }} else if (nativeInputValueSetter) {{
-                            nativeInputValueSetter.set.call(el, '{text_escaped}');
-                        }} else {{
-                            el.value = '{text_escaped}';
-                        }}
+                        // Verify: read back the value to confirm it persisted
+                        var readback = el.value || el._value || '';
+                        var verified = (readback === '{text_escaped}');
 
-                        // Dispatch events that React listens for
-                        el.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
-                        el.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
-                        el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
-
-                        // Try React fiber shim — directly call onChange if React is present
-                        var fiberKey = Object.keys(el).find(function(k) {{
-                            return k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$') || k.startsWith('__reactProps$');
-                        }});
-                        if (fiberKey) {{
-                            var fiber = el[fiberKey];
-                            if (fiber && fiber.onChange) {{
-                                fiber.onChange({{ target: el, currentTarget: el }});
-                            }} else if (fiber && fiber.memoizedProps && fiber.memoizedProps.onChange) {{
-                                fiber.memoizedProps.onChange({{ target: el, currentTarget: el }});
-                            }}
-                            return 'FILLED_REACT: ' + el.value;
-                        }}
-
-                        return 'FILLED: ' + el.value;
+                        return 'FILLED (' + result + (verified ? ', verified' : ', UNVERIFIED: got "' + readback + '"') + '): ' + readback;
                     }})()"#,
-                    text_escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n")
+                    ref_id = ref_id,
+                    text_escaped = text_escaped,
                 );
                 match self.engine.eval_js(&js).await {
                     Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
@@ -281,32 +363,26 @@ impl BrowserEngine for SevroEngineBackend {
             }
             BrowserAction::UploadFile { ref_id, file_name, file_data, mime_type } => {
                 // Use JS to create a File object from base64 data and set it on the input
-                // Searches ALL file inputs (including hidden ones like Greenhouse's visually-hidden)
                 let js = format!(
                     r#"(() => {{
-                        // First try: find ALL file inputs (including hidden ones)
-                        var fileInputs = document.querySelectorAll('input[type="file"]');
-                        var el = null;
+                        // First try: direct ref_id lookup
+                        var el = __wraith_get_by_ref({ref_id});
 
-                        if (fileInputs.length > 0) {{
-                            // Use ref_id as index into file inputs, or first one if ref_id=0/1
-                            var idx = Math.min({ref_id} - 1, fileInputs.length - 1);
-                            if (idx < 0) idx = 0;
-                            el = fileInputs[idx];
-                        }}
+                        // If ref target isn't a file input, search all file inputs
+                        if (el && el.attrs && el.attrs.type !== 'file') el = null;
 
-                        // Fallback: search visible interactive elements
+                        // Fallback: find ANY file input (including hidden ones like Greenhouse's visually-hidden)
                         if (!el) {{
-                            var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
-                            var visible = Array.from(els).filter(e => {{
-                                var r = e.getBoundingClientRect();
-                                return r.width > 0 && r.height > 0;
-                            }});
-                            el = visible[{ref_id} - 1];
+                            for (var i = 0; i < __wraith_nodes.length; i++) {{
+                                var n = __wraith_nodes[i];
+                                if (n.tag === 'input' && n.attrs && n.attrs.type === 'file') {{
+                                    el = n;
+                                    break;
+                                }}
+                            }}
                         }}
 
-                        if (!el) return 'NOT_FOUND: no file input found (tried {ref_id} file inputs + visible elements)';
-                        if (el.type !== 'file') return 'NOT_FILE_INPUT: element is ' + el.tagName + '[type=' + (el.type || 'unknown') + ']';
+                        if (!el) return 'NOT_FOUND: no file input found (ref @e{ref_id}, searched ' + __wraith_nodes.length + ' nodes)';
                         try {{
                             var b64 = '{file_data}';
                             var binary = atob(b64);
@@ -335,32 +411,186 @@ impl BrowserEngine for SevroEngineBackend {
                     Err(e) => Ok(ActionResult::Failed { error: format!("File upload JS failed: {e}") })
                 }
             }
+            BrowserAction::TypeText { ref_id, text, delay_ms: _ } => {
+                // Simulate character-by-character input with focus + value set + events
+                let text_escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+                let js = format!(r#"(() => {{
+    var el = __wraith_get_by_ref({ref_id});
+    if (!el) return 'NOT_FOUND: @e{ref_id}';
+    try {{ el.focus(); }} catch(e) {{}}
+    var text = '{text_escaped}';
+    for (var i = 0; i < text.length; i++) {{
+        el.value = (el.value || el._value || '') + text.charAt(i);
+        if (el._value !== undefined) el._value = el.value;
+        try {{ el.dispatchEvent(new Event('input', {{ bubbles: true }})); }} catch(e) {{}}
+    }}
+    try {{ el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} catch(e) {{}}
+    try {{ el.dispatchEvent(new Event('blur', {{ bubbles: true }})); }} catch(e) {{}}
+    return 'TYPED: ' + (el.value || el._value || '');
+}})()"#, ref_id = ref_id, text_escaped = text_escaped);
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
+                    Err(e) => {
+                        self.engine.fill_element(ref_id as u64, &text);
+                        Ok(ActionResult::Success { message: format!("Typed @e{} (basic): {}", ref_id, e) })
+                    }
+                }
+            }
+            BrowserAction::Select { ref_id, value } => {
+                // Set the selected option value via ref_id lookup
+                let value_escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+                let js = format!(r#"(() => {{
+    var el = __wraith_get_by_ref({ref_id});
+    if (!el) return 'NOT_FOUND: @e{ref_id}';
+    try {{ el.focus(); }} catch(e) {{}}
+    el.value = '{value_escaped}';
+    if (el._value !== undefined) el._value = '{value_escaped}';
+    try {{ el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} catch(e) {{}}
+    try {{ el.dispatchEvent(new Event('input', {{ bubbles: true }})); }} catch(e) {{}}
+    return 'SELECTED: ' + (el.value || el._value || '');
+}})()"#, ref_id = ref_id, value_escaped = value_escaped);
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
+                    Err(e) => Ok(ActionResult::Failed { error: format!("Select @e{} failed: {}", ref_id, e) })
+                }
+            }
             BrowserAction::SubmitForm { ref_id } => {
-                // Find the form or submit button and trigger submission
+                // Serialize all form fields from the DOM and attempt direct HTTP POST.
+                // React forms don't use traditional form action — they POST via XHR to an API.
+                // Since React isn't loaded in QuickJS, we serialize the DOM values ourselves
+                // and POST them directly via Wraith's HTTP client.
                 let js = format!(
                     r#"(() => {{
-                        var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], form');
-                        var visible = Array.from(els).filter(el => {{ var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }});
-                        var el = visible[{ref_id} - 1];
-                        if (!el) return 'NOT_FOUND';
-                        // If it's a form, submit it directly
-                        if (el.tagName === 'FORM') {{ el.submit(); return 'SUBMITTED_FORM'; }}
-                        // If it's a button/input inside a form, click it
-                        if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {{
-                            el.click();
-                            return 'CLICKED_SUBMIT: ' + el.textContent.trim();
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (!el) return JSON.stringify({{ error: 'NOT_FOUND: @e{ref_id}' }});
+
+                        // Find the containing form
+                        var form = null;
+                        if (el.tag === 'form') {{ form = el; }}
+                        else {{
+                            // Walk up parents to find form
+                            var parent = el.parentNode;
+                            var depth = 0;
+                            while (parent && depth < 20) {{
+                                if (parent.tag === 'form') {{ form = parent; break; }}
+                                parent = parent.parentNode;
+                                depth++;
+                            }}
                         }}
-                        // If it's inside a form, find and submit the form
-                        var form = el.closest('form');
-                        if (form) {{ form.submit(); return 'SUBMITTED_PARENT_FORM'; }}
-                        // Last resort: click it
-                        el.click();
-                        return 'CLICKED: ' + el.tagName;
-                    }})()"#
+
+                        // Collect all input values from the page (form or global)
+                        var fields = {{}};
+                        var fileFields = {{}};
+                        var inputs = document.querySelectorAll('input, select, textarea');
+                        for (var i = 0; i < inputs.length; i++) {{
+                            var inp = inputs[i];
+                            var name = inp.name || (inp.attrs ? inp.attrs.name : null) || (inp.attrs ? inp.attrs.id : null) || inp.id;
+                            if (!name) continue;
+                            var val = inp.value || inp._value || '';
+                            var type = (inp.attrs ? inp.attrs.type : null) || 'text';
+                            if (type === 'file') {{
+                                // Track file inputs separately
+                                if (inp.files && inp.files.length > 0) {{
+                                    fileFields[name] = {{
+                                        fileName: inp.files[0].name,
+                                        fileType: inp.files[0].type,
+                                        fileSize: inp.files[0].size
+                                    }};
+                                }}
+                                continue;
+                            }}
+                            if (type === 'checkbox' || type === 'radio') {{
+                                if (inp.checked || (inp.attrs && inp.attrs.checked)) {{
+                                    fields[name] = val || 'on';
+                                }}
+                                continue;
+                            }}
+                            if (val) fields[name] = val;
+                        }}
+
+                        // Get the form action URL
+                        var action = '';
+                        if (form && form.attrs) {{
+                            action = form.attrs.action || form.attrs['data-action'] || '';
+                        }}
+
+                        return JSON.stringify({{
+                            action: action,
+                            method: (form && form.attrs ? form.attrs.method : '') || 'POST',
+                            fields: fields,
+                            fileFields: fileFields,
+                            formFound: !!form,
+                            fieldCount: Object.keys(fields).length
+                        }});
+                    }})()"#,
+                    ref_id = ref_id,
                 );
+
                 match self.engine.eval_js(&js).await {
-                    Ok(result) => Ok(ActionResult::Success { message: format!("Form submit: {}", result) }),
-                    Err(e) => Ok(ActionResult::Failed { error: format!("Submit failed: {e}") })
+                    Ok(result) => {
+                        // Try to parse the serialized form data
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result) {
+                            if let Some(error) = data.get("error") {
+                                return Ok(ActionResult::Failed { error: error.as_str().unwrap_or("unknown").to_string() });
+                            }
+
+                            let fields = data.get("fields").and_then(|f| f.as_object());
+                            let field_count = data.get("fieldCount").and_then(|c| c.as_u64()).unwrap_or(0);
+                            let action = data.get("action").and_then(|a| a.as_str()).unwrap_or("");
+                            let form_found = data.get("formFound").and_then(|f| f.as_bool()).unwrap_or(false);
+
+                            if field_count == 0 {
+                                return Ok(ActionResult::Failed {
+                                    error: format!("No field values found to submit (form_found={}). Fields may not have name attributes.", form_found)
+                                });
+                            }
+
+                            // Build the submission URL — ATS-aware endpoint detection
+                            let current_url = self.engine.current_url().unwrap_or("").to_string();
+                            let (submit_url, content_type) = detect_ats_submit_endpoint(&current_url, action);
+
+                            // Serialize fields in the format the ATS expects
+                            let fields_json = if let Some(f) = fields {
+                                serde_json::Value::Object(f.clone()).to_string()
+                            } else {
+                                "{}".to_string()
+                            };
+
+                            // For Greenhouse, we need multipart form data
+                            // For others, JSON is fine
+                            let body = if content_type.contains("multipart") {
+                                // Greenhouse API expects specific field mappings
+                                fields_json.clone() // submit_form_data_multipart handles conversion
+                            } else {
+                                fields_json.clone()
+                            };
+
+                            // Do the actual HTTP POST via Wraith's native client
+                            match self.engine.submit_form_data_with_content_type(&submit_url, &body, &content_type).await {
+                                Ok(response) => {
+                                    Ok(ActionResult::Success {
+                                        message: format!(
+                                            "SUBMITTED: POST {} ({} fields) → {}",
+                                            submit_url, field_count, response
+                                        )
+                                    })
+                                }
+                                Err(e) => {
+                                    // Fallback: report what we collected so the caller can retry
+                                    Ok(ActionResult::Success {
+                                        message: format!(
+                                            "FORM_SERIALIZED: {} fields collected, POST to {} failed: {}. Fields: {}",
+                                            field_count, submit_url, e,
+                                            fields_json.chars().take(500).collect::<String>()
+                                        )
+                                    })
+                                }
+                            }
+                        } else {
+                            Ok(ActionResult::Success { message: format!("Form data: {}", result) })
+                        }
+                    }
+                    Err(e) => Ok(ActionResult::Failed { error: format!("Submit @e{} failed: {}", ref_id, e) })
                 }
             }
             _ => {
