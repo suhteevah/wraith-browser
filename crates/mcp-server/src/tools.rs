@@ -767,3 +767,17 @@ pub struct TaskInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConfigInput {}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILE UPLOAD
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: upload a file to an input[type=file] element on the page.
+/// Reads the file from disk, base64-encodes it, and injects it via JavaScript.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UploadFileInput {
+    /// The @ref ID of the file input element. Use 0 or omit to auto-detect the first file input.
+    pub ref_id: Option<u32>,
+    /// Absolute path to the file on disk (e.g., "C:/Users/Matt/Documents/resume.pdf").
+    pub file_path: String,
+}

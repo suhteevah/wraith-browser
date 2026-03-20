@@ -336,6 +336,12 @@ impl NativeClient {
                     error: "Screenshots not available in native mode. Use Chrome backend for visual capture.".to_string()
                 })
             }
+
+            BrowserAction::UploadFile { .. } => {
+                Ok(ActionResult::Failed {
+                    error: "File upload not available in native mode. Use Sevro engine.".to_string()
+                })
+            }
         }
     }
 

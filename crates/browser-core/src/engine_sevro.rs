@@ -197,6 +197,49 @@ impl BrowserEngine for SevroEngineBackend {
             BrowserAction::Screenshot { .. } => {
                 Err(BrowserError::ScreenshotFailed("Not available in Sevro (Phase 3)".to_string()))
             }
+            BrowserAction::UploadFile { ref_id, file_name, file_data, mime_type } => {
+                // Use JS to create a File object from base64 data and set it on the input
+                let js = format!(
+                    r#"(() => {{
+                        var els = document.querySelectorAll('input[type="file"], input[type="FILE"]');
+                        if (els.length === 0) {{
+                            els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
+                        }}
+                        var visible = Array.from(els).filter(el => {{
+                            var r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        }});
+                        var el = visible[{ref_id} - 1];
+                        if (!el) return 'NOT_FOUND: no element at @e{ref_id}';
+                        if (el.type !== 'file') return 'NOT_FILE_INPUT: element is ' + el.tagName + '[type=' + el.type + ']';
+                        try {{
+                            var b64 = '{file_data}';
+                            var binary = atob(b64);
+                            var bytes = new Uint8Array(binary.length);
+                            for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                            var file = new File([bytes], '{file_name}', {{ type: '{mime_type}' }});
+                            var dt = new DataTransfer();
+                            dt.items.add(file);
+                            el.files = dt.files;
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            return 'OK: uploaded ' + '{file_name}' + ' (' + bytes.length + ' bytes)';
+                        }} catch(e) {{
+                            return 'ERROR: ' + e.message;
+                        }}
+                    }})()"#
+                );
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => {
+                        if result.starts_with("OK:") {
+                            Ok(ActionResult::Success { message: result })
+                        } else {
+                            Ok(ActionResult::Failed { error: result })
+                        }
+                    }
+                    Err(e) => Ok(ActionResult::Failed { error: format!("File upload JS failed: {e}") })
+                }
+            }
             _ => {
                 Ok(ActionResult::Success { message: "Action acknowledged (Sevro stub)".to_string() })
             }

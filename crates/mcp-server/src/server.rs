@@ -240,7 +240,10 @@ impl WraithHandler {
             make_tool("entity_search", "Search entities by name in the knowledge graph.", &schema_for!(EntitySearchInput), ro_closed.clone()),
             make_tool("entity_visualize", "Generate a Mermaid diagram of the knowledge graph.", &schema_for!(EntityVisualizeInput), ro_closed.clone()),
             make_tool("embedding_search", "Semantic similarity search across cached content.", &schema_for!(EmbeddingSearchInput), ro_closed.clone()),
-            make_tool("embedding_upsert", "Store a text embedding for semantic search.", &schema_for!(EmbeddingUpsertInput), rw_closed),
+            make_tool("embedding_upsert", "Store a text embedding for semantic search.", &schema_for!(EmbeddingUpsertInput), rw_closed.clone()),
+            make_tool("browse_upload_file",
+                "Upload a file from disk to an <input type='file'> element on the current page. Reads the file, base64-encodes it, and injects it into the file input via JavaScript. Use for resume uploads, document submissions, image uploads, etc. Set ref_id to the @ref ID of the file input, or omit to auto-detect the first file input on the page.",
+                &schema_for!(UploadFileInput), rw_open),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -1505,6 +1508,58 @@ impl WraithHandler {
             "embedding_upsert" => {
                 let input: EmbeddingUpsertInput = parse_args(args)?;
                 Ok(CallToolResult::success(vec![Content::text(format!("Embedding stored: '{}' ({} chars)", input.source_id, input.content.len()))]))
+            }
+
+            "browse_upload_file" => {
+                let input: UploadFileInput = parse_args(args)?;
+                let path = std::path::Path::new(&input.file_path);
+
+                if !path.exists() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("File not found: {}", input.file_path)
+                    )]));
+                }
+
+                // Read file and base64 encode
+                let file_bytes = std::fs::read(path)
+                    .map_err(|e| ErrorData::internal_error(format!("Read failed: {e}"), None))?;
+
+                let file_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file");
+
+                let mime_type = match path.extension().and_then(|e| e.to_str()) {
+                    Some("pdf") => "application/pdf",
+                    Some("doc") => "application/msword",
+                    Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    Some("txt") => "text/plain",
+                    Some("rtf") => "application/rtf",
+                    Some("png") => "image/png",
+                    Some("jpg") | Some("jpeg") => "image/jpeg",
+                    Some("gif") => "image/gif",
+                    Some("webp") => "image/webp",
+                    Some("svg") => "image/svg+xml",
+                    Some("csv") => "text/csv",
+                    Some("xlsx") => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    Some("zip") => "application/zip",
+                    _ => "application/octet-stream",
+                };
+
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&file_bytes);
+                let ref_id = input.ref_id.unwrap_or(1);
+
+                info!(file = %file_name, size = file_bytes.len(), mime = %mime_type, ref_id, "Uploading file");
+
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::UploadFile {
+                    ref_id,
+                    file_name: file_name.to_string(),
+                    file_data: b64,
+                    mime_type: mime_type.to_string(),
+                }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Upload failed: {e}"), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
 
             _ => {
