@@ -5,6 +5,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![Tests](https://img.shields.io/badge/tests-348%20passing-brightgreen.svg)]()
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-105-blue.svg)]()
 
 ---
 
@@ -144,17 +145,35 @@ Wraith automatically escalates through tiers as needed:
 - **19 evasion techniques** -- canvas, WebGL, AudioContext, navigator properties, automation markers
 - **Behavioral simulation** -- Bezier mouse curves, Fitts's Law timing, bigram typing delays
 
-## MCP Tools
+## MCP Tools (105)
 
-| Category | Tools |
-|----------|-------|
-| Navigation | `browse_navigate`, `browse_back`, `browse_scroll` |
-| Interaction | `browse_click`, `browse_fill`, `browse_key_press` |
-| Extraction | `browse_extract`, `browse_snapshot`, `browse_eval_js` |
-| Search | `browse_search` |
-| Media | `browse_screenshot` |
-| Security | `browse_vault_store`, `browse_vault_get` |
-| Management | `browse_tabs` |
+Every capability has a native MCP tool. AI agents have full admin control with zero CLI interaction.
+
+| Category | Count | Tools |
+|----------|-------|-------|
+| Navigation | 7 | navigate, back, forward, reload, scroll, wait, wait_navigation |
+| Interaction | 7 | click, fill, select, type, hover, key_press, dom_focus |
+| DOM | 3 | query_selector, get_attribute, set_attribute |
+| Extraction | 9 | extract, snapshot, eval_js, screenshot, pdf, article, markdown, plain_text, ocr |
+| Search | 1 | search |
+| Vault | 12 | store, get, list, delete, totp, rotate, audit, lock, unlock, approve_domain, revoke_domain, check_approval |
+| Cookies | 4 | get, set, save, load |
+| Cache | 10 | search, get, stats, purge, pin, tag, domain_profile, find_similar, evict, raw_html |
+| Intelligence | 6 | entity_query, network_discover, site_fingerprint, page_diff, auth_detect, dns_resolve |
+| Entity Graph | 6 | add, relate, merge, find_related, search, visualize |
+| Identity | 4 | fingerprint_list, fingerprint_import, identity_profile, tls_profiles |
+| Stealth | 1 | stealth_status |
+| Plugins | 4 | register, execute, list, remove |
+| Telemetry | 2 | metrics, spans |
+| Agent | 1 | browse_task |
+| Workflow | 4 | start_recording, stop_recording, replay, list |
+| Time-Travel | 5 | summary, branch, replay, diff, export |
+| Task DAG | 7 | create, add_task, add_dependency, ready, complete, progress, visualize |
+| MCTS Planning | 2 | plan, stats |
+| Prefetch | 1 | predict |
+| Swarm | 2 | fan_out, collect |
+| Embeddings | 2 | search, upsert |
+| Config | 1 | browse_config |
 
 ## DOM Snapshots
 
