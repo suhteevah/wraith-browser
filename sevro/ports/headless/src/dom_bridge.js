@@ -6,6 +6,19 @@ var __wraith_node_index = {};
 for (var i = 0; i < __wraith_nodes.length; i++) {
     var n = __wraith_nodes[i];
     if (n.id) __wraith_node_index[n.id] = n;
+    n.tagName = (n.tag || '').toUpperCase();
+    n.nodeName = (n.tag || '').toUpperCase();
+    n.nodeType = 1;
+    n.style = n.style || {};
+    n.dispatchEvent = function(ev) { return true; };
+    n.addEventListener = function() {};
+    n.removeEventListener = function() {};
+    n.focus = function() {};
+    n.blur = function() {};
+    n.click = function() {};
+    n.closest = function() { return null; };
+    n.contains = function() { return false; };
+    n.dataset = {};
 }
 
 // === document ===
