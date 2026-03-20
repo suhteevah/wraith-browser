@@ -181,12 +181,94 @@ impl BrowserEngine for SevroEngineBackend {
                 Ok(ActionResult::Navigated { url, title: String::new() })
             }
             BrowserAction::Click { ref_id } => {
-                self.engine.click_element(ref_id as u64);
-                Ok(ActionResult::Success { message: format!("Clicked @e{}", ref_id) })
+                // Click via JS with proper event dispatch (React-compatible)
+                let js = format!(
+                    r#"(() => {{
+                        var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick], summary, label');
+                        var visible = Array.from(els).filter(el => {{
+                            var r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        }});
+                        var el = visible[{ref_id} - 1];
+                        if (!el) return 'NOT_FOUND';
+                        el.focus();
+                        el.click();
+                        el.dispatchEvent(new Event('click', {{ bubbles: true }}));
+                        var href = el.getAttribute('href');
+                        if (href) return 'CLICKED_LINK: ' + href;
+                        return 'CLICKED: ' + (el.textContent || '').trim().substring(0, 50);
+                    }})()"#
+                );
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
+                    Err(_) => {
+                        self.engine.click_element(ref_id as u64);
+                        Ok(ActionResult::Success { message: format!("Clicked @e{} (basic)", ref_id) })
+                    }
+                }
             }
             BrowserAction::Fill { ref_id, text } => {
-                self.engine.fill_element(ref_id as u64, &text);
-                Ok(ActionResult::Success { message: format!("Filled @e{}", ref_id) })
+                // Set value + dispatch React-compatible events via JS
+                let js = format!(
+                    r#"(() => {{
+                        var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], [role="textbox"], [contenteditable]');
+                        var visible = Array.from(els).filter(el => {{
+                            var r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        }});
+                        var el = visible[{ref_id} - 1];
+                        if (!el) return 'NOT_FOUND';
+
+                        // Focus the element first
+                        el.focus();
+
+                        // Set the native value
+                        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        );
+                        var nativeTextareaValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLTextAreaElement.prototype, 'value'
+                        );
+
+                        if (el.tagName === 'TEXTAREA' && nativeTextareaValueSetter) {{
+                            nativeTextareaValueSetter.set.call(el, '{text_escaped}');
+                        }} else if (nativeInputValueSetter) {{
+                            nativeInputValueSetter.set.call(el, '{text_escaped}');
+                        }} else {{
+                            el.value = '{text_escaped}';
+                        }}
+
+                        // Dispatch events that React listens for
+                        el.dispatchEvent(new Event('input', {{ bubbles: true, cancelable: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true, cancelable: true }}));
+                        el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
+
+                        // Try React fiber shim — directly call onChange if React is present
+                        var fiberKey = Object.keys(el).find(function(k) {{
+                            return k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$') || k.startsWith('__reactProps$');
+                        }});
+                        if (fiberKey) {{
+                            var fiber = el[fiberKey];
+                            if (fiber && fiber.onChange) {{
+                                fiber.onChange({{ target: el, currentTarget: el }});
+                            }} else if (fiber && fiber.memoizedProps && fiber.memoizedProps.onChange) {{
+                                fiber.memoizedProps.onChange({{ target: el, currentTarget: el }});
+                            }}
+                            return 'FILLED_REACT: ' + el.value;
+                        }}
+
+                        return 'FILLED: ' + el.value;
+                    }})()"#,
+                    text_escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n")
+                );
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
+                    Err(e) => {
+                        // Fallback to basic fill
+                        self.engine.fill_element(ref_id as u64, &text);
+                        Ok(ActionResult::Success { message: format!("Filled @e{} (basic): {}", ref_id, e) })
+                    }
+                }
             }
             BrowserAction::EvalJs { script } => {
                 match self.engine.eval_js(&script).await {
@@ -199,19 +281,32 @@ impl BrowserEngine for SevroEngineBackend {
             }
             BrowserAction::UploadFile { ref_id, file_name, file_data, mime_type } => {
                 // Use JS to create a File object from base64 data and set it on the input
+                // Searches ALL file inputs (including hidden ones like Greenhouse's visually-hidden)
                 let js = format!(
                     r#"(() => {{
-                        var els = document.querySelectorAll('input[type="file"], input[type="FILE"]');
-                        if (els.length === 0) {{
-                            els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
+                        // First try: find ALL file inputs (including hidden ones)
+                        var fileInputs = document.querySelectorAll('input[type="file"]');
+                        var el = null;
+
+                        if (fileInputs.length > 0) {{
+                            // Use ref_id as index into file inputs, or first one if ref_id=0/1
+                            var idx = Math.min({ref_id} - 1, fileInputs.length - 1);
+                            if (idx < 0) idx = 0;
+                            el = fileInputs[idx];
                         }}
-                        var visible = Array.from(els).filter(el => {{
-                            var r = el.getBoundingClientRect();
-                            return r.width > 0 && r.height > 0;
-                        }});
-                        var el = visible[{ref_id} - 1];
-                        if (!el) return 'NOT_FOUND: no element at @e{ref_id}';
-                        if (el.type !== 'file') return 'NOT_FILE_INPUT: element is ' + el.tagName + '[type=' + el.type + ']';
+
+                        // Fallback: search visible interactive elements
+                        if (!el) {{
+                            var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"]');
+                            var visible = Array.from(els).filter(e => {{
+                                var r = e.getBoundingClientRect();
+                                return r.width > 0 && r.height > 0;
+                            }});
+                            el = visible[{ref_id} - 1];
+                        }}
+
+                        if (!el) return 'NOT_FOUND: no file input found (tried {ref_id} file inputs + visible elements)';
+                        if (el.type !== 'file') return 'NOT_FILE_INPUT: element is ' + el.tagName + '[type=' + (el.type || 'unknown') + ']';
                         try {{
                             var b64 = '{file_data}';
                             var binary = atob(b64);

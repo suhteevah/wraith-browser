@@ -565,3 +565,102 @@ if (typeof Promise === 'undefined') {
     };
     var Promise = window.Promise;
 }
+
+// === React compatibility helpers ===
+// Used by browse_fill to set values on React-controlled inputs
+
+function __wraith_react_set_value(el, value) {
+    // Try native setter first (bypasses React's controlled input)
+    var descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+        || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+    if (descriptor && descriptor.set) {
+        descriptor.set.call(el, value);
+    } else {
+        el.value = value;
+    }
+
+    // Dispatch events React listens for
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Try to find and call React's onChange directly via fiber
+    var keys = Object.keys(el);
+    for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (k.startsWith('__reactProps$')) {
+            var props = el[k];
+            if (props && props.onChange) {
+                props.onChange({ target: el, currentTarget: el, type: 'change' });
+                return 'react_props';
+            }
+        }
+        if (k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')) {
+            var fiber = el[k];
+            while (fiber) {
+                if (fiber.memoizedProps && fiber.memoizedProps.onChange) {
+                    fiber.memoizedProps.onChange({ target: el, currentTarget: el, type: 'change' });
+                    return 'react_fiber';
+                }
+                fiber = fiber.return;
+            }
+        }
+    }
+    return 'native_events';
+}
+
+// FormData and File constructors for file upload support
+if (typeof FormData === 'undefined') {
+    window.FormData = function(form) {
+        this._data = {};
+        if (form) {
+            var inputs = form.querySelectorAll ? form.querySelectorAll('input, select, textarea') : [];
+            for (var i = 0; i < inputs.length; i++) {
+                var input = inputs[i];
+                if (input.name) this._data[input.name] = input.value || '';
+            }
+        }
+    };
+    window.FormData.prototype.append = function(key, value) { this._data[key] = value; };
+    window.FormData.prototype.get = function(key) { return this._data[key]; };
+    window.FormData.prototype.set = function(key, value) { this._data[key] = value; };
+    window.FormData.prototype.has = function(key) { return key in this._data; };
+    window.FormData.prototype.delete = function(key) { delete this._data[key]; };
+    var FormData = window.FormData;
+}
+
+if (typeof DataTransfer === 'undefined') {
+    window.DataTransfer = function() {
+        this.items = { add: function(file) { this._files = this._files || []; this._files.push(file); } };
+        this.files = [];
+    };
+    Object.defineProperty(window.DataTransfer.prototype, 'files', {
+        get: function() { return this.items._files || []; },
+        set: function(v) { this.items._files = v; }
+    });
+    var DataTransfer = window.DataTransfer;
+}
+
+if (typeof File === 'undefined') {
+    window.File = function(parts, name, options) {
+        this.name = name;
+        this.type = (options && options.type) || 'application/octet-stream';
+        this.size = 0;
+        for (var i = 0; i < parts.length; i++) {
+            if (parts[i] instanceof Uint8Array) this.size += parts[i].length;
+            else if (typeof parts[i] === 'string') this.size += parts[i].length;
+        }
+        this.lastModified = Date.now();
+    };
+    var File = window.File;
+}
+
+if (typeof Blob === 'undefined') {
+    window.Blob = function(parts, options) {
+        this.type = (options && options.type) || '';
+        this.size = 0;
+        for (var i = 0; i < (parts || []).length; i++) {
+            if (parts[i] instanceof Uint8Array) this.size += parts[i].length;
+        }
+    };
+    var Blob = window.Blob;
+}
