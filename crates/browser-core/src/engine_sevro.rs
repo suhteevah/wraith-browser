@@ -240,6 +240,34 @@ impl BrowserEngine for SevroEngineBackend {
                     Err(e) => Ok(ActionResult::Failed { error: format!("File upload JS failed: {e}") })
                 }
             }
+            BrowserAction::SubmitForm { ref_id } => {
+                // Find the form or submit button and trigger submission
+                let js = format!(
+                    r#"(() => {{
+                        var els = document.querySelectorAll('a, button, input, select, textarea, [role="button"], [role="link"], form');
+                        var visible = Array.from(els).filter(el => {{ var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }});
+                        var el = visible[{ref_id} - 1];
+                        if (!el) return 'NOT_FOUND';
+                        // If it's a form, submit it directly
+                        if (el.tagName === 'FORM') {{ el.submit(); return 'SUBMITTED_FORM'; }}
+                        // If it's a button/input inside a form, click it
+                        if (el.tagName === 'BUTTON' || (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {{
+                            el.click();
+                            return 'CLICKED_SUBMIT: ' + el.textContent.trim();
+                        }}
+                        // If it's inside a form, find and submit the form
+                        var form = el.closest('form');
+                        if (form) {{ form.submit(); return 'SUBMITTED_PARENT_FORM'; }}
+                        // Last resort: click it
+                        el.click();
+                        return 'CLICKED: ' + el.tagName;
+                    }})()"#
+                );
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => Ok(ActionResult::Success { message: format!("Form submit: {}", result) }),
+                    Err(e) => Ok(ActionResult::Failed { error: format!("Submit failed: {e}") })
+                }
+            }
             _ => {
                 Ok(ActionResult::Success { message: "Action acknowledged (Sevro stub)".to_string() })
             }

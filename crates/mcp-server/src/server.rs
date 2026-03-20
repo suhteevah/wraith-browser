@@ -243,7 +243,16 @@ impl WraithHandler {
             make_tool("embedding_upsert", "Store a text embedding for semantic search.", &schema_for!(EmbeddingUpsertInput), rw_closed.clone()),
             make_tool("browse_upload_file",
                 "Upload a file from disk to an <input type='file'> element on the current page. Reads the file, base64-encodes it, and injects it into the file input via JavaScript. Use for resume uploads, document submissions, image uploads, etc. Set ref_id to the @ref ID of the file input, or omit to auto-detect the first file input on the page.",
-                &schema_for!(UploadFileInput), rw_open),
+                &schema_for!(UploadFileInput), rw_open.clone()),
+            make_tool("browse_submit_form",
+                "Submit a form by clicking its submit button or calling form.submit(). If ref_id points to a button, it is clicked. If it points to a form element, form.submit() is called. If it points to any element inside a form, the parent form is submitted. Handles React-controlled forms that use XHR/fetch submission.",
+                &schema_for!(SubmitFormInput), rw_open.clone()),
+            make_tool("browse_custom_dropdown",
+                "Interact with a custom dropdown/combobox (non-native <select>). Handles React/Greenhouse-style dropdowns: clicks to open, types to filter, then clicks the matching option. Use for country selectors, visa sponsorship fields, EEO fields, etc.",
+                &schema_for!(CustomDropdownInput), rw_open.clone()),
+            make_tool("cookie_import_chrome",
+                "Import cookies from the user's Chrome browser profile to reuse existing login sessions. Reads Chrome's encrypted cookie database, decrypts using OS credentials, and loads into Wraith. Avoids re-login and bot detection triggers.",
+                &schema_for!(ChromeCookieImportInput), rw_open),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -1560,6 +1569,148 @@ impl WraithHandler {
                     .map_err(|e| ErrorData::internal_error(format!("Upload failed: {e}"), None))?;
 
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            "browse_submit_form" => {
+                let input: SubmitFormInput = parse_args(args)?;
+                info!(ref_id = input.ref_id, "Submitting form");
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::SubmitForm { ref_id: input.ref_id }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Submit failed: {e}"), None))?;
+                // Wait a moment for the submission to process
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // Get the resulting page state
+                let snap = engine.snapshot().await.ok();
+                let url = engine.current_url().await.unwrap_or_default();
+                let title = snap.map(|s| s.title.clone()).unwrap_or_default();
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("{}\nAfter submit: {} — {}", format_action_result(&result), title, url)
+                )]))
+            }
+
+            "browse_custom_dropdown" => {
+                let input: CustomDropdownInput = parse_args(args)?;
+                info!(ref_id = input.ref_id, value = %input.value, "Custom dropdown interaction");
+                let mut engine = self.engine.lock().await;
+
+                // Step 1: Click to open the dropdown
+                let _ = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id }).await;
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+                // Step 2: Type to filter options
+                let _ = engine.execute_action(BrowserAction::TypeText {
+                    ref_id: input.ref_id,
+                    text: input.value.clone(),
+                    delay_ms: 50,
+                }).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Step 3: Find and click the matching option via JS
+                let js = format!(
+                    r#"(() => {{
+                        var val = '{}';
+                        // Look for listbox options, menu items, or visible option-like elements
+                        var options = document.querySelectorAll('[role="option"], [role="listbox"] li, [class*="option"], [class*="Option"], [class*="dropdown"] li, [class*="menu"] li, [data-value]');
+                        for (var i = 0; i < options.length; i++) {{
+                            var opt = options[i];
+                            var text = (opt.textContent || '').trim().toLowerCase();
+                            if (text === val.toLowerCase() || text.indexOf(val.toLowerCase()) >= 0) {{
+                                opt.click();
+                                return 'SELECTED: ' + opt.textContent.trim();
+                            }}
+                        }}
+                        // Fallback: press Enter to confirm typed value
+                        return 'TYPED_VALUE: ' + val + ' (no matching option found — Enter may confirm)';
+                    }})()"#,
+                    input.value.replace('\'', "\\'")
+                );
+                match engine.eval_js(&js).await {
+                    Ok(result) => {
+                        if result.starts_with("TYPED_VALUE:") {
+                            // Press Enter as fallback
+                            let _ = engine.execute_action(BrowserAction::KeyPress { key: "Enter".to_string() }).await;
+                        }
+                        Ok(CallToolResult::success(vec![Content::text(result)]))
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Dropdown failed: {e}"))]))
+                }
+            }
+
+            "cookie_import_chrome" => {
+                let input: ChromeCookieImportInput = parse_args(args)?;
+                let profile = input.profile.unwrap_or_else(|| "Default".to_string());
+
+                // Chrome cookie DB path on Windows
+                let cookie_db = dirs::data_local_dir()
+                    .unwrap_or_default()
+                    .join("Google")
+                    .join("Chrome")
+                    .join("User Data")
+                    .join(&profile)
+                    .join("Cookies");
+
+                if !cookie_db.exists() {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Chrome cookie DB not found at: {}\nTry a different profile name.", cookie_db.display())
+                    )]));
+                }
+
+                // Chrome locks the cookie file while running — need to copy it first
+                let temp_db = std::env::temp_dir().join("wraith_chrome_cookies_copy");
+                match std::fs::copy(&cookie_db, &temp_db) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Ok(CallToolResult::success(vec![Content::text(
+                            format!("Cannot copy cookie DB (Chrome may be running): {e}\nClose Chrome or copy the file manually.")
+                        )]));
+                    }
+                }
+
+                // Read cookies from SQLite (sync — rusqlite isn't Send)
+                let domain_filter = input.domain.clone().unwrap_or_else(|| "%".to_string());
+                let temp_db_clone = temp_db.clone();
+                let cookies_result: Result<Vec<(String, String, String)>, String> = (|| {
+                    let conn = rusqlite::Connection::open(&temp_db_clone)
+                        .map_err(|e| format!("DB open failed: {e}"))?;
+                    let query = if domain_filter == "%" {
+                        "SELECT host_key, name, value FROM cookies ORDER BY host_key LIMIT 500"
+                    } else {
+                        "SELECT host_key, name, value FROM cookies WHERE host_key LIKE ?1 ORDER BY host_key LIMIT 500"
+                    };
+                    let mut stmt = conn.prepare(query).map_err(|e| format!("SQL: {e}"))?;
+                    let domain_param = format!("%{}%", domain_filter);
+                    let rows: Vec<(String, String, String)> = if domain_filter == "%" {
+                        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                            .map_err(|e| format!("Query: {e}"))?
+                            .filter_map(|r| r.ok()).collect()
+                    } else {
+                        stmt.query_map(rusqlite::params![domain_param], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                            .map_err(|e| format!("Query: {e}"))?
+                            .filter_map(|r| r.ok()).collect()
+                    };
+                    Ok(rows)
+                })();
+
+                let _ = std::fs::remove_file(&temp_db);
+
+                match cookies_result {
+                    Ok(rows) => {
+                        let engine = self.engine.lock().await;
+                        let mut injected = 0;
+                        for (host, name, value) in &rows {
+                            if !value.is_empty() {
+                                let script = format!("document.cookie = '{}={}; domain={}; path=/'", name, value, host);
+                                let _ = engine.eval_js(&script).await;
+                                injected += 1;
+                            }
+                        }
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("Imported {} cookies from Chrome profile '{}'{}", injected, profile,
+                                if domain_filter != "%" { format!(" (filtered: {})", domain_filter) } else { String::new() })
+                        )]))
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cookie import failed: {e}"))]))
+                }
             }
 
             _ => {

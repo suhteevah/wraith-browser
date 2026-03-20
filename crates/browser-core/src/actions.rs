@@ -58,6 +58,9 @@ pub enum BrowserAction {
     /// Upload a file to an <input type="file"> element by ref_id.
     /// file_data is base64-encoded file content, file_name is the filename.
     UploadFile { ref_id: u32, file_name: String, file_data: String, mime_type: String },
+
+    /// Submit a form — serializes all filled fields and submits via the form's action.
+    SubmitForm { ref_id: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

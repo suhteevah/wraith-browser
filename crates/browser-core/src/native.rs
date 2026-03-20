@@ -342,6 +342,11 @@ impl NativeClient {
                     error: "File upload not available in native mode. Use Sevro engine.".to_string()
                 })
             }
+            BrowserAction::SubmitForm { .. } => {
+                Ok(ActionResult::Failed {
+                    error: "Form submission not available in native mode. Use Sevro engine.".to_string()
+                })
+            }
         }
     }
 

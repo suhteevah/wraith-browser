@@ -781,3 +781,43 @@ pub struct UploadFileInput {
     /// Absolute path to the file on disk (e.g., "C:/Users/Matt/Documents/resume.pdf").
     pub file_path: String,
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// FORM SUBMISSION
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: submit a form by clicking its submit button or calling form.submit().
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SubmitFormInput {
+    /// The @ref ID of the submit button or form element. If it's a button, it will be clicked. If it's a form, it will be submitted directly.
+    pub ref_id: u32,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CUSTOM DROPDOWN (React/Greenhouse combobox)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: interact with a custom dropdown/combobox (non-native select).
+/// Handles React/Greenhouse-style dropdowns that use div/input with listbox role.
+/// Sequence: click to open → type to filter → click matching option.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CustomDropdownInput {
+    /// The @ref ID of the combobox/dropdown trigger element.
+    pub ref_id: u32,
+    /// The option text to select (will type to filter, then click the match).
+    pub value: String,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CHROME COOKIE IMPORT
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: import cookies from Chrome's cookie database to reuse existing login sessions.
+/// Reads from the user's Chrome profile, decrypts cookies, and loads them into Wraith.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ChromeCookieImportInput {
+    /// Chrome profile name (default: "Default"). Other common values: "Profile 1", "Profile 2".
+    pub profile: Option<String>,
+    /// Optional domain filter — only import cookies for this domain (e.g., "indeed.com").
+    pub domain: Option<String>,
+}
