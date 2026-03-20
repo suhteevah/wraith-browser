@@ -33,3 +33,4 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 clap.workspace = true
 dirs.workspace = true
+url.workspace = true

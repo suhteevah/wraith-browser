@@ -144,7 +144,40 @@ impl WraithHandler {
                 &schema_for!(ScriptRunInput), rw_closed.clone()),
             make_tool("browse_config",
                 "Show current engine configuration (engine type, proxy, stealth status).",
-                &schema_for!(ConfigInput), ro_closed),
+                &schema_for!(ConfigInput), ro_closed.clone()),
+            make_tool("cookie_get",
+                "Get cookies for a domain from the browser's cookie jar.",
+                &schema_for!(CookieGetInput), ro_closed.clone()),
+            make_tool("cookie_set",
+                "Set a cookie in the browser's cookie jar.",
+                &schema_for!(CookieSetInput), rw_closed.clone()),
+            make_tool("fingerprint_list",
+                "List available browser fingerprint profiles (Chrome, Firefox, Safari).",
+                &schema_for!(FingerprintListInput), ro_closed.clone()),
+            make_tool("entity_query",
+                "Query the knowledge graph — ask what we know about an entity across all visited pages.",
+                &schema_for!(EntityQueryInput), ro_closed.clone()),
+            make_tool("cache_stats",
+                "Show knowledge cache statistics (page count, size, domains).",
+                &schema_for!(CacheStatsInput), ro_closed.clone()),
+            make_tool("cache_purge",
+                "Purge stale entries from the knowledge cache.",
+                &schema_for!(CachePurgeInput), rw_destructive.clone()),
+            make_tool("network_discover",
+                "Discover API endpoints from captured network traffic patterns.",
+                &schema_for!(NetworkDiscoverInput), ro_closed.clone()),
+            make_tool("site_fingerprint",
+                "Detect site technology stack (React, WordPress, Shopify, etc.) from current page.",
+                &schema_for!(SiteFingerprintInput), ro_closed.clone()),
+            make_tool("page_diff",
+                "Compare current page content to the cached version — detect changes.",
+                &schema_for!(PageDiffInput), ro_closed.clone()),
+            make_tool("tls_profiles",
+                "List available TLS fingerprint profiles for stealth browsing.",
+                &schema_for!(TlsProfilesInput), ro_closed.clone()),
+            make_tool("browse_wait_navigation",
+                "Wait for navigation to complete after a click or form submission.",
+                &schema_for!(WaitForNavigationInput), ro_closed),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -750,10 +783,220 @@ impl WraithHandler {
             "browse_config" => {
                 let engine = self.engine.lock().await;
                 let caps = engine.capabilities();
+                let has_flaresolverr = std::env::var("WRAITH_FLARESOLVERR").is_ok();
+                let has_proxy = std::env::var("WRAITH_PROXY").is_ok();
                 Ok(CallToolResult::success(vec![Content::text(
-                    format!("Engine capabilities:\n  JavaScript: {}\n  Screenshots: {:?}\n  Layout: {}\n  Cookies: {}\n  Stealth: {}",
-                        caps.javascript, caps.screenshots, caps.layout, caps.cookies, caps.stealth)
+                    format!("Engine capabilities:\n  JavaScript: {}\n  Screenshots: {:?}\n  Layout: {}\n  Cookies: {}\n  Stealth: {}\n  FlareSolverr: {}\n  Proxy: {}",
+                        caps.javascript, caps.screenshots, caps.layout, caps.cookies, caps.stealth,
+                        if has_flaresolverr { "configured" } else { "not configured (set WRAITH_FLARESOLVERR)" },
+                        if has_proxy { "configured" } else { "direct" })
                 )]))
+            }
+
+            // === Cookies ===
+
+            "cookie_get" => {
+                let input: CookieGetInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                // Use eval_js to read cookies from the JS environment
+                match engine.eval_js("__wraith_get_cookies()").await {
+                    Ok(cookies_json) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("Cookies for current page:\n{}", cookies_json)
+                        )]))
+                    }
+                    Err(_) => {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            format!("No cookies available for {}", input.domain)
+                        )]))
+                    }
+                }
+            }
+
+            "cookie_set" => {
+                let input: CookieSetInput = parse_args(args)?;
+                let path = input.path.unwrap_or_else(|| "/".to_string());
+                let engine = self.engine.lock().await;
+                let script = format!(
+                    "document.cookie = '{}={}; domain={}; path={}'",
+                    input.name, input.value, input.domain, path
+                );
+                match engine.eval_js(&script).await {
+                    Ok(_) => Ok(CallToolResult::success(vec![Content::text(
+                        format!("Cookie set: {}={} for {}", input.name, input.value, input.domain)
+                    )])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cookie set failed: {e}"))]))
+                }
+            }
+
+            // === Fingerprints ===
+
+            "fingerprint_list" => {
+                let profiles = openclaw_browser_core::tls_fingerprint::all_profiles();
+                let mut out = format!("{} TLS fingerprint profiles:\n\n", profiles.len());
+                for p in &profiles {
+                    out.push_str(&format!("  {} — JA3: {}...\n    UA: {}...\n\n",
+                        p.name, &p.ja3_hash[..16],
+                        p.user_agent.get(..60).unwrap_or(&p.user_agent)));
+                }
+                Ok(CallToolResult::success(vec![Content::text(out)]))
+            }
+
+            // === TLS Profiles ===
+
+            "tls_profiles" => {
+                let profiles = openclaw_browser_core::tls_fingerprint::all_profiles();
+                let mut out = format!("{} profiles available:\n\n", profiles.len());
+                for p in &profiles {
+                    out.push_str(&format!("  Name: {}\n  JA3: {}\n  JA4: {}\n  HTTP/2 Window: {}\n  Headers: {}\n\n",
+                        p.name, p.ja3_hash,
+                        p.ja4_hash.as_deref().unwrap_or("N/A"),
+                        p.http2_settings.initial_window_size,
+                        p.header_order.len()));
+                }
+                Ok(CallToolResult::success(vec![Content::text(out)]))
+            }
+
+            // === Knowledge Graph ===
+
+            "entity_query" => {
+                let input: EntityQueryInput = parse_args(args)?;
+                let mut graph = openclaw_cache::entity_graph::EntityGraph::new();
+                // Search the graph for the entity mentioned in the question
+                let results = graph.search_entities(&input.question);
+                if results.is_empty() {
+                    Ok(CallToolResult::success(vec![Content::text(
+                        format!("No entities found matching '{}'. Visit more pages to build the knowledge graph.", input.question)
+                    )]))
+                } else {
+                    let answer = graph.query(&input.question);
+                    Ok(CallToolResult::success(vec![Content::text(answer)]))
+                }
+            }
+
+            // === Cache Stats/Purge ===
+
+            "cache_stats" => {
+                let cache_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    Ok(store) => {
+                        match store.stats() {
+                            Ok(stats) => Ok(CallToolResult::success(vec![Content::text(
+                                format!("Cache stats:\n  Pages: {}\n  Domains: {}\n  Searches: {}\n  Snapshots: {}\n  Size: {} bytes\n  Stale: {}\n  Pinned: {}",
+                                    stats.total_pages, stats.total_domains, stats.total_searches,
+                                    stats.total_snapshots, stats.total_disk_bytes, stats.stale_pages, stats.pinned_pages)
+                            )])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Stats error: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache not available: {e}"))]))
+                }
+            }
+
+            "cache_purge" => {
+                let cache_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    Ok(store) => {
+                        match store.purge_stale() {
+                            Ok(count) => Ok(CallToolResult::success(vec![Content::text(
+                                format!("Purged {} stale cache entries.", count)
+                            )])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Purge failed: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache not available: {e}"))]))
+                }
+            }
+
+            // === Network Discovery ===
+
+            "network_discover" => {
+                // NetworkCapture is per-session; create a fresh one and report
+                let capture = openclaw_browser_core::network_intel::NetworkCapture::new();
+                let endpoints = capture.discover_endpoints();
+                if endpoints.is_empty() {
+                    Ok(CallToolResult::success(vec![Content::text(
+                        "No API endpoints discovered yet. Navigate to pages first — network traffic is captured automatically."
+                    )]))
+                } else {
+                    let mut out = format!("{} endpoints discovered:\n\n", endpoints.len());
+                    for ep in &endpoints {
+                        out.push_str(&format!("  {} {} (seen {} times)\n", ep.method, ep.url_template, ep.seen_count));
+                    }
+                    Ok(CallToolResult::success(vec![Content::text(out)]))
+                }
+            }
+
+            // === Site Fingerprint ===
+
+            "site_fingerprint" => {
+                let _input: SiteFingerprintInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                let html = engine.page_source().await.unwrap_or_default();
+                let url = engine.current_url().await.unwrap_or_default();
+                let domain = url::Url::parse(&url)
+                    .map(|u| u.host_str().unwrap_or("").to_string())
+                    .unwrap_or_default();
+
+                let cap = openclaw_cache::site_capability::fingerprint_site(&domain, &html, &url);
+                let techs = openclaw_cache::site_capability::detect_technology(&html);
+
+                let mut out = format!("Site: {}\n", domain);
+                out.push_str(&format!("  Has login: {}\n", cap.has_login));
+                out.push_str(&format!("  Has search: {}\n", cap.has_search));
+                out.push_str(&format!("  Has API: {}\n", cap.has_api));
+                out.push_str(&format!("  Nav links: {}\n", cap.nav_links.len()));
+                out.push_str(&format!("  Strategy: {:?}\n", cap.optimal_strategy));
+                if !techs.is_empty() {
+                    out.push_str(&format!("  Technologies: {}\n", techs.join(", ")));
+                }
+                Ok(CallToolResult::success(vec![Content::text(out)]))
+            }
+
+            // === Page Diff ===
+
+            "page_diff" => {
+                let _input: PageDiffInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                let url = engine.current_url().await.unwrap_or_default();
+                let current_html = engine.page_source().await.unwrap_or_default();
+
+                let cache_dir = dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".openclaw").join("knowledge");
+
+                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    Ok(store) => {
+                        match store.get_page(&url) {
+                            Ok(Some(cached)) => {
+                                let diff = openclaw_cache::diffing::diff_pages(&url, &cached.plain_text, &current_html);
+                                Ok(CallToolResult::success(vec![Content::text(
+                                    format!("Page diff for {}:\nSimilarity: {:.0}%\nChanges: {}\n\n{}",
+                                        url, diff.similarity_score * 100.0, diff.changes.len(), diff.summary)
+                                )]))
+                            }
+                            Ok(None) => Ok(CallToolResult::success(vec![Content::text("No cached version to compare against.")])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache not available: {e}"))]))
+                }
+            }
+
+            // === Wait for Navigation ===
+
+            "browse_wait_navigation" => {
+                let input: WaitForNavigationInput = parse_args(args)?;
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::WaitForNavigation {
+                    timeout_ms: input.timeout_ms.unwrap_or(5000),
+                }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Wait failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
 
             _ => {

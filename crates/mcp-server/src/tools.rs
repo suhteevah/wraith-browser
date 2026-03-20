@@ -256,3 +256,71 @@ pub struct ScriptRunInput {
 /// Tool: get engine configuration and status
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConfigInput {}
+
+/// Tool: get cookies for a domain
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CookieGetInput {
+    /// Domain to get cookies for (e.g., "indeed.com")
+    pub domain: String,
+}
+
+/// Tool: set a cookie
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CookieSetInput {
+    /// Cookie domain
+    pub domain: String,
+    /// Cookie name
+    pub name: String,
+    /// Cookie value
+    pub value: String,
+    /// Cookie path (default: "/")
+    pub path: Option<String>,
+}
+
+/// Tool: list fingerprint profiles
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FingerprintListInput {}
+
+/// Tool: query the knowledge graph
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EntityQueryInput {
+    /// Question about an entity (e.g., "what do we know about Stripe?")
+    pub question: String,
+}
+
+/// Tool: show cache statistics
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CacheStatsInput {}
+
+/// Tool: purge stale cache entries
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CachePurgeInput {}
+
+/// Tool: discover API endpoints from captured network traffic
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct NetworkDiscoverInput {}
+
+/// Tool: detect site technology stack
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SiteFingerprintInput {
+    /// URL to fingerprint (uses current page if omitted)
+    pub url: Option<String>,
+}
+
+/// Tool: compare current page to cached version
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PageDiffInput {
+    /// URL to diff (uses current page)
+    pub url: Option<String>,
+}
+
+/// Tool: list TLS fingerprint profiles
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TlsProfilesInput {}
+
+/// Tool: wait for navigation to complete after a click/form submit
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WaitForNavigationInput {
+    /// Timeout in milliseconds (default: 5000)
+    pub timeout_ms: Option<u64>,
+}
