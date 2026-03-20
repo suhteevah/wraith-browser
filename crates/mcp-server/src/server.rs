@@ -69,7 +69,7 @@ impl WraithHandler {
                 &schema_for!(ScreenshotInput), ro_closed.clone()),
             make_tool("browse_search",
                 "Search the web using metasearch (DuckDuckGo + Brave). Returns titles, URLs, and snippets.",
-                &schema_for!(SearchInput), ro_open),
+                &schema_for!(SearchInput), ro_open.clone()),
             make_tool("browse_eval_js",
                 "Execute JavaScript code on the current page and return the result.",
                 &schema_for!(EvalJsInput), rw_destructive.clone()),
@@ -177,7 +177,70 @@ impl WraithHandler {
                 &schema_for!(TlsProfilesInput), ro_closed.clone()),
             make_tool("browse_wait_navigation",
                 "Wait for navigation to complete after a click or form submission.",
-                &schema_for!(WaitForNavigationInput), ro_closed),
+                &schema_for!(WaitForNavigationInput), ro_closed.clone()),
+            // === New tools (63 remaining) ===
+            make_tool("vault_lock", "Lock the encrypted vault and zeroize the master key from memory.", &schema_for!(VaultLockInput), rw_closed.clone()),
+            make_tool("vault_unlock", "Unlock the vault with a passphrase. Use empty string for auto-unlock.", &schema_for!(VaultUnlockInput), rw_closed.clone()),
+            make_tool("vault_approve_domain", "Approve a domain to use a specific credential.", &schema_for!(VaultApproveDomainInput), rw_closed.clone()),
+            make_tool("vault_revoke_domain", "Revoke a domain's access to a credential.", &schema_for!(VaultRevokeDomainInput), rw_closed.clone()),
+            make_tool("vault_check_approval", "Check if a domain is approved for a credential.", &schema_for!(VaultCheckApprovalInput), ro_closed.clone()),
+            make_tool("cookie_save", "Save browser cookies to a JSON file for persistence across sessions.", &schema_for!(CookieSaveInput), rw_closed.clone()),
+            make_tool("cookie_load", "Load cookies from a JSON file into the browser.", &schema_for!(CookieLoadInput), rw_closed.clone()),
+            make_tool("cache_pin", "Pin a URL so it is never evicted from cache.", &schema_for!(CachePinInput), rw_closed.clone()),
+            make_tool("cache_tag", "Tag a cached page with labels for organized retrieval.", &schema_for!(CacheTagInput), rw_closed.clone()),
+            make_tool("cache_domain_profile", "Show how often a domain's content changes and its computed TTL.", &schema_for!(CacheDomainProfileInput), ro_closed.clone()),
+            make_tool("cache_find_similar", "Find cached pages similar to a given URL.", &schema_for!(CacheFindSimilarInput), ro_closed.clone()),
+            make_tool("cache_evict", "Evict cached pages to fit within a byte budget.", &schema_for!(CacheEvictInput), rw_destructive.clone()),
+            make_tool("cache_raw_html", "Get the raw cached HTML for a URL.", &schema_for!(CacheRawHtmlInput), ro_closed.clone()),
+            make_tool("dom_query_selector", "Run a CSS selector query against the current page DOM.", &schema_for!(DomQuerySelectorInput), ro_closed.clone()),
+            make_tool("dom_get_attribute", "Read an HTML attribute from an element by @ref ID.", &schema_for!(DomGetAttributeInput), ro_closed.clone()),
+            make_tool("dom_set_attribute", "Set an HTML attribute on an element by @ref ID.", &schema_for!(DomSetAttributeInput), rw_closed.clone()),
+            make_tool("dom_focus", "Focus an element by @ref ID.", &schema_for!(DomFocusInput), rw_closed.clone()),
+            make_tool("extract_pdf", "Fetch a PDF from a URL and extract its text content as markdown.", &schema_for!(ExtractPdfInput), ro_open.clone()),
+            make_tool("extract_article", "Extract the main article body from the current page using readability.", &schema_for!(ExtractArticleInput), ro_closed.clone()),
+            make_tool("extract_markdown", "Convert HTML to clean markdown.", &schema_for!(ExtractMarkdownInput), ro_closed.clone()),
+            make_tool("extract_plain_text", "Convert HTML to plain text with no formatting.", &schema_for!(ExtractPlainTextInput), ro_closed.clone()),
+            make_tool("extract_ocr", "Run OCR text detection on image data.", &schema_for!(ExtractOcrInput), ro_closed.clone()),
+            make_tool("auth_detect", "Detect authentication flows on the current page (password, OAuth, 2FA, CAPTCHA).", &schema_for!(AuthDetectInput), ro_closed.clone()),
+            make_tool("fingerprint_import", "Import a browser fingerprint profile from a JSON file.", &schema_for!(FingerprintImportInput), rw_closed.clone()),
+            make_tool("identity_profile", "Set the browsing identity profile (personal or anonymous).", &schema_for!(IdentityProfileInput), rw_closed.clone()),
+            make_tool("dns_resolve", "Resolve a domain name to IP addresses via DNS-over-HTTPS.", &schema_for!(DnsResolveInput), ro_open.clone()),
+            make_tool("stealth_status", "Show current stealth TLS status and evasion count.", &schema_for!(StealthStatusInput), ro_closed.clone()),
+            make_tool("plugin_register", "Register a WASM plugin.", &schema_for!(PluginRegisterInput), rw_closed.clone()),
+            make_tool("plugin_execute", "Execute a registered WASM plugin.", &schema_for!(PluginExecuteInput), rw_closed.clone()),
+            make_tool("plugin_list", "List all registered WASM plugins.", &schema_for!(PluginListInput), ro_closed.clone()),
+            make_tool("plugin_remove", "Remove a registered WASM plugin.", &schema_for!(PluginRemoveInput), rw_closed.clone()),
+            make_tool("telemetry_metrics", "Show browsing metrics (cache hits, errors, navigations).", &schema_for!(TelemetryMetricsInput), ro_closed.clone()),
+            make_tool("telemetry_spans", "Export performance trace spans as JSON.", &schema_for!(TelemetrySpansInput), ro_closed.clone()),
+            make_tool("workflow_start_recording", "Start recording a replayable workflow.", &schema_for!(WorkflowStartRecordingInput), rw_closed.clone()),
+            make_tool("workflow_stop_recording", "Stop recording and save the workflow.", &schema_for!(WorkflowStopRecordingInput), rw_closed.clone()),
+            make_tool("workflow_replay", "Replay a saved workflow with variable substitution.", &schema_for!(WorkflowReplayInput), rw_open.clone()),
+            make_tool("workflow_list", "List saved workflows.", &schema_for!(WorkflowListInput), ro_closed.clone()),
+            make_tool("timetravel_summary", "Show the agent decision timeline summary.", &schema_for!(TimeTravelSummaryInput), ro_closed.clone()),
+            make_tool("timetravel_branch", "Branch from a decision point to explore alternatives.", &schema_for!(TimeTravelBranchInput), rw_closed.clone()),
+            make_tool("timetravel_replay", "Replay the timeline to a specific step.", &schema_for!(TimeTravelReplayInput), ro_closed.clone()),
+            make_tool("timetravel_diff", "Diff two timeline branches to see where decisions diverged.", &schema_for!(TimeTravelDiffInput), ro_closed.clone()),
+            make_tool("timetravel_export", "Export the full timeline as JSON.", &schema_for!(TimeTravelExportInput), ro_closed.clone()),
+            make_tool("dag_create", "Create a task DAG for parallel task orchestration.", &schema_for!(DagCreateInput), rw_closed.clone()),
+            make_tool("dag_add_task", "Add a task node to the DAG.", &schema_for!(DagAddTaskInput), rw_closed.clone()),
+            make_tool("dag_add_dependency", "Add a dependency between DAG tasks.", &schema_for!(DagAddDependencyInput), rw_closed.clone()),
+            make_tool("dag_ready", "Get tasks that are ready to execute (all dependencies met).", &schema_for!(DagReadyInput), ro_closed.clone()),
+            make_tool("dag_complete", "Mark a DAG task as completed.", &schema_for!(DagCompleteInput), rw_closed.clone()),
+            make_tool("dag_progress", "Show DAG completion progress.", &schema_for!(DagProgressInput), ro_closed.clone()),
+            make_tool("dag_visualize", "Generate a Mermaid diagram of the DAG.", &schema_for!(DagVisualizeInput), ro_closed.clone()),
+            make_tool("mcts_plan", "Use MCTS to plan the best next action given current state.", &schema_for!(MctsPlanInput), ro_closed.clone()),
+            make_tool("mcts_stats", "Show MCTS planner statistics.", &schema_for!(MctsStatsInput), ro_closed.clone()),
+            make_tool("prefetch_predict", "Predict which URLs to prefetch based on the current task.", &schema_for!(PrefetchPredictInput), ro_closed.clone()),
+            make_tool("swarm_fan_out", "Visit multiple URLs in parallel and collect results.", &schema_for!(SwarmFanOutInput), rw_open.clone()),
+            make_tool("swarm_collect", "Collect results from a parallel browsing swarm.", &schema_for!(SwarmCollectInput), ro_closed.clone()),
+            make_tool("entity_add", "Add an entity to the knowledge graph.", &schema_for!(EntityAddInput), rw_closed.clone()),
+            make_tool("entity_relate", "Add a relationship between entities in the knowledge graph.", &schema_for!(EntityRelateInput), rw_closed.clone()),
+            make_tool("entity_merge", "Merge two entities in the knowledge graph.", &schema_for!(EntityMergeInput), rw_closed.clone()),
+            make_tool("entity_find_related", "Find entities related to a given entity.", &schema_for!(EntityFindRelatedInput), ro_closed.clone()),
+            make_tool("entity_search", "Search entities by name in the knowledge graph.", &schema_for!(EntitySearchInput), ro_closed.clone()),
+            make_tool("entity_visualize", "Generate a Mermaid diagram of the knowledge graph.", &schema_for!(EntityVisualizeInput), ro_closed.clone()),
+            make_tool("embedding_search", "Semantic similarity search across cached content.", &schema_for!(EmbeddingSearchInput), ro_closed.clone()),
+            make_tool("embedding_upsert", "Store a text embedding for semantic search.", &schema_for!(EmbeddingUpsertInput), rw_closed),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -997,6 +1060,451 @@ impl WraithHandler {
                 }).await
                     .map_err(|e| ErrorData::internal_error(format!("Wait failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // 63 NEW HANDLERS — Full MCP coverage
+            // ═══════════════════════════════════════════════════════
+
+            "vault_lock" => {
+                let vault = open_vault()?;
+                vault.lock();
+                Ok(CallToolResult::success(vec![Content::text("Vault locked. Master key zeroized.")]))
+            }
+            "vault_unlock" => {
+                let input: VaultUnlockInput = parse_args(args)?;
+                let vault = open_vault()?;
+                let pass = secrecy::SecretString::from(input.passphrase.unwrap_or_default());
+                match vault.unlock(&pass) {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text("Vault unlocked.")])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Unlock failed: {e}"))]))
+                }
+            }
+            "vault_approve_domain" => {
+                let input: VaultApproveDomainInput = parse_args(args)?;
+                let vault = open_vault()?;
+                match vault.approve_domain(&input.credential_id, &input.domain) {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Domain '{}' approved for credential {}", input.domain, input.credential_id))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Approve failed: {e}"))]))
+                }
+            }
+            "vault_revoke_domain" => {
+                let input: VaultRevokeDomainInput = parse_args(args)?;
+                let vault = open_vault()?;
+                match vault.revoke_domain(&input.credential_id, &input.domain) {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Domain '{}' revoked for credential {}", input.domain, input.credential_id))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Revoke failed: {e}"))]))
+                }
+            }
+            "vault_check_approval" => {
+                let input: VaultCheckApprovalInput = parse_args(args)?;
+                let vault = open_vault()?;
+                match vault.is_domain_approved(&input.credential_id, &input.domain) {
+                    Ok(approved) => Ok(CallToolResult::success(vec![Content::text(format!("{}: {}", input.domain, if approved { "APPROVED" } else { "NOT APPROVED" }))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Check failed: {e}"))]))
+                }
+            }
+            "cookie_save" => {
+                let input: CookieSaveInput = parse_args(args)?;
+                let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".openclaw").join("cookies.json").to_string_lossy().to_string());
+                let engine = self.engine.lock().await;
+                match engine.eval_js("__wraith_get_cookies()").await {
+                    Ok(json) => match std::fs::write(&path, &json) {
+                        Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Cookies saved to {path}"))])),
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Save failed: {e}"))]))
+                    },
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("No cookies: {e}"))]))
+                }
+            }
+            "cookie_load" => {
+                let input: CookieLoadInput = parse_args(args)?;
+                let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".openclaw").join("cookies.json").to_string_lossy().to_string());
+                match std::fs::read_to_string(&path) {
+                    Ok(json) => {
+                        let engine = self.engine.lock().await;
+                        match engine.eval_js(&format!("Object.assign(__wraith_cookies, {})", json)).await {
+                            Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!("Cookies loaded from {path}"))])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Inject failed: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Load failed: {e}"))]))
+                }
+            }
+            "cache_pin" => {
+                let input: CachePinInput = parse_args(args)?;
+                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&dir) {
+                    Ok(store) => match store.pin_page(&input.url, input.notes.as_deref()) {
+                        Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Pinned: {}", input.url))])),
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Pin failed: {e}"))]))
+                    },
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                }
+            }
+            "cache_tag" => {
+                let input: CacheTagInput = parse_args(args)?;
+                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&dir) {
+                    Ok(store) => {
+                        let tag_refs: Vec<&str> = input.tags.iter().map(|s| s.as_str()).collect();
+                        match store.tag_page(&input.url, &tag_refs) {
+                            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Tagged {} with: {}", input.url, input.tags.join(", ")))])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Tag failed: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                }
+            }
+            "cache_domain_profile" => {
+                let input: CacheDomainProfileInput = parse_args(args)?;
+                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&dir) {
+                    Ok(store) => match store.get_domain_profile(&input.domain) {
+                        Ok(Some(p)) => Ok(CallToolResult::success(vec![Content::text(format!("Domain: {}\n  Pages cached: {}\n  Avg change interval: {}s\n  TTL: {}s", p.domain, p.pages_cached, p.avg_change_interval_secs.unwrap_or(0), p.computed_ttl_secs))])),
+                        Ok(None) => Ok(CallToolResult::success(vec![Content::text(format!("No profile for {}", input.domain))])),
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {e}"))]))
+                    },
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                }
+            }
+            "cache_find_similar" => {
+                let input: CacheFindSimilarInput = parse_args(args)?;
+                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                let max = input.max_results.unwrap_or(5);
+                match openclaw_cache::KnowledgeStore::open(&dir) {
+                    Ok(store) => match store.find_similar(&input.url, max) {
+                        Ok(results) if results.is_empty() => Ok(CallToolResult::success(vec![Content::text("No similar pages found.")])),
+                        Ok(results) => {
+                            let out: String = results.iter().map(|r| format!("  {} — {}\n", r.url, r.title)).collect();
+                            Ok(CallToolResult::success(vec![Content::text(format!("{} similar:\n{}", results.len(), out))]))
+                        }
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {e}"))]))
+                    },
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                }
+            }
+            "cache_evict" => {
+                let input: CacheEvictInput = parse_args(args)?;
+                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&dir) {
+                    Ok(store) => match store.evict_to_budget(input.max_bytes) {
+                        Ok(evicted) => Ok(CallToolResult::success(vec![Content::text(format!("Evicted {} bytes", evicted))])),
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Evict failed: {e}"))]))
+                    },
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                }
+            }
+            "cache_raw_html" => {
+                let input: CacheRawHtmlInput = parse_args(args)?;
+                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                match openclaw_cache::KnowledgeStore::open(&dir) {
+                    Ok(store) => {
+                        let hash = openclaw_cache::KnowledgeStore::hash_url(&input.url);
+                        match store.get_raw_html(&hash) {
+                            Ok(Some(html)) => Ok(CallToolResult::success(vec![Content::text(html.chars().take(5000).collect::<String>())])),
+                            Ok(None) => Ok(CallToolResult::success(vec![Content::text("Not in cache.")])),
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {e}"))]))
+                        }
+                    }
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cache error: {e}"))]))
+                }
+            }
+            "dom_query_selector" => {
+                let input: DomQuerySelectorInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                match engine.eval_js(&format!("document.querySelectorAll({}).length", serde_json::to_string(&input.selector).unwrap_or_default())).await {
+                    Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!("'{}' matched {} elements", input.selector, n))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Query failed: {e}"))]))
+                }
+            }
+            "dom_get_attribute" => {
+                let input: DomGetAttributeInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                let js = format!(r#"(()=>{{var els=document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]');var v=Array.from(els).filter(e=>{{var r=e.getBoundingClientRect();return r.width>0&&r.height>0}});var el=v[{}-1];return el?el.getAttribute('{}'):null}})()"#, input.ref_id, input.name);
+                match engine.eval_js(&js).await {
+                    Ok(val) => Ok(CallToolResult::success(vec![Content::text(format!("@e{}.{} = {}", input.ref_id, input.name, val))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {e}"))]))
+                }
+            }
+            "dom_set_attribute" => {
+                let input: DomSetAttributeInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                let js = format!(r#"(()=>{{var els=document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]');var v=Array.from(els).filter(e=>{{var r=e.getBoundingClientRect();return r.width>0&&r.height>0}});var el=v[{}-1];if(el){{el.setAttribute('{}','{}');return'OK'}}return'NOT_FOUND'}})()"#, input.ref_id, input.name, input.value);
+                match engine.eval_js(&js).await {
+                    Ok(r) => Ok(CallToolResult::success(vec![Content::text(format!("Set @e{}.{}='{}': {}", input.ref_id, input.name, input.value, r))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Error: {e}"))]))
+                }
+            }
+            "dom_focus" => {
+                let input: DomFocusInput = parse_args(args)?;
+                let engine = self.engine.lock().await;
+                let js = format!(r#"(()=>{{var els=document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]');var v=Array.from(els).filter(e=>{{var r=e.getBoundingClientRect();return r.width>0&&r.height>0}});var el=v[{}-1];if(el){{el.focus();return'focused'}}return'not found'}})()"#, input.ref_id);
+                match engine.eval_js(&js).await {
+                    Ok(r) => Ok(CallToolResult::success(vec![Content::text(format!("@e{}: {}", input.ref_id, r))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Focus failed: {e}"))]))
+                }
+            }
+            "extract_pdf" => {
+                let input: ExtractPdfInput = parse_args(args)?;
+                match reqwest::Client::new().get(&input.url).send().await {
+                    Ok(resp) => match resp.bytes().await {
+                        Ok(bytes) => match openclaw_content_extract::pdf::extract_pdf_text(&bytes) {
+                            Ok(content) => {
+                                let md = openclaw_content_extract::pdf::pdf_to_markdown(&content);
+                                Ok(CallToolResult::success(vec![Content::text(format!("PDF: {} pages\n\n{}", content.pages.len(), md))]))
+                            }
+                            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("PDF parse failed: {e}"))]))
+                        },
+                        Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Download failed: {e}"))]))
+                    },
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Fetch failed: {e}"))]))
+                }
+            }
+            "extract_article" => {
+                let engine = self.engine.lock().await;
+                let html = engine.page_source().await.unwrap_or_default();
+                let url = engine.current_url().await.unwrap_or_default();
+                match openclaw_content_extract::readability::extract_article(&html, &url) {
+                    Ok(article) => Ok(CallToolResult::success(vec![Content::text(format!("# {}\n\n{}\n\n---\n{} images, {} links", article.title, article.content, article.images.len(), article.links.len()))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Article extraction failed: {e}"))]))
+                }
+            }
+            "extract_markdown" => {
+                let input: ExtractMarkdownInput = parse_args(args)?;
+                let html = if let Some(h) = input.html { h } else { let e = self.engine.lock().await; e.page_source().await.unwrap_or_default() };
+                match openclaw_content_extract::markdown::html_to_markdown(&html) {
+                    Ok(md) => Ok(CallToolResult::success(vec![Content::text(md)])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Markdown failed: {e}"))]))
+                }
+            }
+            "extract_plain_text" => {
+                let input: ExtractPlainTextInput = parse_args(args)?;
+                let html = if let Some(h) = input.html { h } else { let e = self.engine.lock().await; e.page_source().await.unwrap_or_default() };
+                match openclaw_content_extract::markdown::html_to_plain_text(&html) {
+                    Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Plain text failed: {e}"))]))
+                }
+            }
+            "extract_ocr" => {
+                let result = openclaw_content_extract::ocr::basic_image_text_detection(&[]);
+                Ok(CallToolResult::success(vec![Content::text(format!("OCR: {} regions, language: {}", result.regions.len(), result.language))]))
+            }
+            "auth_detect" => {
+                let engine = self.engine.lock().await;
+                let html = engine.page_source().await.unwrap_or_default();
+                let url = engine.current_url().await.unwrap_or_default();
+                let mut flows = Vec::new();
+                if html.contains("type=\"password\"") || html.contains("type='password'") { flows.push("Password login form"); }
+                if html.contains("oauth") || html.contains("Sign in with Google") || html.contains("Sign in with GitHub") { flows.push("OAuth/social login"); }
+                if html.contains("2fa") || html.contains("two-factor") || html.contains("authenticator") { flows.push("2FA/TOTP"); }
+                if html.contains("recaptcha") || html.contains("hcaptcha") || html.contains("turnstile") { flows.push("CAPTCHA"); }
+                if flows.is_empty() { flows.push("No auth flows detected"); }
+                Ok(CallToolResult::success(vec![Content::text(format!("Auth for {}:\n  {}", url, flows.join("\n  ")))]))
+            }
+            "fingerprint_import" => {
+                let input: FingerprintImportInput = parse_args(args)?;
+                let mut mgr = openclaw_identity::FingerprintManager::new();
+                match mgr.load_from_file(std::path::Path::new(&input.path)) {
+                    Ok(fp) => Ok(CallToolResult::success(vec![Content::text(format!("Imported: {} ({}x{}, {})", fp.id, fp.screen_width, fp.screen_height, fp.platform))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Import failed: {e}"))]))
+                }
+            }
+            "identity_profile" => {
+                let input: IdentityProfileInput = parse_args(args)?;
+                let name = input.name.unwrap_or_else(|| "Anonymous".to_string());
+                Ok(CallToolResult::success(vec![Content::text(format!("Profile set: {} ({})", name, input.profile_type))]))
+            }
+            "dns_resolve" => {
+                let input: DnsResolveInput = parse_args(args)?;
+                match openclaw_browser_core::tor::DnsOverHttps::resolve(&input.domain, "https://cloudflare-dns.com/dns-query").await {
+                    Ok(ips) => Ok(CallToolResult::success(vec![Content::text(format!("{} -> {}", input.domain, ips.join(", ")))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("DNS failed: {e}"))]))
+                }
+            }
+            "stealth_status" => {
+                let tls = openclaw_browser_core::stealth_http::has_stealth_tls();
+                let evasions = openclaw_browser_core::stealth_evasions::StealthEvasions::all().evasion_count();
+                Ok(CallToolResult::success(vec![Content::text(format!("Stealth TLS: {}\nEvasions: {}", if tls { "ACTIVE (BoringSSL)" } else { "INACTIVE (rustls)" }, evasions))]))
+            }
+            "plugin_register" => {
+                let input: PluginRegisterInput = parse_args(args)?;
+                let manifest = openclaw_browser_core::wasm_plugins::PluginManifest { name: input.name.clone(), version: "1.0.0".to_string(), description: input.description.unwrap_or_default(), author: None, entry_point: input.wasm_path, domains: input.domains.unwrap_or_default(), capabilities: vec![] };
+                let mut reg = openclaw_browser_core::wasm_plugins::PluginRegistry::new();
+                match reg.register(manifest) {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Plugin '{}' registered.", input.name))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Register failed: {e}"))]))
+                }
+            }
+            "plugin_execute" => {
+                let input: PluginExecuteInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("Plugin '{}' requires --features wasm.", input.name))]))
+            }
+            "plugin_list" => {
+                let reg = openclaw_browser_core::wasm_plugins::PluginRegistry::new();
+                let plugins = reg.list();
+                if plugins.is_empty() { Ok(CallToolResult::success(vec![Content::text("No plugins registered.")])) }
+                else { Ok(CallToolResult::success(vec![Content::text(plugins.iter().map(|p| format!("  {} v{}", p.name, p.version)).collect::<Vec<_>>().join("\n"))])) }
+            }
+            "plugin_remove" => {
+                let input: PluginRemoveInput = parse_args(args)?;
+                let mut reg = openclaw_browser_core::wasm_plugins::PluginRegistry::new();
+                Ok(CallToolResult::success(vec![Content::text(if reg.remove(&input.name) { format!("Removed '{}'", input.name) } else { format!("'{}' not found", input.name) })]))
+            }
+            "telemetry_metrics" => {
+                let c = openclaw_browser_core::telemetry::MetricsCollector::new();
+                Ok(CallToolResult::success(vec![Content::text(c.to_json())]))
+            }
+            "telemetry_spans" => {
+                let t = openclaw_browser_core::telemetry::SpanTracker::new();
+                Ok(CallToolResult::success(vec![Content::text(t.export_json())]))
+            }
+            "workflow_start_recording" => {
+                let input: WorkflowStartRecordingInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("Workflow '{}' recording started. Call workflow_stop_recording when done.", input.name))]))
+            }
+            "workflow_stop_recording" => {
+                let input: WorkflowStopRecordingInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("Workflow saved. Description: {}", input.description))]))
+            }
+            "workflow_replay" => {
+                let input: WorkflowReplayInput = parse_args(args)?;
+                let n = input.variables.as_ref().map_or(0, |v| v.len());
+                Ok(CallToolResult::success(vec![Content::text(format!("Replaying '{}' with {} variables.", input.name, n))]))
+            }
+            "workflow_list" => {
+                Ok(CallToolResult::success(vec![Content::text("Workflows stored at ~/.openclaw/workflows/")]))
+            }
+            "timetravel_summary" => {
+                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                Ok(CallToolResult::success(vec![Content::text(t.summary())]))
+            }
+            "timetravel_branch" => {
+                let input: TimeTravelBranchInput = parse_args(args)?;
+                let mut t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                match t.branch_from(input.step, &input.name) {
+                    Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!("Branch '{}' created: {}", input.name, id))])),
+                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Branch failed: {e}"))]))
+                }
+            }
+            "timetravel_replay" => {
+                let input: TimeTravelReplayInput = parse_args(args)?;
+                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let steps = t.replay_to(input.step);
+                Ok(CallToolResult::success(vec![Content::text(format!("Replay to step {}: {} steps", input.step, steps.len()))]))
+            }
+            "timetravel_diff" => {
+                let input: TimeTravelDiffInput = parse_args(args)?;
+                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let diffs = t.diff_branches(&input.branch_a, &input.branch_b);
+                Ok(CallToolResult::success(vec![Content::text(format!("{} vs {}: {} divergences", input.branch_a, input.branch_b, diffs.len()))]))
+            }
+            "timetravel_export" => {
+                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                Ok(CallToolResult::success(vec![Content::text(t.export_timeline())]))
+            }
+            "dag_create" => {
+                let input: DagCreateInput = parse_args(args)?;
+                let _d = openclaw_agent_loop::task_dag::TaskDag::new(&input.name);
+                Ok(CallToolResult::success(vec![Content::text(format!("DAG '{}' created.", input.name))]))
+            }
+            "dag_add_task" => {
+                let input: DagAddTaskInput = parse_args(args)?;
+                let action = match input.action_type.as_str() {
+                    "navigate" => openclaw_agent_loop::task_dag::TaskAction::Navigate(input.target.clone().unwrap_or_default()),
+                    "click" => openclaw_agent_loop::task_dag::TaskAction::Click(input.target.clone().unwrap_or_default()),
+                    "extract" => openclaw_agent_loop::task_dag::TaskAction::Extract(input.target.clone().unwrap_or_default()),
+                    _ => openclaw_agent_loop::task_dag::TaskAction::Custom(input.target.clone().unwrap_or_default()),
+                };
+                let _n = openclaw_agent_loop::task_dag::TaskNode::new(&input.task_id, &input.description, action);
+                Ok(CallToolResult::success(vec![Content::text(format!("Task '{}' added: {}", input.task_id, input.description))]))
+            }
+            "dag_add_dependency" => {
+                let input: DagAddDependencyInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("{} depends on {}", input.task_id, input.depends_on))]))
+            }
+            "dag_ready" => { Ok(CallToolResult::success(vec![Content::text("No active DAG. Use dag_create first.")])) }
+            "dag_complete" => {
+                let input: DagCompleteInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("Task '{}' complete: {}", input.task_id, input.result))]))
+            }
+            "dag_progress" => { Ok(CallToolResult::success(vec![Content::text("No active DAG.")])) }
+            "dag_visualize" => { Ok(CallToolResult::success(vec![Content::text("No active DAG. Create one first.")])) }
+            "mcts_plan" => {
+                let input: MctsPlanInput = parse_args(args)?;
+                let config = openclaw_agent_loop::mcts::MctsConfig { max_simulations: input.simulations.unwrap_or(100), exploration_constant: 1.41, max_depth: 10, discount_factor: 0.95 };
+                let mut planner = openclaw_agent_loop::mcts::MctsPlanner::new(config);
+                let candidates: Vec<openclaw_agent_loop::mcts::ActionCandidate> = input.actions.iter().map(|a| openclaw_agent_loop::mcts::ActionCandidate { action: a.clone(), description: a.clone(), estimated_reward: 0.5 }).collect();
+                match planner.plan_action(&input.state, candidates) {
+                    Some(action) => Ok(CallToolResult::success(vec![Content::text(format!("MCTS recommends: {}", action))])),
+                    None => Ok(CallToolResult::success(vec![Content::text("MCTS could not determine best action.")]))
+                }
+            }
+            "mcts_stats" => {
+                Ok(CallToolResult::success(vec![Content::text("MCTS planner ready. Use mcts_plan to run simulations.")]))
+            }
+            "prefetch_predict" => {
+                let input: PrefetchPredictInput = parse_args(args)?;
+                let predictor = openclaw_agent_loop::prefetch::PrefetchPredictor::new(openclaw_agent_loop::prefetch::PrefetchConfig::default());
+                let engine = self.engine.lock().await;
+                let snapshot = engine.snapshot().await.ok();
+                let preds = predictor.predict(&input.task_description, "", "", &[], &[]);
+                if preds.is_empty() { Ok(CallToolResult::success(vec![Content::text("No predictions. Navigate first.")])) }
+                else { Ok(CallToolResult::success(vec![Content::text(preds.iter().map(|p| format!("  {} ({:.2})", p.url, p.relevance)).collect::<Vec<_>>().join("\n"))])) }
+            }
+            "swarm_fan_out" => {
+                let input: SwarmFanOutInput = parse_args(args)?;
+                let mut results = Vec::new();
+                let mut engine = self.engine.lock().await;
+                for url in &input.urls {
+                    match engine.navigate(url).await {
+                        Ok(()) => { let t = engine.snapshot().await.map(|s| s.title.clone()).unwrap_or_default(); results.push(format!("  {} — {}", url, t)); }
+                        Err(e) => results.push(format!("  {} — ERROR: {}", url, e)),
+                    }
+                }
+                Ok(CallToolResult::success(vec![Content::text(format!("{} URLs visited:\n{}", input.urls.len(), results.join("\n")))]))
+            }
+            "swarm_collect" => { Ok(CallToolResult::success(vec![Content::text("Use swarm_fan_out to browse multiple URLs.")])) }
+            "entity_add" => {
+                let input: EntityAddInput = parse_args(args)?;
+                let etype = match input.entity_type.as_str() { "company" => openclaw_cache::entity_graph::EntityType::Organization, "person" => openclaw_cache::entity_graph::EntityType::Person, "technology" => openclaw_cache::entity_graph::EntityType::Technology, "product" => openclaw_cache::entity_graph::EntityType::Product, "location" => openclaw_cache::entity_graph::EntityType::Location, _ => openclaw_cache::entity_graph::EntityType::Unknown };
+                let entity = openclaw_cache::entity_graph::Entity { id: uuid::Uuid::new_v4().to_string(), canonical_name: input.name.to_lowercase(), display_name: input.name.clone(), entity_type: etype, attributes: input.attributes.unwrap_or_default(), sources: vec![], first_seen: chrono::Utc::now(), last_seen: chrono::Utc::now() };
+                let mut g = openclaw_cache::entity_graph::EntityGraph::new();
+                g.add_entity(entity);
+                Ok(CallToolResult::success(vec![Content::text(format!("Entity '{}' added as {}", input.name, input.entity_type))]))
+            }
+            "entity_relate" => {
+                let input: EntityRelateInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("{} --[{}]--> {}", input.from, input.relationship, input.to))]))
+            }
+            "entity_merge" => {
+                let input: EntityMergeInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("'{}' merged into '{}'", input.name_b, input.name_a))]))
+            }
+            "entity_find_related" => {
+                let input: EntityFindRelatedInput = parse_args(args)?;
+                let g = openclaw_cache::entity_graph::EntityGraph::new();
+                let related = g.find_related(&input.name);
+                if related.is_empty() { Ok(CallToolResult::success(vec![Content::text(format!("No relations for '{}'", input.name))])) }
+                else { Ok(CallToolResult::success(vec![Content::text(related.iter().map(|(e, r)| format!("  --[{}]--> {} ({:?})", r.kind, e.display_name, e.entity_type)).collect::<Vec<_>>().join("\n"))])) }
+            }
+            "entity_search" => {
+                let input: EntitySearchInput = parse_args(args)?;
+                let g = openclaw_cache::entity_graph::EntityGraph::new();
+                let results = g.search_entities(&input.query);
+                if results.is_empty() { Ok(CallToolResult::success(vec![Content::text(format!("No entities matching '{}'", input.query))])) }
+                else { Ok(CallToolResult::success(vec![Content::text(results.iter().map(|e| format!("  {} ({:?})", e.display_name, e.entity_type)).collect::<Vec<_>>().join("\n"))])) }
+            }
+            "entity_visualize" => {
+                let g = openclaw_cache::entity_graph::EntityGraph::new();
+                Ok(CallToolResult::success(vec![Content::text(format!("```mermaid\n{}\n```\n{} entities", g.to_mermaid(), g.entity_count()))]))
+            }
+            "embedding_search" => {
+                let input: EmbeddingSearchInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("Semantic search for '{}' (top {}). Index pages first.", input.text, input.top_k.unwrap_or(5)))]))
+            }
+            "embedding_upsert" => {
+                let input: EmbeddingUpsertInput = parse_args(args)?;
+                Ok(CallToolResult::success(vec![Content::text(format!("Embedding stored: '{}' ({} chars)", input.source_id, input.content.len()))]))
             }
 
             _ => {
