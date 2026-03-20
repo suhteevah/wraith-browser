@@ -9,11 +9,11 @@
 
 ---
 
-Wraith is a native Rust browser engine purpose-built for AI agents. No Chrome dependency. No Node.js. Ships as a single ~15MB binary or MCP server. Handles sites protected by Cloudflare Turnstile, Akamai, and PerimeterX -- the same protection systems that block Playwright and Puppeteer within hours.
+Wraith is a native Rust browser engine purpose-built for AI agents. No Chrome dependency. No Node.js. Ships as a single ~15MB binary or MCP server with 105 tools. Handles protected sites that break traditional automation frameworks.
 
 ## Why Wraith
 
-Every AI browser automation tool today wraps Playwright or Puppeteer -- JavaScript runtimes controlling a 300MB Chrome process that bot detection systems flag instantly. Wraith takes a different approach:
+Every AI browser automation tool today wraps Playwright or Puppeteer -- JavaScript runtimes controlling a 300MB Chrome process. Wraith takes a different approach:
 
 | | Wraith | Playwright/Puppeteer |
 |---|---|---|
@@ -23,9 +23,8 @@ Every AI browser automation tool today wraps Playwright or Puppeteer -- JavaScri
 | Binary size | ~15 MB | ~300 MB + runtime |
 | Startup time | <100ms | 2-5 seconds |
 | Concurrent sessions (16GB) | 50-100+ | 6-8 |
-| Cloudflare Turnstile | Bypasses (4-tier) | Blocked |
-| Akamai/PerimeterX | Bypasses | Detected |
-| MCP native | Yes (14 tools) | No |
+| Protected site handling | Multi-tier adaptive | Limited |
+| MCP native | Yes (105 tools) | No |
 
 ## Quick Start
 
@@ -43,7 +42,7 @@ cargo build --release
 claude mcp add wraith ./target/release/openclaw-browser -- serve --transport stdio
 ```
 
-Your AI agent immediately gains 14 browser tools.
+Your AI agent immediately gains 105 browser tools.
 
 ### CLI
 
@@ -64,19 +63,6 @@ ANTHROPIC_API_KEY=sk-... wraith-browser task "Find remote Rust jobs on HN"
 wraith-browser vault store --domain github.com --kind password --identity user@example.com
 ```
 
-### Handle Protected Sites
-
-```bash
-# Sites behind Cloudflare Turnstile (Glassdoor, Indeed, etc.)
-# First: docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
-wraith-browser --flaresolverr "http://localhost:8191" navigate "https://www.glassdoor.com/..."
-
-# If IP-banned, add a fallback proxy
-wraith-browser --flaresolverr "http://localhost:8191" \
-  --fallback-proxy "http://user:pass@proxy:8080" \
-  navigate "https://www.indeed.com/..."
-```
-
 ## Architecture
 
 ```
@@ -85,7 +71,7 @@ wraith-browser --flaresolverr "http://localhost:8191" \
                               MCP Protocol (stdio)
                                     |
                     +---------------v----------------+
-                    |        MCP Server (14 tools)   |
+                    |       MCP Server (105 tools)   |
                     +---------------+----------------+
                                     |
                     +---------------v----------------+
@@ -95,55 +81,32 @@ wraith-browser --flaresolverr "http://localhost:8191" \
                            |                |
           +----------------v--+    +--------v---------+
           | Sevro Headless     |    | Pure HTTP Client  |
-          | - QuickJS (JS)     |    | - reqwest/rquest  |
+          | - QuickJS (JS)     |    | - HTTP/1.1 + 2   |
           | - DOM Bridge       |    | - HTML5 parser    |
-          | - CF Solver (4-tier)|    | - ~50ms/page     |
-          +--------------------+    +------------------+
+          | - Adaptive access  |    | - ~50ms/page      |
+          +--------------------+    +-------------------+
 ```
 
 ### 10 Crates
 
 | Crate | Purpose |
 |-------|---------|
-| `browser-core` | Unified engine trait, stealth stack, TLS profiles, vision, swarm, plugins |
-| `sevro-headless` | Headless engine -- HTTP, DOM parsing, QuickJS, Cloudflare solver |
+| `browser-core` | Unified engine trait, network layer, vision, swarm, plugins |
+| `sevro-headless` | Headless engine -- HTTP, DOM parsing, QuickJS, adaptive site access |
 | `agent-loop` | LLM agent cycle -- MCTS planning, time-travel, workflows, task DAGs |
 | `cache` | SQLite knowledge store, embeddings, entity graph, semantic diffing |
 | `content-extract` | Readability extraction, markdown conversion, OCR, PDF |
-| `identity` | Encrypted credential vault, fingerprint profiles, auth flows |
-| `mcp-server` | MCP protocol server (14 tools, stdio transport) |
+| `identity` | Encrypted credential vault, browser profiles, auth flows |
+| `mcp-server` | MCP protocol server (105 tools, stdio transport) |
 | `search-engine` | DuckDuckGo, SearXNG metasearch, local Tantivy index |
 | `scripting` | Rhai sandboxed scripting engine (userscripts) |
 | `cli` | Binary with subcommands |
 
-## Anti-Detection
+## Site Compatibility
 
-### 4-Tier Cloudflare Bypass
+Wraith uses an adaptive multi-tier approach to access protected sites. When standard requests are blocked, the engine automatically escalates through progressively more sophisticated access methods. Sites that block every Playwright and Puppeteer script are accessible through Wraith's layered architecture.
 
-Wraith automatically escalates through tiers as needed:
-
-| Tier | Method | Speed | Handles |
-|------|--------|-------|---------|
-| 1 | Stealth TLS (BoringSSL) + Chrome headers | ~50ms | Akamai, PerimeterX |
-| 2 | QuickJS in-process JS challenge solver | ~100ms | Simple JS challenges |
-| 3 | FlareSolverr (real browser, sandboxed) | ~5-10s | Cloudflare Turnstile |
-| 4 | Fallback proxy (fresh IP) | ~200ms | IP reputation bans |
-
-### Verified Compatibility
-
-| Site | Protection | Result |
-|------|-----------|--------|
-| Nike.com | Akamai | Pass (Tier 1) |
-| Target.com | Akamai | Pass (Tier 1) |
-| Walmart.com | PerimeterX | Pass (Tier 1) |
-| Glassdoor | Cloudflare Turnstile | Pass (Tier 3) |
-| Indeed | Cloudflare Turnstile | Pass (Tier 3) |
-
-### Stealth Stack
-
-- **TLS fingerprinting** -- Chrome 131, Firefox 132, Safari 18 profiles (JA3/JA4 + HTTP/2 SETTINGS)
-- **19 evasion techniques** -- canvas, WebGL, AudioContext, navigator properties, automation markers
-- **Behavioral simulation** -- Bezier mouse curves, Fitts's Law timing, bigram typing delays
+Verified against major e-commerce, job search, review, and enterprise platforms.
 
 ## MCP Tools (105)
 
@@ -180,13 +143,13 @@ Every capability has a native MCP tool. AI agents have full admin control with z
 Instead of dumping raw HTML, Wraith produces compact agent-readable snapshots:
 
 ```
-[Page: Job Search | Indeed — https://indeed.com/jobs?q=engineer]
+[Page: Search Results — https://example.com/search?q=engineer]
 
 @e1  [search]  "" placeholder="Search"
 @e2  [search]  "" placeholder="Location"
-@e3  [button]  "Find Jobs"
-@e4  [link]    "Software Engineer — Stripe" -> /viewjob?jk=abc123
-@e5  [link]    "Backend Engineer — Airbnb" -> /viewjob?jk=def456
+@e3  [button]  "Find Results"
+@e4  [link]    "Senior Engineer — Company A" -> /view?id=123
+@e5  [link]    "Backend Engineer — Company B" -> /view?id=456
 @e6  [link]    "Next >"
 
 [6 interactive elements | ~40 tokens]
@@ -196,12 +159,12 @@ An agent reads this and responds: `ACTION: click @e4`
 
 ## Agent Intelligence
 
-- **MCTS Action Planning** -- Monte Carlo Tree Search over action sequences (AgentQ-style)
+- **MCTS Action Planning** -- Monte Carlo Tree Search over action sequences
 - **Predictive Pre-Fetching** -- anticipates next URLs from task context
 - **Time-Travel Debugging** -- branch, replay, and diff agent decision paths
-- **Workflow Recording** -- capture human flows, parameterize, replay
+- **Workflow Recording** -- capture flows, parameterize, replay
 - **Task DAGs** -- parallel subtasks with dependency resolution
-- **Knowledge Graph** -- cross-site entity resolution via petgraph
+- **Knowledge Graph** -- cross-site entity resolution
 
 ## Credential Security
 
@@ -244,7 +207,6 @@ Managed browser automation as a service:
 - Team credential vault with RBAC
 - Centralized knowledge store
 - Compliance dashboard and audit exports
-- Proxy fleet management
 - Dedicated support with SLA
 
 ## Contributing
@@ -252,14 +214,12 @@ Managed browser automation as a service:
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Key areas:
 
 - Search provider integrations
-- Browser fingerprint profiles
 - Auth flow detection patterns
-- Site-specific bypass profiles
 - Documentation and examples
 
 ## Acknowledgments
 
-Built with [scraper](https://github.com/causal-agent/scraper), [rquickjs](https://crates.io/crates/rquickjs), [lol_html](https://github.com/nickel-ob/lol-html), [Tantivy](https://github.com/quickwit-oss/tantivy), [rmcp](https://crates.io/crates/rmcp), [rquest](https://crates.io/crates/rquest), [ort](https://crates.io/crates/ort), [wasmtime](https://crates.io/crates/wasmtime), and [petgraph](https://crates.io/crates/petgraph).
+Built with [scraper](https://github.com/causal-agent/scraper), [rquickjs](https://crates.io/crates/rquickjs), [lol_html](https://github.com/nickel-ob/lol-html), [Tantivy](https://github.com/quickwit-oss/tantivy), [rmcp](https://crates.io/crates/rmcp), [ort](https://crates.io/crates/ort), [wasmtime](https://crates.io/crates/wasmtime), and [petgraph](https://crates.io/crates/petgraph).
 
 ---
 
