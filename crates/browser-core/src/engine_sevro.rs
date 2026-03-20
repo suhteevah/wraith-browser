@@ -8,7 +8,7 @@ use crate::actions::{BrowserAction, ActionResult};
 use crate::engine::{BrowserEngine, EngineCapabilities, ScreenshotCapability};
 use crate::error::{BrowserResult, BrowserError};
 use async_trait::async_trait;
-use tracing::{info, debug, instrument};
+use tracing::{info, warn, debug, instrument};
 
 /// Detect the correct API submission endpoint for known ATS platforms.
 /// Returns (submit_url, content_type).
@@ -82,6 +82,66 @@ fn detect_ats_submit_endpoint(page_url: &str, form_action: &str) -> (String, Str
     (page_url.to_string(), "application/json".to_string())
 }
 
+/// Derive candidate Greenhouse board slugs from a career-site domain name.
+///
+/// E.g. "careers.datadoghq.com" → ["datadog", "datadoghq"]
+///      "stripe.com"            → ["stripe"]
+///      "www.samsara.com"       → ["samsara"]
+///      "jobs.example-corp.io"  → ["example-corp", "examplecorp"]
+fn greenhouse_slug_candidates(domain: &str) -> Vec<String> {
+    // Strip common prefixes (www, careers, jobs, apply) and suffixes (.com, .io, .co, etc.)
+    let domain = domain.to_lowercase();
+
+    // Extract the "main" part: remove subdomains and TLD
+    let parts: Vec<&str> = domain.split('.').collect();
+    // For "careers.datadoghq.com" → parts = ["careers", "datadoghq", "com"]
+    // For "stripe.com"            → parts = ["stripe", "com"]
+
+    let skip_prefixes = ["www", "careers", "jobs", "apply", "boards", "hire"];
+    let skip_suffixes = ["com", "io", "co", "org", "net", "co.uk", "jobs", "careers"];
+
+    // Find the "core" domain part(s)
+    let meaningful: Vec<&str> = parts.iter()
+        .filter(|p| !skip_prefixes.contains(p) && !skip_suffixes.contains(p))
+        .copied()
+        .collect();
+
+    let base = if meaningful.is_empty() {
+        // Fallback: use the second-level domain
+        if parts.len() >= 2 { parts[parts.len() - 2] } else { return vec![]; }
+    } else {
+        meaningful[0]
+    };
+
+    let mut candidates = Vec::new();
+
+    // Common pattern: company uses "datadoghq" in domain but "datadog" as slug.
+    // Strip common suffixes from the base: hq, inc, corp, io, app, labs, tech
+    let slug_suffixes = ["hq", "inc", "corp", "io", "app", "labs", "tech", "dev", "eng"];
+    for suffix in &slug_suffixes {
+        if base.len() > suffix.len() && base.ends_with(suffix) {
+            let stripped = &base[..base.len() - suffix.len()];
+            if !stripped.is_empty() {
+                candidates.push(stripped.to_string());
+            }
+        }
+    }
+
+    // The base itself is always a candidate
+    candidates.push(base.to_string());
+
+    // If base contains hyphens, also try without them
+    if base.contains('-') {
+        candidates.push(base.replace('-', ""));
+    }
+
+    // Deduplicate while preserving order
+    let mut seen = std::collections::HashSet::new();
+    candidates.retain(|c| seen.insert(c.clone()));
+
+    candidates
+}
+
 /// Browser engine backed by Sevro (stripped Servo fork).
 ///
 /// Includes an integrated Rhai scripting engine that triggers userscripts
@@ -119,6 +179,66 @@ impl SevroEngineBackend {
     /// Access the scripting engine to load/manage Rhai scripts.
     pub fn scripting(&mut self) -> &mut openclaw_scripting::ScriptEngine {
         &mut self.scripts
+    }
+
+    /// Resolve ATS wrapper URLs to direct application URLs.
+    ///
+    /// - Greenhouse wrapped: URLs with `gh_jid=` query param get resolved to
+    ///   `https://job-boards.greenhouse.io/{slug}/jobs/{gh_jid}` by probing the
+    ///   Greenhouse boards API.
+    /// - Lever: URLs containing `lever.co` that don't end with `/apply` get
+    ///   `/apply` appended to reach the actual application form.
+    async fn resolve_ats_url(&self, url: &str) -> String {
+        // --- Lever: ensure we land on the /apply page ---
+        if url.contains("lever.co") && !url.trim_end_matches('/').ends_with("/apply") {
+            let resolved = format!("{}/apply", url.trim_end_matches('/'));
+            info!(original = %url, resolved = %resolved, "Lever URL: appending /apply");
+            return resolved;
+        }
+
+        // --- Greenhouse wrapped URLs (gh_jid= query param) ---
+        if let Ok(parsed) = url::Url::parse(url) {
+            let gh_jid: Option<String> = parsed.query_pairs()
+                .find(|(k, _)| k == "gh_jid")
+                .map(|(_, v)| v.to_string());
+
+            if let Some(jid) = gh_jid {
+                // Validate that jid is numeric
+                if jid.chars().all(|c| c.is_ascii_digit()) && !jid.is_empty() {
+                    let domain = parsed.host_str().unwrap_or("");
+                    let candidates = greenhouse_slug_candidates(domain);
+                    debug!(domain = %domain, candidates = ?candidates, gh_jid = %jid,
+                           "Greenhouse wrapped URL detected, probing board API");
+
+                    for slug in &candidates {
+                        let api_url = format!(
+                            "https://boards-api.greenhouse.io/v1/boards/{}/jobs/{}",
+                            slug, jid
+                        );
+                        match self.engine.http_get(&api_url).await {
+                            Ok((200, _body)) => {
+                                let resolved = format!(
+                                    "https://job-boards.greenhouse.io/{}/jobs/{}",
+                                    slug, jid
+                                );
+                                info!(original = %url, resolved = %resolved, slug = %slug,
+                                      "Greenhouse wrapped URL resolved via boards API");
+                                return resolved;
+                            }
+                            Ok((status, _)) => {
+                                debug!(slug = %slug, status = status, "Greenhouse API probe miss");
+                            }
+                            Err(e) => {
+                                warn!(slug = %slug, error = %e, "Greenhouse API probe failed");
+                            }
+                        }
+                    }
+                    debug!(gh_jid = %jid, "No Greenhouse board slug matched, using original URL");
+                }
+            }
+        }
+
+        url.to_string()
     }
 
     /// Run triggered scripts for the current page.
@@ -167,6 +287,9 @@ impl Default for SevroEngineBackend {
 impl BrowserEngine for SevroEngineBackend {
     #[instrument(skip(self), fields(url = %url))]
     async fn navigate(&mut self, url: &str) -> BrowserResult<()> {
+        let url = self.resolve_ats_url(url).await;
+        let url = url.as_str();
+
         match self.engine.navigate(url).await {
             Ok(sevro_headless::PageEvent::Error(e)) => Err(BrowserError::NavigationFailed {
                 url: url.to_string(),

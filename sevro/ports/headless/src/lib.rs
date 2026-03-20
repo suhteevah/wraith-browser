@@ -1321,6 +1321,18 @@ impl SevroEngine {
         }
     }
 
+    /// Perform a simple HTTP GET and return (status_code, body).
+    pub async fn http_get(&self, url: &str) -> Result<(u16, String), String> {
+        let resp = self.client.get(url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .send()
+            .await
+            .map_err(|e| format!("HTTP GET failed: {e}"))?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.map_err(|e| format!("Failed to read body: {e}"))?;
+        Ok((status, body))
+    }
+
     #[instrument(skip(self))]
     pub fn shutdown(&mut self) {
         info!("Sevro engine shutting down");
