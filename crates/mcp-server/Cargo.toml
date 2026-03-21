@@ -8,6 +8,7 @@ description = "MCP server exposing OpenClaw Browser tools to Claude Code and oth
 [features]
 default = ["sevro"]
 sevro = ["openclaw-browser-core/sevro"]
+cdp = ["openclaw-browser-core/cdp"]
 
 [dependencies]
 openclaw-browser-core = { path = "../browser-core", default-features = false }

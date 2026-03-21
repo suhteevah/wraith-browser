@@ -8,6 +8,7 @@ description = "Core browser control — unified BrowserEngine trait with multipl
 [features]
 default = ["sevro"]
 sevro = ["dep:sevro-headless"]
+cdp = ["dep:tokio-tungstenite"]
 stealth-tls = ["dep:rquest", "sevro-headless?/stealth-tls"]
 vision-ml = ["dep:ort"]
 tor = ["dep:arti-client", "dep:tor-rtcompat"]
@@ -37,3 +38,4 @@ arti-client = { workspace = true, optional = true }
 tor-rtcompat = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 openclaw-scripting = { path = "../scripting" }
+tokio-tungstenite = { workspace = true, optional = true }

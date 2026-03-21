@@ -133,6 +133,18 @@ pub async fn create_engine_with_options(
                 "Sevro engine not available — compile with --features sevro".to_string()
             ))
         }
+        #[cfg(feature = "cdp")]
+        "cdp" | "chrome" => {
+            Ok(Arc::new(Mutex::new(
+                crate::engine_cdp::CdpEngine::new().await?
+            )))
+        }
+        #[cfg(not(feature = "cdp"))]
+        "cdp" | "chrome" => {
+            Err(crate::error::BrowserError::EngineError(
+                "CDP engine not available — compile with --features cdp".to_string()
+            ))
+        }
         "auto" => {
             #[cfg(feature = "sevro")]
             {

@@ -119,6 +119,12 @@ pub struct WraithHandler {
     tools: Vec<Tool>,
     /// The browser engine (shared, async-mutex for interior mutability)
     engine: Arc<Mutex<dyn BrowserEngine>>,
+    /// CDP browser engine for JS-heavy pages (Chrome via DevTools Protocol)
+    #[cfg(feature = "cdp")]
+    cdp_engine: Option<Arc<Mutex<dyn BrowserEngine>>>,
+    /// Whether to auto-fallback to CDP when native rendering detects a SPA
+    #[cfg(feature = "cdp")]
+    cdp_auto: bool,
 }
 
 impl Default for WraithHandler {
@@ -130,11 +136,29 @@ impl Default for WraithHandler {
 impl WraithHandler {
     /// Create the handler with the default engine (Sevro if available, native fallback).
     pub fn new() -> Self {
-        Self::with_engine(Self::default_engine())
+        let engine = Self::default_engine();
+
+        #[cfg(feature = "cdp")]
+        {
+            let (cdp_engine, cdp_auto) = Self::default_cdp_engine();
+            return Self::with_engine_and_cdp(engine, cdp_engine, cdp_auto);
+        }
+
+        #[cfg(not(feature = "cdp"))]
+        Self::with_engine(engine)
     }
 
     /// Create the handler with a specific engine.
     pub fn with_engine(engine: Arc<Mutex<dyn BrowserEngine>>) -> Self {
+        #[cfg(feature = "cdp")]
+        {
+            return Self::with_engine_and_cdp(engine, None, false);
+        }
+        #[cfg(not(feature = "cdp"))]
+        Self::with_engine_inner(engine)
+    }
+
+    fn with_engine_inner(engine: Arc<Mutex<dyn BrowserEngine>>) -> Self {
         let rw_open = ToolAnnotations::new().read_only(false).destructive(false).open_world(true);
         let ro_closed = ToolAnnotations::new().read_only(true).open_world(false);
         let ro_open = ToolAnnotations::new().read_only(true).open_world(true);
@@ -370,7 +394,94 @@ impl WraithHandler {
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
+
+        #[cfg(feature = "cdp")]
+        { return Self { tools, engine, cdp_engine: None, cdp_auto: false }; }
+
+        #[cfg(not(feature = "cdp"))]
         Self { tools, engine }
+    }
+
+    /// Create the handler with a specific engine plus CDP support.
+    #[cfg(feature = "cdp")]
+    pub fn with_engine_and_cdp(
+        engine: Arc<Mutex<dyn BrowserEngine>>,
+        cdp_engine: Option<Arc<Mutex<dyn BrowserEngine>>>,
+        cdp_auto: bool,
+    ) -> Self {
+        let rw_open = ToolAnnotations::new().read_only(false).destructive(false).open_world(true);
+        let ro_closed = ToolAnnotations::new().read_only(true).open_world(false);
+        let ro_open = ToolAnnotations::new().read_only(true).open_world(true);
+        let rw_closed = ToolAnnotations::new().read_only(false).destructive(false).open_world(false);
+        let rw_destructive = ToolAnnotations::new().read_only(false).destructive(true).open_world(false);
+
+        let mut tools = vec![
+            make_tool("browse_navigate",
+                "Navigate to a URL and return a DOM snapshot with interactive elements. Each element has a @ref ID for clicking/filling.",
+                &schema_for!(NavigateInput), rw_open.clone()),
+            make_tool("browse_navigate_cdp",
+                "Navigate to a URL using a full browser engine (Chrome via CDP). Use this for React SPAs and JavaScript-heavy pages that the native renderer can't handle. Launches a headless browser, waits for full page render including JS execution, and returns a DOM snapshot.",
+                &schema_for!(NavigateCdpInput), rw_open.clone()),
+            make_tool("browse_click",
+                "Click an interactive element by its @ref ID from the latest snapshot. If the element is a link, follows it.",
+                &schema_for!(ClickInput), rw_open.clone()),
+            make_tool("browse_fill",
+                "Fill a form field with text. Use the @ref ID from the snapshot to target the field.",
+                &schema_for!(FillInput), rw_open.clone()),
+            make_tool("browse_snapshot",
+                "Get the current page's DOM snapshot showing all interactive elements with @ref IDs.",
+                &schema_for!(SnapshotInput), ro_closed.clone()),
+            make_tool("browse_extract",
+                "Extract the current page's content as clean markdown optimized for LLM context.",
+                &schema_for!(ExtractInput), ro_closed.clone()),
+            make_tool("browse_screenshot",
+                "Capture a PNG screenshot of the current page. Returns base64-encoded PNG.",
+                &schema_for!(ScreenshotInput), ro_closed.clone()),
+            make_tool("browse_search",
+                "Search the web using metasearch (DuckDuckGo + Brave). Returns titles, URLs, and snippets.",
+                &schema_for!(SearchInput), ro_open.clone()),
+            make_tool("browse_eval_js",
+                "Execute JavaScript code on the current page and return the result.",
+                &schema_for!(EvalJsInput), rw_destructive.clone()),
+            make_tool("browse_tabs",
+                "Show the current page URL and title.",
+                &schema_for!(TabsInput), ro_closed.clone()),
+            make_tool("browse_back",
+                "Go back to the previous page in browser history.",
+                &schema_for!(BackInput), rw_open.clone()),
+            make_tool("browse_key_press",
+                "Press a keyboard key on the current page.",
+                &schema_for!(KeyPressInput), rw_open.clone()),
+            make_tool("browse_scroll",
+                "Scroll the current page up or down.",
+                &schema_for!(ScrollInput), rw_closed.clone()),
+            make_tool("browse_scroll_to",
+                "Scroll the viewport to center a specific element by its @ref ID. Returns the new scroll position.",
+                &schema_for!(ScrollToInput), rw_closed.clone()),
+        ];
+
+        // Copy all remaining tools from the non-CDP constructor
+        // (vault, cache, entity, etc. — they are engine-independent)
+        let non_cdp = Self::with_engine_inner(engine.clone());
+        for tool in &non_cdp.tools {
+            let name: &str = &tool.name;
+            // Skip tools already registered above to avoid duplicates
+            if !matches!(name, "browse_navigate" | "browse_click" | "browse_fill"
+                | "browse_snapshot" | "browse_extract" | "browse_screenshot"
+                | "browse_search" | "browse_eval_js" | "browse_tabs" | "browse_back"
+                | "browse_key_press" | "browse_scroll" | "browse_scroll_to")
+            {
+                tools.push(tool.clone());
+            }
+        }
+
+        info!(
+            tool_count = tools.len(),
+            cdp_available = cdp_engine.is_some(),
+            cdp_auto_fallback = cdp_auto,
+            "Wraith MCP handler initialized (CDP-enabled)"
+        );
+        Self { tools, engine, cdp_engine, cdp_auto }
     }
 
     /// Build the default engine: Sevro → NativeEngine fallback.
@@ -418,6 +529,32 @@ impl WraithHandler {
         }
     }
 
+    /// Build the CDP engine from environment variables.
+    /// - `WRAITH_CDP_CHROME` — Path to Chrome/Chromium binary (enables CDP)
+    /// - `WRAITH_CDP_AUTO` — If "true", auto-fallback to CDP when native rendering
+    ///   produces a sparse snapshot (SPA detection)
+    #[cfg(feature = "cdp")]
+    fn default_cdp_engine() -> (Option<Arc<Mutex<dyn BrowserEngine>>>, bool) {
+        let chrome_path = std::env::var("WRAITH_CDP_CHROME").ok();
+        let cdp_auto = std::env::var("WRAITH_CDP_AUTO")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if let Some(ref path) = chrome_path {
+            info!(
+                chrome = %path,
+                auto_fallback = cdp_auto,
+                "CDP engine configured via WRAITH_CDP_CHROME (will launch on first use)"
+            );
+        } else {
+            info!("CDP engine not configured (set WRAITH_CDP_CHROME to enable)");
+        }
+
+        // CDP engine is launched lazily on first browse_navigate_cdp call
+        // or on SPA auto-fallback — not at startup (Chrome process is heavy)
+        (None, cdp_auto)
+    }
+
     /// Dispatch a tool call to the real browser.
     async fn dispatch_tool(
         &self,
@@ -438,6 +575,69 @@ impl WraithHandler {
                 let snapshot = engine.snapshot().await
                     .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?;
 
+                // CDP auto-fallback: if the native snapshot has very few interactive
+                // elements, this is likely a JS-heavy SPA that didn't render properly.
+                #[cfg(feature = "cdp")]
+                {
+                    if self.cdp_auto && snapshot.elements.len() < 5 {
+                        if let Some(ref cdp) = self.cdp_engine {
+                            info!(
+                                native_elements = snapshot.elements.len(),
+                                url = %input.url,
+                                "SPA detected, falling back to CDP renderer"
+                            );
+                            drop(engine); // release native engine lock
+
+                            // Lazily launch CDP engine for SPA rendering
+                            use openclaw_browser_core::engine_cdp::CdpEngine;
+                            match CdpEngine::new().await {
+                                Ok(mut cdp_eng) => {
+                                    if let Ok(()) = cdp_eng.navigate(&input.url).await {
+                                        if let Ok(cdp_snapshot) = cdp_eng.snapshot().await {
+                                            let response = cdp_snapshot.to_agent_text();
+                                            let _ = cdp_eng.shutdown().await;
+                                            return Ok(CallToolResult::success(vec![Content::text(
+                                                format!("[Full browser fallback — native had {} elements]\n\n{}", snapshot.elements.len(), response)
+                                            )]));
+                                        }
+                                    }
+                                    let _ = cdp_eng.shutdown().await;
+                                }
+                                Err(e) => {
+                                    debug!(error = %e, "CDP fallback unavailable");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let response = snapshot.to_agent_text();
+                Ok(CallToolResult::success(vec![Content::text(response)]))
+            }
+
+            #[cfg(feature = "cdp")]
+            "browse_navigate_cdp" => {
+                let input: NavigateCdpInput = parse_args(args)?;
+                info!(url = %input.url, "Navigating via CDP");
+
+                // Lazily create CDP engine on first use
+                use openclaw_browser_core::engine_cdp::CdpEngine;
+                let mut cdp_engine = CdpEngine::new().await
+                    .map_err(|e| ErrorData::internal_error(
+                        format!("CDP engine launch failed: {e}. Ensure Chrome is installed."), None
+                    ))?;
+
+                cdp_engine.navigate(&input.url).await
+                    .map_err(|e| ErrorData::internal_error(
+                        format!("CDP navigation failed: {e}"), None
+                    ))?;
+
+                let snapshot = cdp_engine.snapshot().await
+                    .map_err(|e| ErrorData::internal_error(
+                        format!("CDP snapshot failed: {e}"), None
+                    ))?;
+
+                let _ = cdp_engine.shutdown().await;
                 let response = snapshot.to_agent_text();
                 Ok(CallToolResult::success(vec![Content::text(response)]))
             }
@@ -1902,202 +2102,19 @@ impl WraithHandler {
                             }
                         }
 
-                        // If DPAPI decryption failed on ALL cookies (v20 App-Bound Encryption),
-                        // fall back to Chrome DevTools Protocol to get decrypted cookies directly.
+                        // If DPAPI decryption failed on ALL cookies, they use v20 App-Bound
+                        // Encryption (Chrome 127+). This encryption is tied to Chrome's own
+                        // process via IElevator COM — external decryption is not possible.
                         if injected == 0 && decrypt_errors > 0 {
-                            drop(engine); // release lock before spawning Chrome
-                            info!(v20_count = decrypt_errors, "All cookies use v20 encryption — falling back to Chrome CDP");
-
-                            let chrome_path = if cfg!(target_os = "windows") {
-                                std::path::PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
-                            } else if cfg!(target_os = "macos") {
-                                std::path::PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-                            } else {
-                                std::path::PathBuf::from("google-chrome")
-                            };
-
-                            if !chrome_path.exists() && cfg!(not(target_os = "linux")) {
-                                return Ok(CallToolResult::success(vec![Content::text(
-                                    format!("Cannot decrypt v20 cookies (App-Bound Encryption). Chrome not found at {}.\n\
-                                             Chrome 127+ uses App-Bound Encryption which requires Chrome itself to decrypt.\n\
-                                             Install Chrome or use browse_login to authenticate directly.", chrome_path.display())
-                                )]));
-                            }
-
-                            // Find a free port for CDP
-                            let cdp_port = {
-                                let listener = std::net::TcpListener::bind("127.0.0.1:0")
-                                    .map_err(|e| ErrorData::internal_error(format!("port bind: {e}"), None))?;
-                                listener.local_addr().unwrap().port()
-                            };
-
-                            let user_data_dir = profile_dir.parent().unwrap();
-                            let mut chrome = tokio::process::Command::new(&chrome_path)
-                                .arg("--headless=new")
-                                .arg(format!("--remote-debugging-port={}", cdp_port))
-                                .arg(format!("--user-data-dir={}", user_data_dir.display()))
-                                .arg(format!("--profile-directory={}", profile))
-                                .arg("--no-first-run")
-                                .arg("--disable-gpu")
-                                .arg("--disable-extensions")
-                                .arg("about:blank")
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn()
-                                .map_err(|e| ErrorData::internal_error(format!("Chrome spawn failed: {e}"), None))?;
-
-                            // Wait for CDP to be ready
-                            let cdp_ready = async {
-                                for _ in 0..30 {
-                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                                    if reqwest::get(&format!("http://127.0.0.1:{}/json/version", cdp_port)).await.is_ok() {
-                                        return true;
-                                    }
-                                }
-                                false
-                            };
-
-                            if !cdp_ready.await {
-                                let _ = chrome.kill().await;
-                                return Ok(CallToolResult::success(vec![Content::text(
-                                    "Chrome CDP did not start within 6 seconds. Cannot decrypt v20 cookies."
-                                )]));
-                            }
-
-                            // Get the WebSocket URL
-                            let version_json: serde_json::Value = reqwest::get(&format!("http://127.0.0.1:{}/json/version", cdp_port))
-                                .await.map_err(|e| ErrorData::internal_error(format!("CDP version: {e}"), None))?
-                                .json().await.map_err(|e| ErrorData::internal_error(format!("CDP json: {e}"), None))?;
-                            let _ws_url = version_json["webSocketDebuggerUrl"].as_str().unwrap_or("");
-
-                            // Connect to Chrome via CDP WebSocket and extract all cookies
-                            let cdp_injected;
-                            let cdp_result: Result<u32, String> = async {
-                                use tokio_tungstenite::connect_async;
-                                use tokio_tungstenite::tungstenite::protocol::Message;
-                                use futures::SinkExt;
-                                use futures::StreamExt;
-
-                                let ws_url = _ws_url;
-                                if ws_url.is_empty() {
-                                    return Err("CDP returned no webSocketDebuggerUrl".into());
-                                }
-
-                                // Connect with a 10-second timeout
-                                let (mut ws, _) = tokio::time::timeout(
-                                    std::time::Duration::from_secs(10),
-                                    connect_async(ws_url)
-                                ).await
-                                    .map_err(|_| "WebSocket connect timed out (10s)".to_string())?
-                                    .map_err(|e| format!("WebSocket connect failed: {e}"))?;
-
-                                // Send Network.getAllCookies command
-                                ws.send(Message::Text(
-                                    r#"{"id":1,"method":"Network.getAllCookies"}"#.into()
-                                )).await
-                                    .map_err(|e| format!("WebSocket send failed: {e}"))?;
-
-                                // Read response with timeout
-                                let resp_text = tokio::time::timeout(
-                                    std::time::Duration::from_secs(10),
-                                    async {
-                                        while let Some(msg) = ws.next().await {
-                                            match msg {
-                                                Ok(Message::Text(text)) => return Ok(text),
-                                                Ok(_) => continue, // skip binary/ping/pong frames
-                                                Err(e) => return Err(format!("WebSocket read error: {e}")),
-                                            }
-                                        }
-                                        Err("WebSocket closed without response".to_string())
-                                    }
-                                ).await
-                                    .map_err(|_| "WebSocket response timed out (10s)".to_string())?
-                                    .map_err(|e| e)?;
-
-                                let data: serde_json::Value = serde_json::from_str(&resp_text)
-                                    .map_err(|e| format!("CDP response parse error: {e}"))?;
-
-                                let cookies = data["result"]["cookies"].as_array()
-                                    .ok_or_else(|| {
-                                        let err_msg = data["error"]["message"].as_str().unwrap_or("unknown");
-                                        format!("CDP returned no cookies (error: {err_msg})")
-                                    })?;
-
-                                let mut count = 0u32;
-                                let engine = self.engine.lock().await;
-
-                                for c in cookies {
-                                    let name = c["name"].as_str().unwrap_or("");
-                                    let value = c["value"].as_str().unwrap_or("");
-                                    let domain = c["domain"].as_str().unwrap_or("");
-                                    let path = c["path"].as_str().unwrap_or("/");
-                                    let secure = c["secure"].as_bool().unwrap_or(false);
-                                    let http_only = c["httpOnly"].as_bool().unwrap_or(false);
-
-                                    if name.is_empty() { continue; }
-
-                                    // Apply domain filter if specified
-                                    if domain_filter != "%" && !domain.contains(&domain_filter.replace('%', "")) {
-                                        continue;
-                                    }
-
-                                    // Inject via set_cookie_values + eval_js
-                                    let secure_flag = if secure { "; Secure" } else { "" };
-                                    let http_only_flag = if http_only { "; HttpOnly" } else { "" };
-                                    let cookie_str = format!(
-                                        "{}={}; Domain={}; Path={}{}{}",
-                                        name, value, domain, path, secure_flag, http_only_flag
-                                    );
-                                    let scheme = if secure { "https" } else { "http" };
-                                    let cookie_url = format!("{}://{}{}", scheme, domain.trim_start_matches('.'), path);
-
-                                    let script = format!(
-                                        r#"__openclaw_set_cookie({}, {})"#,
-                                        serde_json::to_string(&cookie_url).unwrap_or_default(),
-                                        serde_json::to_string(&cookie_str).unwrap_or_default(),
-                                    );
-                                    let _ = engine.eval_js(&script).await;
-                                    count += 1;
-                                }
-
-                                // Close WebSocket gracefully
-                                let _ = ws.close(None).await;
-
-                                Ok(count)
-                            }.await;
-
-                            // Always kill Chrome
-                            let _ = chrome.kill().await;
-
-                            match cdp_result {
-                                Ok(count) => {
-                                    cdp_injected = count;
-                                }
-                                Err(e) => {
-                                    warn!(error = %e, "CDP WebSocket cookie extraction failed");
-                                    return Ok(CallToolResult::success(vec![Content::text(
-                                        format!("Chrome cookies use v20 App-Bound Encryption ({} cookies found).\n\
-                                                 DPAPI decryption failed (v10 key doesn't work on v20 cookies).\n\
-                                                 CDP WebSocket fallback failed: {}\n\n\
-                                                 Workaround: Use browse_login to authenticate directly, or export cookies \
-                                                 from Chrome via a browser extension (e.g., EditThisCookie) and import with cookie_load.",
-                                                 decrypt_errors, e)
-                                    )]));
-                                }
-                            }
-
-                            if cdp_injected > 0 {
-                                return Ok(CallToolResult::success(vec![Content::text(
-                                    format!("Imported {} cookies via Chrome CDP (v20 App-Bound decryption)", cdp_injected)
-                                )]));
-                            }
-
-                            // CDP connected but yielded zero cookies
+                            info!(v20_count = decrypt_errors, "All cookies use App-Bound Encryption (v20) — external decryption not supported");
                             return Ok(CallToolResult::success(vec![Content::text(
-                                format!("Chrome cookies use v20 App-Bound Encryption ({} cookies found).\n\
-                                         CDP WebSocket connected but returned 0 matching cookies.\n\n\
-                                         Workaround: Use browse_login to authenticate directly, or export cookies \
-                                         from Chrome via a browser extension (e.g., EditThisCookie) and import with cookie_load.",
+                                format!("Found {} encrypted cookies but cannot decrypt them.\n\
+                                         Chrome 127+ uses App-Bound Encryption (v20) which binds cookies to Chrome's own process.\n\n\
+                                         To authenticate in Wraith, use one of these approaches:\n\
+                                         1. browse_login — navigate to the login page and authenticate directly\n\
+                                         2. cookie_load — export cookies from Chrome using a browser extension\n\
+                                            (e.g., EditThisCookie → export as JSON → cookie_load the file)\n\
+                                         3. cookie_set — manually set specific cookies (e.g., session tokens)",
                                          decrypt_errors)
                             )]));
                         }

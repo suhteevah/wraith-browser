@@ -18,6 +18,10 @@ pub mod native;
 #[cfg(feature = "sevro")]
 pub mod engine_sevro;
 
+// CDP backend (Chrome DevTools Protocol via WebSocket)
+#[cfg(feature = "cdp")]
+pub mod engine_cdp;
+
 // BLUEPRINT feature modules
 pub mod selectors;
 pub mod network_intel;

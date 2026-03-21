@@ -26,6 +26,15 @@ pub struct NavigateOutput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct NavigateCdpInput {
+    /// The full URL to navigate to using a full browser engine (Chrome via CDP).
+    /// Use this for React SPAs and JavaScript-heavy pages. Must include protocol.
+    pub url: String,
+    /// Whether to wait for page load before returning snapshot. Default: true.
+    pub wait_for_load: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct BackInput {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
