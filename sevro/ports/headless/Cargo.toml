@@ -14,6 +14,7 @@ tracing = "0.1"
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "cookies", "gzip", "brotli", "multipart"] }
 rquest = { version = "5.1", features = ["cookies", "gzip", "brotli"], optional = true }
+rquest-util = { version = "2.2", optional = true }
 rquickjs = { version = "0.11", features = ["classes", "properties", "futures", "macro"] }
 tokio = { version = "1", features = ["full"] }
 scraper = "0.25"
@@ -23,7 +24,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = []
-stealth-tls = ["dep:rquest"]
+stealth-tls = ["dep:rquest", "dep:rquest-util"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "macros"] }

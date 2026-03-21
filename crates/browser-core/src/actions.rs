@@ -7,20 +7,24 @@ pub enum BrowserAction {
     /// Navigate to a URL
     Navigate { url: String },
 
-    /// Click an element by ref_id
-    Click { ref_id: u32 },
+    /// Click an element by ref_id.
+    /// Set `force: Some(true)` to bypass hidden/disabled/obscured pre-checks.
+    Click { ref_id: u32, #[serde(default)] force: Option<bool> },
 
-    /// Fill a text input by ref_id
-    Fill { ref_id: u32, text: String },
+    /// Fill a text input by ref_id.
+    /// Set `force: Some(true)` to bypass hidden/disabled/obscured pre-checks.
+    Fill { ref_id: u32, text: String, #[serde(default)] force: Option<bool> },
 
-    /// Select an option from a dropdown by ref_id
-    Select { ref_id: u32, value: String },
+    /// Select an option from a dropdown by ref_id.
+    /// Set `force: Some(true)` to bypass hidden/disabled/obscured pre-checks.
+    Select { ref_id: u32, value: String, #[serde(default)] force: Option<bool> },
 
     /// Press a keyboard key (Enter, Tab, Escape, etc.)
     KeyPress { key: String },
 
-    /// Type text with realistic delays (for sites that detect instant input)
-    TypeText { ref_id: u32, text: String, delay_ms: u32 },
+    /// Type text with realistic delays (for sites that detect instant input).
+    /// Set `force: Some(true)` to bypass hidden/disabled/obscured pre-checks.
+    TypeText { ref_id: u32, text: String, delay_ms: u32, #[serde(default)] force: Option<bool> },
 
     /// Scroll the page (pixels or "to_bottom" / "to_top")
     Scroll { direction: ScrollDirection, amount: i32 },
@@ -61,6 +65,9 @@ pub enum BrowserAction {
 
     /// Submit a form — serializes all filled fields and submits via the form's action.
     SubmitForm { ref_id: u32 },
+
+    /// Scroll the viewport to center a specific element by ref_id.
+    ScrollTo { ref_id: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -73,6 +73,11 @@ pub trait BrowserEngine: Send + Sync {
     /// What this engine can do.
     fn capabilities(&self) -> EngineCapabilities;
 
+    /// Store a cookie in the engine's HTTP cookie jar.
+    async fn set_cookie_values(&mut self, domain: &str, name: &str, value: &str, path: &str) {
+        let _ = (domain, name, value, path); // default no-op
+    }
+
     /// Gracefully shut down the engine and release resources.
     async fn shutdown(&mut self) -> BrowserResult<()>;
 }

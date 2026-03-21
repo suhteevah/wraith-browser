@@ -150,6 +150,11 @@ pub struct SevroEngineBackend {
     engine: sevro_headless::SevroEngine,
     /// Rhai scripting engine for userscripts
     scripts: openclaw_scripting::ScriptEngine,
+    /// Synthetic DOM elements injected by API hydration (e.g. Greenhouse listing).
+    /// When `Some`, `snapshot()` returns these instead of the engine's DOM.
+    synthetic_snapshot: Option<(String, String, Vec<DomElement>)>, // (url, title, elements)
+    /// Current viewport scroll position (x, y) in pixels — updated on scroll actions.
+    scroll_position: (i32, i32),
 }
 
 impl SevroEngineBackend {
@@ -157,6 +162,8 @@ impl SevroEngineBackend {
         Self {
             engine: sevro_headless::SevroEngine::default(),
             scripts: openclaw_scripting::ScriptEngine::new(),
+            synthetic_snapshot: None,
+            scroll_position: (0, 0),
         }
     }
 
@@ -164,6 +171,8 @@ impl SevroEngineBackend {
         Self {
             engine: sevro_headless::SevroEngine::new(config),
             scripts: openclaw_scripting::ScriptEngine::new(),
+            synthetic_snapshot: None,
+            scroll_position: (0, 0),
         }
     }
 
@@ -181,6 +190,262 @@ impl SevroEngineBackend {
         &mut self.scripts
     }
 
+    /// Run a pre-interaction safety check on an element via JS.
+    ///
+    /// Returns `Ok(())` if the element is visible, enabled, and clickable.
+    /// Returns `Err(message)` with a descriptive reason if the element should not
+    /// be interacted with (hidden, disabled, covered by overlay, etc.).
+    ///
+    /// Pass `force=true` to bypass these checks when the agent knows what it is doing.
+    async fn precheck_element(&self, ref_id: u32, force: bool) -> Result<(), String> {
+        if force {
+            return Ok(());
+        }
+
+        let js = format!(
+            r#"(() => {{
+                var el = __wraith_get_by_ref({ref_id});
+                if (!el) return 'NOT_FOUND: @e{ref_id} not in ref_index';
+
+                // Check visibility via bounding rect
+                var rect = null;
+                try {{ rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null; }} catch(e) {{}}
+                if (rect && rect.width === 0 && rect.height === 0) return 'HIDDEN: element has zero dimensions';
+
+                // Check if element is disabled
+                if (el.disabled) return 'DISABLED: element is disabled';
+                if (el.attrs && el.attrs.disabled !== undefined) return 'DISABLED: element is disabled';
+
+                // Check computed/inline style blocking interaction
+                var style = el.style || {{}};
+                if (style.pointerEvents === 'none') return 'BLOCKED: pointer-events is none';
+                if (style.visibility === 'hidden') return 'HIDDEN: visibility is hidden';
+                if (style.display === 'none') return 'HIDDEN: display is none';
+
+                // Check attributes that hide elements
+                if (el.attrs) {{
+                    if (el.attrs['aria-hidden'] === 'true') return 'HIDDEN: aria-hidden is true';
+                }}
+
+                return 'OK';
+            }})()"#,
+            ref_id = ref_id,
+        );
+
+        match self.engine.eval_js(&js).await {
+            Ok(result) => {
+                if result == "OK" {
+                    Ok(())
+                } else {
+                    Err(format!("@e{}: {}", ref_id, result))
+                }
+            }
+            // If JS eval fails entirely, allow the interaction (best-effort)
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// Detect whether a URL is a Greenhouse board listing page.
+    ///
+    /// Matches:
+    ///   - `boards.greenhouse.io/{company}` and `boards.eu.greenhouse.io/{company}`
+    ///   - `boards.greenhouse.io/embed/job_board?for={company}` (embed variant)
+    ///   - `boards.eu.greenhouse.io/embed/job_board?for={company}` (EU embed variant)
+    ///
+    /// Does NOT match individual job pages like `boards.greenhouse.io/{company}/jobs/{id}`.
+    /// Returns `Some((api_host, company))` if matched.
+    fn detect_greenhouse_listing(url: &str) -> Option<(String, String)> {
+        let parsed = url::Url::parse(url).ok()?;
+        let host = parsed.host_str()?;
+
+        // Must be boards.greenhouse.io or boards.eu.greenhouse.io
+        if !((host == "boards.greenhouse.io") || (host == "boards.eu.greenhouse.io")) {
+            return None;
+        }
+
+        let api_host = if host.contains(".eu.") {
+            "boards-api.eu.greenhouse.io".to_string()
+        } else {
+            "boards-api.greenhouse.io".to_string()
+        };
+
+        let path = parsed.path().trim_matches('/');
+
+        // Embed variant: /embed/job_board?for={company}
+        if path == "embed/job_board" || path == "embed/job_board/" {
+            let company = parsed.query_pairs()
+                .find(|(k, _)| k == "for")
+                .map(|(_, v)| v.to_string())?;
+            if !company.is_empty() {
+                info!(company = %company, "Detected Greenhouse embed listing URL");
+                return Some((api_host, company));
+            }
+            return None;
+        }
+
+        // Standard variant: must have exactly one path segment (the company slug),
+        // not a /jobs/ sub-path
+        if path.is_empty() || path.contains('/') {
+            return None;
+        }
+
+        Some((api_host, path.to_string()))
+    }
+
+    /// Greenhouse listing hydration: fetch job listings via the boards API and build
+    /// a synthetic snapshot with job links, locations, and descriptions.
+    ///
+    /// This mirrors `try_ashby_api_hydration` — when the SPA renders empty, we bypass
+    /// React entirely and go straight to the JSON API.
+    async fn try_greenhouse_listing_hydration(&mut self, page_url: &str, api_host: &str, company: &str) {
+        let api_url = format!(
+            "https://{}/v1/boards/{}/jobs?content=true",
+            api_host, company
+        );
+
+        info!(api_url = %api_url, company = %company, "Greenhouse: fetching job listings via boards API");
+
+        let body = match self.engine.http_get(&api_url).await {
+            Ok((200, body)) => body,
+            Ok((status, _)) => {
+                debug!(status, company = %company, "Greenhouse boards API returned non-200");
+                return;
+            }
+            Err(e) => {
+                debug!(error = %e, "Greenhouse boards API request failed");
+                return;
+            }
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(e) => {
+                debug!(error = %e, "Greenhouse: failed to parse API JSON");
+                return;
+            }
+        };
+
+        let jobs = match data.get("jobs").and_then(|j| j.as_array()) {
+            Some(jobs) if !jobs.is_empty() => jobs,
+            _ => {
+                debug!(company = %company, "Greenhouse: no jobs found in API response");
+                return;
+            }
+        };
+
+        // Build synthetic DomElements directly — avoids needing load_page access.
+        let mut elements = Vec::new();
+        let mut ref_id: u32 = 1;
+
+        // Page title element
+        let board_name = data.get("name").and_then(|n| n.as_str()).unwrap_or(company);
+        let page_title = format!("{} — Job Openings", board_name);
+
+        elements.push(DomElement {
+            ref_id,
+            role: "h1".to_string(),
+            text: Some(page_title.clone()),
+            href: None,
+            placeholder: None,
+            value: None,
+            enabled: true,
+            visible: true,
+            aria_label: None,
+            selector: "h1".to_string(),
+            bounds: Some((0.0, 0.0, 800.0, 40.0)),
+        });
+        ref_id += 1;
+
+        for job in jobs {
+            let title = job.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+            let job_id = job.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+            let location_name = job.get("location")
+                .and_then(|l| l.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+
+            // Job link: <a href="/jobs/{id}">{title}</a>
+            let href = format!("{}/jobs/{}", page_url.trim_end_matches('/'), job_id);
+            elements.push(DomElement {
+                ref_id,
+                role: "link".to_string(),
+                text: Some(title.to_string()),
+                href: Some(href),
+                placeholder: None,
+                value: None,
+                enabled: true,
+                visible: true,
+                aria_label: None,
+                selector: "a".to_string(),
+                bounds: Some((0.0, (ref_id as f64) * 60.0, 600.0, 20.0)),
+            });
+            ref_id += 1;
+
+            // Location: <span>{location}</span>
+            if !location_name.is_empty() {
+                elements.push(DomElement {
+                    ref_id,
+                    role: "span".to_string(),
+                    text: Some(location_name.to_string()),
+                    href: None,
+                    placeholder: None,
+                    value: None,
+                    enabled: true,
+                    visible: true,
+                    aria_label: None,
+                    selector: "span".to_string(),
+                    bounds: Some((610.0, ((ref_id - 1) as f64) * 60.0, 190.0, 20.0)),
+                });
+                ref_id += 1;
+            }
+
+            // Job description (if content=true returned it)
+            if let Some(content) = job.get("content").and_then(|c| c.as_str()) {
+                // Strip HTML tags for a plain-text preview, truncate to 300 chars
+                let plain: String = content
+                    .replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+                    .replace("</p>", "\n").replace("</li>", "\n")
+                    .chars()
+                    .scan(false, |in_tag, c| {
+                        if c == '<' { *in_tag = true; Some(None) }
+                        else if c == '>' { *in_tag = false; Some(None) }
+                        else if *in_tag { Some(None) }
+                        else { Some(Some(c)) }
+                    })
+                    .flatten()
+                    .take(300)
+                    .collect();
+                let plain = plain.trim().to_string();
+
+                if !plain.is_empty() {
+                    elements.push(DomElement {
+                        ref_id,
+                        role: "p".to_string(),
+                        text: Some(plain),
+                        href: None,
+                        placeholder: None,
+                        value: None,
+                        enabled: true,
+                        visible: true,
+                        aria_label: None,
+                        selector: "p".to_string(),
+                        bounds: Some((0.0, (ref_id as f64) * 60.0, 800.0, 40.0)),
+                    });
+                    ref_id += 1;
+                }
+            }
+        }
+
+        info!(
+            job_count = jobs.len(),
+            element_count = elements.len(),
+            company = %company,
+            "Greenhouse: built synthetic listing from boards API"
+        );
+
+        self.synthetic_snapshot = Some((page_url.to_string(), page_title, elements));
+    }
+
     /// Resolve ATS wrapper URLs to direct application URLs.
     ///
     /// - Greenhouse wrapped: URLs with `gh_jid=` query param get resolved to
@@ -189,11 +454,20 @@ impl SevroEngineBackend {
     /// - Lever: URLs containing `lever.co` that don't end with `/apply` get
     ///   `/apply` appended to reach the actual application form.
     async fn resolve_ats_url(&self, url: &str) -> String {
-        // --- Lever: ensure we land on the /apply page ---
-        if url.contains("lever.co") && !url.trim_end_matches('/').ends_with("/apply") {
-            let resolved = format!("{}/apply", url.trim_end_matches('/'));
-            info!(original = %url, resolved = %resolved, "Lever URL: appending /apply");
-            return resolved;
+        // --- Lever: ensure we land on the /apply page (job-specific URLs only) ---
+        if url.contains("lever.co") {
+            if let Ok(parsed) = url::Url::parse(url) {
+                let path = parsed.path().trim_matches('/');
+                let segments: Vec<&str> = path.split('/').collect();
+                // Only append /apply if there's a job ID segment (not just company name)
+                // e.g. jobs.lever.co/figma/some-job-uuid → append /apply
+                //      jobs.lever.co/figma             → leave as-is (listing page)
+                if segments.len() >= 2 && !path.ends_with("/apply") {
+                    let resolved = format!("{}/apply", url.trim_end_matches('/'));
+                    info!(original = %url, resolved = %resolved, "Lever URL: appending /apply");
+                    return resolved;
+                }
+            }
         }
 
         // --- Greenhouse wrapped URLs (gh_jid= query param) ---
@@ -277,6 +551,40 @@ impl SevroEngineBackend {
             info!(count = results.len(), url = %url, "Triggered scripts executed");
         }
     }
+
+    /// Get current URL synchronously (for use in non-async contexts).
+    pub fn current_url_sync(&self) -> Option<String> {
+        self.engine.current_url().map(|s| s.to_string())
+    }
+
+    /// Navigate with full OAuth/auth redirect chain handling.
+    ///
+    /// Delegates to the underlying SevroEngine's `navigate_with_auth` which
+    /// manually follows each redirect hop, capturing Set-Cookie headers at
+    /// every step and detecting OAuth callback URLs.
+    pub async fn navigate_with_auth(&mut self, url: &str) -> BrowserResult<()> {
+        self.synthetic_snapshot = None;
+
+        match self.engine.navigate_with_auth(url).await {
+            Ok(sevro_headless::PageEvent::Error(e)) => Err(BrowserError::NavigationFailed {
+                url: url.to_string(),
+                reason: e,
+            }),
+            Ok(sevro_headless::PageEvent::Cancelled) => Err(BrowserError::NavigationFailed {
+                url: url.to_string(),
+                reason: "Cancelled".to_string(),
+            }),
+            Ok(_) => {
+                let title = self.engine.current_url().unwrap_or("").to_string();
+                self.run_page_scripts(url, &title);
+                Ok(())
+            }
+            Err(e) => Err(BrowserError::NavigationFailed {
+                url: url.to_string(),
+                reason: e,
+            }),
+        }
+    }
 }
 
 impl Default for SevroEngineBackend {
@@ -287,6 +595,9 @@ impl Default for SevroEngineBackend {
 impl BrowserEngine for SevroEngineBackend {
     #[instrument(skip(self), fields(url = %url))]
     async fn navigate(&mut self, url: &str) -> BrowserResult<()> {
+        // Clear any previous synthetic snapshot
+        self.synthetic_snapshot = None;
+
         let url = self.resolve_ats_url(url).await;
         let url = url.as_str();
 
@@ -303,6 +614,26 @@ impl BrowserEngine for SevroEngineBackend {
                 // Run any Rhai scripts triggered by this URL
                 let title = self.engine.current_url().unwrap_or("").to_string();
                 self.run_page_scripts(url, &title);
+
+                // SPA hydration: if the page has very few visible elements,
+                // try Greenhouse listing API as a fallback.
+                // For embed URLs (greenhouse.io/embed), always attempt hydration
+                // since the embed wrapper may have visible chrome elements.
+                let is_greenhouse_embed = url.contains("greenhouse.io/embed");
+                let visible_count = self.engine.dom_snapshot_with_layout()
+                    .iter()
+                    .filter(|n| n.is_visible)
+                    .count();
+
+                if is_greenhouse_embed || visible_count < 10 {
+                    if let Some((api_host, company)) = Self::detect_greenhouse_listing(url) {
+                        self.try_greenhouse_listing_hydration(url, &api_host, &company).await;
+                    }
+                }
+
+                // Resolve iframe contents (fetches and parses <iframe src="..."> elements)
+                self.engine.resolve_iframes().await;
+
                 Ok(())
             }
             Err(e) => Err(BrowserError::NavigationFailed {
@@ -313,6 +644,26 @@ impl BrowserEngine for SevroEngineBackend {
     }
 
     async fn snapshot(&self) -> BrowserResult<DomSnapshot> {
+        // If API hydration produced a synthetic snapshot, return it directly.
+        if let Some((ref url, ref title, ref elements)) = self.synthetic_snapshot {
+            return Ok(DomSnapshot {
+                url: url.clone(),
+                title: title.clone(),
+                elements: elements.clone(),
+                meta: PageMeta {
+                    page_type: None,
+                    main_content_preview: None,
+                    description: None,
+                    form_count: 0,
+                    has_login_form: false,
+                    has_captcha: false,
+                    interactive_element_count: elements.iter().filter(|e| e.role == "link" || e.role == "button").count(),
+                    overlays: vec![],
+                },
+                timestamp: chrono::Utc::now(),
+            });
+        }
+
         let sevro_nodes = self.engine.dom_snapshot_with_layout();
 
         // Query QuickJS for current input values (browse_fill sets values in JS, not Rust)
@@ -355,7 +706,7 @@ impl BrowserEngine for SevroEngineBackend {
             }
         };
 
-        let elements: Vec<DomElement> = sevro_nodes.iter()
+        let mut elements: Vec<DomElement> = sevro_nodes.iter()
             .filter(|n| n.node_type == sevro_headless::DomNodeType::Element && n.is_visible)
             .enumerate()
             .map(|(i, node)| {
@@ -375,6 +726,11 @@ impl BrowserEngine for SevroEngineBackend {
                 let value = js_values.get(&ref_id).cloned()
                     .or_else(|| node.attributes.get("value").cloned());
 
+                // Detect disabled state from HTML attributes
+                let is_disabled = node.attributes.get("disabled").is_some()
+                    || node.attributes.get("aria-disabled").map(|v| v == "true").unwrap_or(false)
+                    || node.attributes.get("readonly").is_some();
+
                 DomElement {
                     ref_id,
                     role,
@@ -382,7 +738,7 @@ impl BrowserEngine for SevroEngineBackend {
                     href: node.attributes.get("href").cloned(),
                     placeholder: node.attributes.get("placeholder").cloned(),
                     value,
-                    enabled: true,
+                    enabled: !is_disabled,
                     visible: node.is_visible,
                     aria_label: node.attributes.get("aria-label").cloned(),
                     selector: format!("{}", node.tag_name),
@@ -391,11 +747,92 @@ impl BrowserEngine for SevroEngineBackend {
             })
             .collect();
 
+        // Append iframe children to the element list with a domain marker on the role
+        let iframe_contents = self.engine.iframe_contents();
+        if !iframe_contents.is_empty() {
+            let next_ref = elements.len() as u32 + 1;
+            let mut iframe_ref_offset = next_ref;
+
+            for (iframe_node_id, (src_url, iframe_nodes)) in iframe_contents {
+                // Extract domain from src_url for the marker
+                let iframe_domain = url::Url::parse(src_url)
+                    .ok()
+                    .and_then(|u| u.host_str().map(|h| h.to_string()))
+                    .unwrap_or_else(|| src_url.clone());
+
+                for iframe_node in iframe_nodes.iter()
+                    .filter(|n| n.node_type == sevro_headless::DomNodeType::Element && n.is_visible)
+                {
+                    let ref_id = iframe_ref_offset;
+                    iframe_ref_offset += 1;
+
+                    let base_role = match iframe_node.tag_name.as_str() {
+                        "a" => "link".to_string(),
+                        "button" => "button".to_string(),
+                        "input" => iframe_node.attributes.get("type")
+                            .cloned()
+                            .unwrap_or_else(|| "textbox".to_string()),
+                        "select" => "combobox".to_string(),
+                        "textarea" => "textbox".to_string(),
+                        other => other.to_string(),
+                    };
+
+                    let role = format!("[iframe: {}] {}", iframe_domain, base_role);
+
+                    elements.push(DomElement {
+                        ref_id,
+                        role,
+                        text: if iframe_node.text_content.is_empty() { None } else { Some(iframe_node.text_content.clone()) },
+                        href: iframe_node.attributes.get("href").cloned(),
+                        placeholder: iframe_node.attributes.get("placeholder").cloned(),
+                        value: iframe_node.attributes.get("value").cloned(),
+                        enabled: true,
+                        visible: iframe_node.is_visible,
+                        aria_label: iframe_node.attributes.get("aria-label").cloned(),
+                        selector: format!("iframe[node_id='{}'] {}", iframe_node_id, iframe_node.tag_name),
+                        bounds: iframe_node.bounding_box.map(|b| (b.x, b.y, b.width, b.height)),
+                    });
+                }
+            }
+        }
+
         let url = self.engine.current_url().unwrap_or("").to_string();
         let title = sevro_nodes.iter()
             .find(|n| n.tag_name == "title")
             .map(|n| n.text_content.clone())
             .unwrap_or_default();
+
+        // Detect overlays/modals blocking interaction
+        let overlays: Vec<(String, String, String)> = match self.engine.eval_js(
+            "__wraith_detect_overlays()"
+        ).await {
+            Ok(json) => {
+                debug!(overlay_json = %json, "Snapshot: overlay detection result");
+                #[derive(serde::Deserialize)]
+                struct OverlayInfo {
+                    ref_id: serde_json::Value,
+                    #[serde(rename = "type")]
+                    overlay_type: String,
+                    title: String,
+                }
+                serde_json::from_str::<Vec<OverlayInfo>>(&json)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|o| {
+                        let ref_str = match &o.ref_id {
+                            serde_json::Value::Number(n) => format!("e{}", n),
+                            serde_json::Value::String(s) => format!("e{}", s),
+                            _ => "e?".to_string(),
+                        };
+                        (ref_str, o.overlay_type, o.title)
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                debug!(error = %e, "Snapshot: overlay detection failed");
+                vec![]
+            }
+        };
 
         Ok(DomSnapshot {
             url,
@@ -409,6 +846,7 @@ impl BrowserEngine for SevroEngineBackend {
                 has_login_form: false,
                 has_captcha: false,
                 interactive_element_count: 0,
+                overlays,
             },
             timestamp: chrono::Utc::now(),
         })
@@ -420,7 +858,23 @@ impl BrowserEngine for SevroEngineBackend {
                 self.navigate(&url).await?;
                 Ok(ActionResult::Navigated { url, title: String::new() })
             }
-            BrowserAction::Click { ref_id } => {
+            BrowserAction::Click { ref_id, force } => {
+                // Safety pre-check: reject clicks on hidden/disabled/obscured elements
+                if let Err(reason) = self.precheck_element(ref_id, force.unwrap_or(false)).await {
+                    return Ok(ActionResult::Failed { error: format!("Cannot click: {}", reason) });
+                }
+                // Scroll element into view before clicking
+                let scroll_js = format!(
+                    r#"(() => {{
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (el && el.scrollIntoView) {{
+                            el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                        }}
+                    }})()"#,
+                    ref_id = ref_id,
+                );
+                let _ = self.engine.eval_js(&scroll_js).await;
+
                 // Click via JS — ref_id matches snapshot's @e numbering via __wraith_ref_index
                 let js = format!(
                     r#"(() => {{
@@ -443,7 +897,23 @@ impl BrowserEngine for SevroEngineBackend {
                     }
                 }
             }
-            BrowserAction::Fill { ref_id, text } => {
+            BrowserAction::Fill { ref_id, text, force } => {
+                // Safety pre-check: reject fill on hidden/disabled/obscured elements
+                if let Err(reason) = self.precheck_element(ref_id, force.unwrap_or(false)).await {
+                    return Ok(ActionResult::Failed { error: format!("Cannot fill: {}", reason) });
+                }
+                // Scroll element into view before filling
+                let scroll_js = format!(
+                    r#"(() => {{
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (el && el.scrollIntoView) {{
+                            el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                        }}
+                    }})()"#,
+                    ref_id = ref_id,
+                );
+                let _ = self.engine.eval_js(&scroll_js).await;
+
                 // Set value + dispatch React-compatible events via ref_id lookup
                 let text_escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
                 let js = format!(
@@ -485,21 +955,26 @@ impl BrowserEngine for SevroEngineBackend {
                 Err(BrowserError::ScreenshotFailed("Not available in Sevro (Phase 3)".to_string()))
             }
             BrowserAction::UploadFile { ref_id, file_name, file_data, mime_type } => {
-                // Use JS to create a File object from base64 data and set it on the input
+                // Use JS to create a File object from base64 data and set it on the input.
+                // Supports: native <input type="file">, react-dropzone, Material-UI Upload,
+                // and other drag-and-drop upload components.
                 let js = format!(
                     r#"(() => {{
                         // First try: direct ref_id lookup
                         var el = __wraith_get_by_ref({ref_id});
+                        var originalEl = el;
+                        var isFileInput = el && el.tag === 'input' && el.attrs && el.attrs.type === 'file';
 
                         // If ref target isn't a file input, search all file inputs
-                        if (el && el.attrs && el.attrs.type !== 'file') el = null;
-
-                        // Fallback: find ANY file input (including hidden ones like Greenhouse's visually-hidden)
-                        if (!el) {{
+                        if (el && !isFileInput) {{
+                            // Keep originalEl for dropzone dispatch below
+                        }} else if (!el) {{
+                            // Fallback: find ANY file input (including hidden ones like Greenhouse's visually-hidden)
                             for (var i = 0; i < __wraith_nodes.length; i++) {{
                                 var n = __wraith_nodes[i];
                                 if (n.tag === 'input' && n.attrs && n.attrs.type === 'file') {{
                                     el = n;
+                                    isFileInput = true;
                                     break;
                                 }}
                             }}
@@ -513,11 +988,109 @@ impl BrowserEngine for SevroEngineBackend {
                             for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
                             var file = new File([bytes], '{file_name}', {{ type: '{mime_type}' }});
                             var dt = new DataTransfer();
+
+                            // Support multiple file upload: if multi-file input, add to existing files
+                            if (isFileInput && el.attrs && el.attrs.multiple !== undefined && el.files) {{
+                                try {{
+                                    var existing = el.files;
+                                    for (var f = 0; f < existing.length; f++) {{
+                                        dt.items.add(existing[f]);
+                                    }}
+                                }} catch(e2) {{}}
+                            }}
+
                             dt.items.add(file);
-                            el.files = dt.files;
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            return 'OK: uploaded ' + '{file_name}' + ' (' + bytes.length + ' bytes)';
+
+                            if (isFileInput) {{
+                                el.files = dt.files;
+                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            }}
+
+                            // Find the best dropzone container for drag/drop events
+                            var dropTarget = null;
+
+                            if (!isFileInput && originalEl) {{
+                                // The ref target itself is not a file input — it may be a dropzone container
+                                dropTarget = originalEl;
+                            }}
+
+                            // Also search for dropzone containers near the element
+                            if (!dropTarget) {{
+                                // Walk up from el to find a dropzone ancestor
+                                var walker = el;
+                                var depth = 0;
+                                while (walker && depth < 10) {{
+                                    var r = walker.attrs ? walker.attrs.role : null;
+                                    var cls = walker.className || '';
+                                    var tid = walker.attrs ? (walker.attrs['data-testid'] || '') : '';
+                                    if (r === 'presentation' ||
+                                        cls.indexOf('dropzone') >= 0 || cls.indexOf('upload') >= 0 || cls.indexOf('Dropzone') >= 0 ||
+                                        tid.indexOf('drop') >= 0 || tid.indexOf('upload') >= 0) {{
+                                        dropTarget = walker;
+                                        break;
+                                    }}
+                                    walker = walker.parentNode;
+                                    depth++;
+                                }}
+                            }}
+
+                            // If no ancestor found, search all nodes for common dropzone patterns
+                            if (!dropTarget) {{
+                                for (var i = 0; i < __wraith_nodes.length; i++) {{
+                                    var n = __wraith_nodes[i];
+                                    var r = n.attrs ? n.attrs.role : null;
+                                    var cls = n.className || '';
+                                    var tid = n.attrs ? (n.attrs['data-testid'] || '') : '';
+                                    if (r === 'presentation' ||
+                                        cls.indexOf('dropzone') >= 0 || cls.indexOf('upload') >= 0 || cls.indexOf('Dropzone') >= 0 ||
+                                        tid.indexOf('drop') >= 0 || tid.indexOf('upload') >= 0) {{
+                                        dropTarget = n;
+                                        break;
+                                    }}
+                                }}
+                            }}
+
+                            // Dispatch drag/drop events on the dropzone container (react-dropzone, MUI)
+                            if (dropTarget) {{
+                                var dragEnter = new DragEvent('dragenter', {{ bubbles: true, dataTransfer: dt }});
+                                dropTarget.dispatchEvent(dragEnter);
+
+                                var dragOver = new DragEvent('dragover', {{ bubbles: true, dataTransfer: dt }});
+                                dropTarget.dispatchEvent(dragOver);
+
+                                var dropEvent = new DragEvent('drop', {{ bubbles: true, dataTransfer: dt }});
+                                dropTarget.dispatchEvent(dropEvent);
+
+                                var dragLeave = new DragEvent('dragleave', {{ bubbles: true, dataTransfer: dt }});
+                                dropTarget.dispatchEvent(dragLeave);
+                            }} else if (isFileInput) {{
+                                // No dropzone found — still dispatch drag/drop on the input itself
+                                // in case a library listens on the input element
+                                var dropEvent = new DragEvent('drop', {{ bubbles: true, dataTransfer: dt }});
+                                el.dispatchEvent(dropEvent);
+                            }}
+
+                            // Try to invoke React's onDrop callback directly via fiber/props
+                            var reactTarget = dropTarget || el;
+                            try {{
+                                var keys = Object.keys(reactTarget);
+                                for (var k = 0; k < keys.length; k++) {{
+                                    var key = keys[k];
+                                    if (key.indexOf('__reactProps$') === 0) {{
+                                        var props = reactTarget[key];
+                                        if (props && props.onDrop) {{
+                                            props.onDrop({{ dataTransfer: dt, preventDefault: function(){{}}, stopPropagation: function(){{}}, target: reactTarget }});
+                                        }}
+                                        if (props && props.onChange) {{
+                                            props.onChange({{ target: {{ files: dt.files }}, currentTarget: reactTarget, type: 'change' }});
+                                        }}
+                                        break;
+                                    }}
+                                }}
+                            }} catch(e3) {{}}
+
+                            return 'OK: uploaded ' + '{file_name}' + ' (' + bytes.length + ' bytes)' + (dropTarget ? ' +dropzone' : '');
                         }} catch(e) {{
                             return 'ERROR: ' + e.message;
                         }}
@@ -534,7 +1107,23 @@ impl BrowserEngine for SevroEngineBackend {
                     Err(e) => Ok(ActionResult::Failed { error: format!("File upload JS failed: {e}") })
                 }
             }
-            BrowserAction::TypeText { ref_id, text, delay_ms: _ } => {
+            BrowserAction::TypeText { ref_id, text, delay_ms: _, force } => {
+                // Safety pre-check: reject typing into hidden/disabled/obscured elements
+                if let Err(reason) = self.precheck_element(ref_id, force.unwrap_or(false)).await {
+                    return Ok(ActionResult::Failed { error: format!("Cannot type: {}", reason) });
+                }
+                // Scroll element into view before typing
+                let scroll_js = format!(
+                    r#"(() => {{
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (el && el.scrollIntoView) {{
+                            el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                        }}
+                    }})()"#,
+                    ref_id = ref_id,
+                );
+                let _ = self.engine.eval_js(&scroll_js).await;
+
                 // Simulate character-by-character input with focus + value set + events
                 let text_escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
                 let js = format!(r#"(() => {{
@@ -559,7 +1148,23 @@ impl BrowserEngine for SevroEngineBackend {
                     }
                 }
             }
-            BrowserAction::Select { ref_id, value } => {
+            BrowserAction::Select { ref_id, value, force } => {
+                // Safety pre-check: reject select on hidden/disabled/obscured elements
+                if let Err(reason) = self.precheck_element(ref_id, force.unwrap_or(false)).await {
+                    return Ok(ActionResult::Failed { error: format!("Cannot select: {}", reason) });
+                }
+                // Scroll element into view before selecting
+                let scroll_js = format!(
+                    r#"(() => {{
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (el && el.scrollIntoView) {{
+                            el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                        }}
+                    }})()"#,
+                    ref_id = ref_id,
+                );
+                let _ = self.engine.eval_js(&scroll_js).await;
+
                 // Set the selected option value via ref_id lookup
                 let value_escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
                 let js = format!(r#"(() => {{
@@ -716,6 +1321,60 @@ impl BrowserEngine for SevroEngineBackend {
                     Err(e) => Ok(ActionResult::Failed { error: format!("Submit @e{} failed: {}", ref_id, e) })
                 }
             }
+            BrowserAction::Scroll { direction, amount } => {
+                use crate::actions::ScrollDirection;
+                let (dx, dy) = match direction {
+                    ScrollDirection::Up => (0, -amount),
+                    ScrollDirection::Down => (0, amount),
+                    ScrollDirection::Left => (-amount, 0),
+                    ScrollDirection::Right => (amount, 0),
+                };
+                self.scroll_position.0 = (self.scroll_position.0 + dx).max(0);
+                self.scroll_position.1 = (self.scroll_position.1 + dy).max(0);
+
+                // Update window.scrollX/scrollY in the JS context
+                let js = format!(
+                    "window.scrollX = {x}; window.scrollY = {y}; window.pageXOffset = {x}; window.pageYOffset = {y};",
+                    x = self.scroll_position.0,
+                    y = self.scroll_position.1,
+                );
+                let _ = self.engine.eval_js(&js).await;
+
+                Ok(ActionResult::Success {
+                    message: format!("Scrolled to ({}, {})", self.scroll_position.0, self.scroll_position.1),
+                })
+            }
+            BrowserAction::ScrollTo { ref_id } => {
+                // Scroll the viewport to center the element, then update tracked position
+                let js = format!(
+                    r#"(() => {{
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (!el) return JSON.stringify({{ error: 'NOT_FOUND: @e{ref_id}' }});
+                        if (el.scrollIntoView) {{
+                            el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                        }}
+                        return JSON.stringify({{ scrollX: window.scrollX || 0, scrollY: window.scrollY || 0 }});
+                    }})()"#,
+                    ref_id = ref_id,
+                );
+                match self.engine.eval_js(&js).await {
+                    Ok(result) => {
+                        // Parse the scroll position from the JS result
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result) {
+                            if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
+                                return Ok(ActionResult::Failed { error: err.to_string() });
+                            }
+                            let sx = data.get("scrollX").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                            let sy = data.get("scrollY").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                            self.scroll_position = (sx, sy);
+                        }
+                        Ok(ActionResult::Success {
+                            message: format!("Scrolled to @e{}, viewport at ({}, {})", ref_id, self.scroll_position.0, self.scroll_position.1),
+                        })
+                    }
+                    Err(e) => Ok(ActionResult::Failed { error: format!("ScrollTo @e{} failed: {}", ref_id, e) }),
+                }
+            }
             _ => {
                 Ok(ActionResult::Success { message: "Action acknowledged (Sevro stub)".to_string() })
             }
@@ -739,6 +1398,18 @@ impl BrowserEngine for SevroEngineBackend {
 
     async fn screenshot(&self) -> BrowserResult<Vec<u8>> {
         Err(BrowserError::ScreenshotFailed("Not available in Sevro (Phase 3)".to_string()))
+    }
+
+    async fn set_cookie_values(&mut self, domain: &str, name: &str, value: &str, path: &str) {
+        self.engine.set_cookie(sevro_headless::Cookie {
+            name: name.to_string(),
+            value: value.to_string(),
+            domain: domain.to_string(),
+            path: path.to_string(),
+            secure: true,
+            http_only: false,
+            expires: None,
+        });
     }
 
     fn capabilities(&self) -> EngineCapabilities {

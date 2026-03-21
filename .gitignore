@@ -71,5 +71,15 @@ CAPABILITIES.md
 wraith-sevro-response.pdf
 wraith-enterprise-package*.pdf
 docs/superpowers/
+docs/design/
+docs/api/
+docs/schema/
+docs/marketing/
+deploy/
+crates/api-server/
+crates/browser-core/src/pool.rs
+packages/
+dashboard/
+website/
 *.plan.md
 *.spec.md

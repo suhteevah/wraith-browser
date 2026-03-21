@@ -4,15 +4,15 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
-[![MCP Tools](https://img.shields.io/badge/MCP%20tools-111-blue.svg)]()
+[![MCP Tools](https://img.shields.io/badge/MCP%20tools-116-blue.svg)]()
 
 ---
 
-Wraith is a native Rust browser engine purpose-built for AI agents. No Chrome dependency. No Node.js. Ships as a single ~15MB binary or MCP server with 111 tools -- every capability accessible via MCP calls. The user never touches this browser directly; the AI agent has full admin control.
+Wraith is a native Rust browser engine purpose-built for AI agents. No Chrome dependency. No Node.js. Ships as a single ~15MB binary or MCP server with 116 tools -- every capability accessible via MCP calls. The user never touches this browser directly; the AI agent has full admin control.
 
 ## Why Wraith
 
-| | Wraith | Playwright/Puppeteer |
+| | Wraith | Traditional Automation |
 |---|---|---|
 | Chrome required | No | Yes (300MB+) |
 | Memory per session | 5-50 MB | 300-500 MB |
@@ -21,8 +21,8 @@ Wraith is a native Rust browser engine purpose-built for AI agents. No Chrome de
 | Startup time | <100ms | 2-5 seconds |
 | Concurrent sessions (16GB) | 50-100+ | 6-8 |
 | Protected site handling | Multi-tier adaptive | Limited |
-| MCP native | Yes (111 tools) | No |
-| ATS-aware form submission | Greenhouse, Lever, Ashby APIs | Manual scripting |
+| MCP native | Yes (116 tools) | No |
+| ATS-aware form submission | Native API integration | Manual scripting |
 | File upload | Yes (DataTransfer API) | Yes (setInputFiles) |
 | Cookie import from Chrome | Yes (reads Chrome SQLite DB) | Manual |
 | Knowledge graph | Built-in entity resolution | Not available |
@@ -44,7 +44,7 @@ cargo build --release
 claude mcp add openclaw ./target/release/openclaw-browser -- serve --transport stdio
 ```
 
-Your AI agent immediately gains 111 browser tools -- full admin control with zero CLI interaction.
+Your AI agent immediately gains 116 browser tools -- full admin control with zero CLI interaction.
 
 ### CLI
 
@@ -53,27 +53,28 @@ Your AI agent immediately gains 111 browser tools -- full admin control with zer
 openclaw-browser navigate https://example.com
 
 # Extract content as clean markdown
-openclaw-browser extract https://docs.rust-lang.org --max-tokens 4000
+openclaw-browser extract https://example.com/docs --max-tokens 4000
 
 # Search the web (supports OR queries)
-openclaw-browser search "site:greenhouse.io QA engineer OR SDET remote"
+openclaw-browser search "QA engineer OR SDET remote"
 
 # Autonomous browsing task
-ANTHROPIC_API_KEY=sk-... openclaw-browser task "Find remote Rust jobs on HN"
+ANTHROPIC_API_KEY=sk-... openclaw-browser task "Find remote Rust jobs"
 
 # Manage encrypted credentials
-openclaw-browser vault store --domain github.com --kind password --identity user@example.com
+openclaw-browser vault store --domain example.com --kind password --identity user@example.com
 ```
 
 ### Environment Variables (MCP mode)
 
 | Variable | Purpose |
 |----------|---------|
-| `WRAITH_FLARESOLVERR` | URL for challenge solver service (e.g., `http://localhost:8191`) |
+| `WRAITH_FLARESOLVERR` | URL for external challenge-solving proxy (e.g., `http://localhost:8191`) |
 | `WRAITH_PROXY` | Primary HTTP/SOCKS5 proxy URL |
 | `WRAITH_FALLBACK_PROXY` | Fallback proxy for IP-blocked sites |
 | `ANTHROPIC_API_KEY` | Required for `browse_task` autonomous agent |
 | `BRAVE_SEARCH_API_KEY` | Optional Brave Search provider |
+| `TWOCAPTCHA_API_KEY` | Required for `browse_solve_captcha` CAPTCHA solving |
 
 ---
 
@@ -85,7 +86,7 @@ openclaw-browser vault store --domain github.com --kind password --identity user
                               MCP Protocol (stdio)
                                     |
                     +---------------v----------------+
-                    |       MCP Server (111 tools)   |
+                    |       MCP Server (116 tools)   |
                     +---------------+----------------+
                                     |
                     +---------------v----------------+
@@ -110,49 +111,49 @@ openclaw-browser vault store --domain github.com --kind password --identity user
 | `browser-core` | Unified engine trait, ATS detection, network layer, swarm, plugins |
 | `sevro-headless` | Headless engine -- HTTP, full DOM parsing, QuickJS JS runtime, adaptive site access, SPA hydration |
 | `agent-loop` | LLM agent cycle -- MCTS planning, time-travel, workflows, task DAGs |
-| `cache` | SQLite knowledge store, Tantivy full-text search, embeddings, entity graph, semantic diffing |
+| `cache` | SQLite knowledge store, full-text search, embeddings, entity graph, semantic diffing |
 | `content-extract` | Readability extraction, markdown conversion, OCR, PDF text extraction |
 | `identity` | AES-256-GCM encrypted credential vault, browser profiles, TOTP, auth flows |
-| `mcp-server` | MCP protocol server (111 tools, stdio transport) |
-| `search-engine` | DuckDuckGo + Brave metasearch, OR query splitting, local Tantivy index |
+| `mcp-server` | MCP protocol server (116 tools, stdio transport) |
+| `search-engine` | Metasearch (multiple providers), OR query splitting, local index |
 | `scripting` | Rhai sandboxed scripting engine (userscripts with navigation triggers) |
 | `cli` | Binary with subcommands (`navigate`, `extract`, `search`, `task`, `vault`) |
 
 ---
 
-## ATS Platform Support
+## Platform Integration
 
-Wraith has native API-level integration with major Applicant Tracking Systems. Instead of fighting React SPAs, it speaks their APIs directly.
+Wraith detects common job application platforms and uses their native APIs when available. Instead of scripting against complex React-based SPAs, Wraith speaks the underlying APIs directly.
 
-| Platform | Method | Coverage |
-|----------|--------|----------|
-| **Greenhouse** (direct) | Renders HTML form, fills via React-compatible `browse_fill`, submits to `boards-api.greenhouse.io` as multipart | Full form fill + submit |
-| **Greenhouse** (wrapped) | Detects `gh_jid=` param on company career sites, probes Greenhouse API to resolve board slug, redirects to direct form | Auto-resolves 1100+ wrapped URLs |
-| **Ashby** | Queries GraphQL API (`jobs.ashbyhq.com/api/non-user-graphql`) for form definition, builds synthetic HTML with real form fields | Full form fill via API |
-| **Lever** | Auto-appends `/apply` to reach application form, server-rendered HTML works with standard `browse_fill` | Full form fill + submit |
+| Platform Type | Method | Coverage |
+|---------------|--------|----------|
+| **Direct-hosted ATS forms** | Renders HTML form, fills via React-compatible `browse_fill`, submits to the platform's API as multipart | Full form fill + submit |
+| **Wrapped/embedded ATS forms** | Detects job ID parameters on company career sites, probes the platform API to resolve the correct board, redirects to the direct application form | Auto-resolves wrapped URLs |
+| **GraphQL-based ATS platforms** | Queries the platform's GraphQL API for form definitions, builds synthetic HTML with real form fields matching the API schema | Full form fill via API |
+| **Server-rendered ATS forms** | Auto-appends the correct apply path, works with standard `browse_fill` on server-rendered HTML | Full form fill + submit |
 | **Static HTML forms** | Standard DOM interaction | Full support |
 
 ### How ATS Resolution Works
 
 When `browse_navigate` is called:
 
-1. **Lever URLs** (`jobs.lever.co/{company}/{id}`) -- `/apply` is automatically appended
-2. **Greenhouse wrapped URLs** (any URL with `?gh_jid=12345`) -- the engine extracts the job ID, derives candidate board slugs from the domain (e.g., `careers.datadoghq.com` -> tries `datadog`, `datadoghq`), probes `boards-api.greenhouse.io/v1/boards/{slug}/jobs/{id}` for each, and on a 200 response redirects to `job-boards.greenhouse.io/{slug}/jobs/{id}`
-3. **Ashby URLs** (`jobs.ashbyhq.com/{company}/{id}`) -- fetches form definition via GraphQL, builds synthetic HTML with `<input>`, `<select>`, `<textarea>`, `<label>` elements matching the real form, loads it as the page DOM
+1. **Server-rendered ATS URLs** -- the apply path is automatically appended to reach the application form
+2. **Wrapped ATS URLs** (career sites with job ID query parameters) -- the engine extracts the job ID, derives candidate board slugs from the domain, probes the platform API for each, and on success redirects to the direct application form
+3. **GraphQL-based ATS URLs** -- fetches the form definition via GraphQL, builds synthetic HTML with `<input>`, `<select>`, `<textarea>`, `<label>` elements matching the real form, loads it as the page DOM
 
 When `browse_submit_form` is called:
 
-1. **Greenhouse** -- serializes all form fields, POSTs to `boards-api[.eu].greenhouse.io/v1/boards/{company}/jobs/{id}/applications` as `multipart/form-data`
-2. **Lever** -- POSTs to the `/apply` URL as `application/x-www-form-urlencoded`
-3. **Ashby** -- POSTs to `/application/submit` as `application/json`
+1. **Multipart-based platforms** -- serializes all form fields, POSTs to the platform's application endpoint as `multipart/form-data`
+2. **Server-rendered platforms** -- POSTs to the apply endpoint as `application/x-www-form-urlencoded`
+3. **GraphQL-based platforms** -- POSTs to the submission endpoint as `application/json`
 
 ---
 
-## MCP Tools Reference (111 tools)
+## MCP Tools Reference (116 tools)
 
 Every capability has a native MCP tool. The AI agent has full admin control with zero CLI interaction. Below is the complete reference for every tool -- parameters, defaults, and usage patterns.
 
-### Navigation (7 tools)
+### Navigation (8 tools)
 
 #### `browse_navigate`
 Navigate to a URL and return a DOM snapshot with all interactive elements.
@@ -162,11 +163,11 @@ Navigate to a URL and return a DOM snapshot with all interactive elements.
 | `url` | string | yes | -- | Full URL including protocol (`https://...`) |
 | `wait_for_load` | bool | no | `true` | Wait for page to fully load before returning |
 
-**Behavior:** Fetches the page via HTTP, parses HTML into a full DOM tree, sets up QuickJS JavaScript runtime with DOM bridge, executes inline `<script>` tags, and returns an agent-readable snapshot. Automatically handles ATS URL resolution (Greenhouse wrapped, Lever /apply, Ashby GraphQL). For pages with fewer than 10 visible elements (SPA indicator), triggers automatic SPA hydration -- fetches dynamically created scripts and executes them.
+**Behavior:** Fetches the page via HTTP, parses HTML into a full DOM tree, sets up QuickJS JavaScript runtime with DOM bridge, executes inline `<script>` tags, and returns an agent-readable snapshot. Automatically handles ATS URL resolution for supported applicant tracking systems. For pages with fewer than 10 visible elements (SPA indicator), triggers automatic SPA hydration -- fetches dynamically created scripts and executes them.
 
 **Example:**
 ```
-browse_navigate { "url": "https://job-boards.greenhouse.io/stripe/jobs/7688069" }
+browse_navigate { "url": "https://example.com/careers/apply/12345" }
 ```
 
 #### `browse_back`
@@ -185,6 +186,13 @@ Scroll the page viewport.
 |-----------|------|----------|---------|-------------|
 | `direction` | string | yes | -- | `"up"`, `"down"`, `"left"`, or `"right"` |
 | `amount` | integer | no | `500` | Pixels to scroll |
+
+#### `browse_scroll_to`
+Scroll the viewport to center a specific element by its `@ref` ID.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `ref_id` | integer | yes | -- | Element `@e` reference to scroll into view |
 
 #### `browse_wait`
 Wait for a CSS selector to appear or a fixed duration.
@@ -225,7 +233,7 @@ Fill a form field with text. React-compatible -- uses native value setter, `_val
 **Behavior:**
 1. Looks up element via `__wraith_get_by_ref(ref_id)`
 2. Calls `focus()` on the element
-3. Uses `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set` to bypass React's controlled input wrapper
+3. Uses `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set` to handle React-controlled inputs
 4. Invalidates React's `_valueTracker` (forces React to see the change)
 5. Dispatches `focus`, `input`, `change`, `blur` events (bubbling)
 6. Walks the React fiber tree looking for `__reactProps$` or `__reactFiber$` to call `onChange` directly
@@ -233,8 +241,8 @@ Fill a form field with text. React-compatible -- uses native value setter, `_val
 
 **Example:**
 ```
-browse_fill { "ref_id": 37, "text": "Matt Gates" }
-# Returns: "@e37: FILLED (native_events, verified): Matt Gates"
+browse_fill { "ref_id": 37, "text": "Jane Smith" }
+# Returns: "@e37: FILLED (native_events, verified): Jane Smith"
 ```
 
 #### `browse_select`
@@ -248,7 +256,7 @@ Select an option in a native `<select>` dropdown.
 **Behavior:** Looks up element, focuses it, sets `.value`, dispatches `change` and `input` events.
 
 #### `browse_type`
-Type text with realistic per-character keystroke delays (bot evasion).
+Type text with realistic per-character keystroke delays.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -281,10 +289,10 @@ Focus a specific element.
 
 ---
 
-### Form Automation (3 tools)
+### Form Automation (5 tools)
 
 #### `browse_upload_file`
-Upload a file to an `input[type="file"]` element. Handles hidden file inputs (Greenhouse's `visually-hidden` pattern).
+Upload a file to an `input[type="file"]` element. Handles hidden file inputs commonly used by modern web applications.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -300,12 +308,12 @@ Upload a file to an `input[type="file"]` element. Handles hidden file inputs (Gr
 
 **Example:**
 ```
-browse_upload_file { "file_path": "C:\\Users\\Matt\\resume.docx", "ref_id": 48 }
-# Returns: "OK: uploaded resume.docx (11403 bytes)"
+browse_upload_file { "file_path": "/home/user/resume.pdf", "ref_id": 48 }
+# Returns: "OK: uploaded resume.pdf (11403 bytes)"
 ```
 
 #### `browse_submit_form`
-Submit a form. ATS-aware -- detects Greenhouse/Lever/Ashby and POSTs to the correct API endpoint.
+Submit a form. ATS-aware -- detects supported applicant tracking systems and POSTs to the correct API endpoint.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -314,12 +322,12 @@ Submit a form. ATS-aware -- detects Greenhouse/Lever/Ashby and POSTs to the corr
 **Behavior:**
 1. Serializes all `<input>`, `<select>`, `<textarea>` values from the DOM
 2. Detects ATS platform from the current URL
-3. Constructs the correct API endpoint and content type (multipart for Greenhouse, form-urlencoded for Lever, JSON for Ashby)
+3. Constructs the correct API endpoint and content type (multipart, form-urlencoded, or JSON depending on the platform)
 4. POSTs via Wraith's native HTTP client with proper `Origin` and `Referer` headers
 5. Reports field count, endpoint, and HTTP response
 
 #### `browse_custom_dropdown`
-Interact with React/Greenhouse-style custom dropdown components (not native `<select>`).
+Interact with React-based custom dropdown components (not native `<select>`).
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -328,9 +336,27 @@ Interact with React/Greenhouse-style custom dropdown components (not native `<se
 
 **Behavior:** Clicks the trigger to open the dropdown, types the value to filter options, looks for a matching option element, clicks it. Reports whether an exact match was found.
 
+#### `browse_dismiss_overlay`
+Dismiss a modal, overlay, popup, or cookie banner that is blocking interaction.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `ref_id` | integer | no | -- | Overlay element `@e` reference (auto-detects the topmost overlay if omitted) |
+
+**Behavior:** Automatically finds the close/dismiss/accept button within the overlay and clicks it. Returns an updated page snapshot after dismissal.
+
+#### `browse_enter_iframe`
+Enter an iframe's content by switching the page context to the iframe's parsed DOM.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `ref_id` | integer | yes | -- | Iframe element `@e` reference from the snapshot |
+
+**Behavior:** Switches DOM context to the iframe's content. After entering, `browse_snapshot` shows the iframe's elements. Use `browse_back` to return to the parent page. Useful for cross-origin iframes used by embedded application forms and third-party widgets.
+
 ---
 
-### Extraction & DOM (11 tools)
+### Extraction & DOM (13 tools)
 
 #### `browse_snapshot`
 Get the current page's DOM as an agent-readable snapshot. Shows all interactive elements with `@e` reference IDs.
@@ -343,7 +369,7 @@ No parameters.
 ```
 Page: "Job Application" (https://example.com/apply)
 
-@e1   [text]     "Matt" value="Matt" placeholder="First Name"
+@e1   [text]     "Jane" value="Jane" placeholder="First Name"
 @e2   [text]     "" placeholder="Last Name"
 @e3   [email]    "" placeholder="Email"
 @e4   [file]     ""
@@ -446,14 +472,43 @@ Run OCR text detection on the current page.
 ### Search (1 tool)
 
 #### `browse_search`
-Web metasearch via DuckDuckGo + optional Brave. Supports OR query splitting.
+Web metasearch via multiple search providers. Supports OR query splitting.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `query` | string | yes | -- | Search query (supports `OR` for multi-variant search) |
 | `max_results` | integer | no | `10` | Maximum results |
 
-**Behavior:** Splits `"site:greenhouse.io QA engineer OR SDET remote"` into two sub-queries, searches each, deduplicates, and returns combined results.
+**Behavior:** Splits `"QA engineer OR SDET remote"` into two sub-queries, searches each, deduplicates, and returns combined results.
+
+---
+
+### Authentication (2 tools)
+
+#### `browse_login`
+Perform a full login flow: navigate to a login page, fill credentials, submit, and follow the entire redirect chain (302 -> 302 -> 200). Captures all cookies at every redirect hop.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | yes | -- | Login page URL |
+| `username_ref_id` | integer | yes | -- | `@e` reference of the username/email input field |
+| `password_ref_id` | integer | yes | -- | `@e` reference of the password input field |
+| `username` | string | yes | -- | Username or email to fill |
+| `password` | string | yes | -- | Password to fill |
+| `submit_ref_id` | integer | yes | -- | `@e` reference of the submit/login button |
+
+**Behavior:** Navigates to the login URL, fills credentials using React-compatible fill, clicks submit, and follows all OAuth/auth redirects. Captures all `Set-Cookie` headers at every redirect hop. Returns the final page snapshot and all cookies set during the flow.
+
+#### `browse_solve_captcha`
+Solve a CAPTCHA on the current page using a third-party solving service. Supports common CAPTCHA types including reCAPTCHA v3 and Turnstile challenges.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `site_key` | string | no | -- | CAPTCHA site key (auto-detected from page if omitted) |
+| `url` | string | no | -- | Page URL where the CAPTCHA appears (uses current page if omitted) |
+| `captcha_type` | string | no | `"recaptchav3"` | CAPTCHA type: `"recaptchav3"` or `"turnstile"` |
+
+**Requires:** `TWOCAPTCHA_API_KEY` environment variable. Returns the solved token and injects it into the page.
 
 ---
 
@@ -466,7 +521,7 @@ Store a credential in the encrypted vault.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `domain` | string | yes | -- | Domain the credential is for (e.g., `"github.com"`) |
+| `domain` | string | yes | -- | Domain the credential is for (e.g., `"example.com"`) |
 | `kind` | string | yes | -- | Type: `"password"`, `"api_key"`, `"oauth_token"`, `"totp_seed"`, `"session_cookie"`, `"generic"` |
 | `identity` | string | yes | -- | Username, email, or account identifier |
 | `secret` | string | yes | -- | The secret value (encrypted at rest) |
@@ -636,7 +691,7 @@ Show a domain's observed change frequency and recommended TTL.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `domain` | string | yes | -- | Domain to profile (e.g., `"indeed.com"`) |
+| `domain` | string | yes | -- | Domain to profile |
 
 #### `cache_find_similar`
 Find cached pages similar to a given URL (semantic similarity).
@@ -662,7 +717,7 @@ Get the raw cached HTML for a URL.
 
 ---
 
-### Entity Graph / Knowledge Graph (6 tools)
+### Entity Graph / Knowledge Graph (7 tools)
 
 Cross-site entity resolution. Tracks companies, people, technologies, and their relationships across all visited pages.
 
@@ -671,7 +726,7 @@ Ask a natural-language question about the knowledge graph.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `question` | string | yes | -- | Question (e.g., `"what do we know about Stripe?"`) |
+| `question` | string | yes | -- | Question (e.g., `"what do we know about this company?"`) |
 
 #### `entity_add`
 Add an entity to the knowledge graph.
@@ -738,7 +793,7 @@ Store a text embedding for later semantic search.
 
 ---
 
-### Identity & Network Intelligence (7 tools)
+### Identity & Network Intelligence (8 tools)
 
 #### `auth_detect`
 Detect authentication flows on a page (login forms, OAuth, SSO).
@@ -776,7 +831,7 @@ Resolve a domain via DNS-over-HTTPS.
 | `domain` | string | yes | -- | Domain to resolve |
 
 #### `stealth_status`
-Show current TLS stealth configuration and active evasions. No parameters.
+Show current TLS compatibility configuration and status. No parameters.
 
 #### `site_fingerprint`
 Detect the technology stack of a website (frameworks, CDN, analytics).
@@ -784,6 +839,10 @@ Detect the technology stack of a website (frameworks, CDN, analytics).
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `url` | string | no | -- | URL to fingerprint (uses current page if omitted) |
+
+---
+
+### Page Analysis (3 tools)
 
 #### `page_diff`
 Compare the current page content against the cached version (semantic diff).
@@ -793,7 +852,16 @@ Compare the current page content against the cached version (semantic diff).
 | `url` | string | no | -- | URL to diff (uses current page if omitted) |
 
 #### `tls_profiles`
-List available TLS fingerprint profiles. No parameters.
+List available TLS fingerprint profiles for broad site compatibility. No parameters.
+
+#### `tls_verify`
+Verify that Wraith's TLS fingerprint matches a real modern browser. Compares cipher suites, extensions, and HTTP/2 settings against known browser values.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | no | -- | TLS fingerprint analysis service URL |
+
+**Behavior:** Fetches a TLS analysis service using the same HTTP stack as `browse_navigate`, then compares JA3/JA4 hashes, cipher suites, extensions, and HTTP/2 SETTINGS against known browser values. Returns a detailed pass/fail report.
 
 ---
 
@@ -978,7 +1046,7 @@ Use Monte Carlo Tree Search to determine the best next action.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `state` | string | yes | -- | Current page state description |
-| `actions` | string[] | yes | -- | Available actions (e.g., `["click @e1", "fill @e3 'Matt'"]`) |
+| `actions` | string[] | yes | -- | Available actions (e.g., `["click @e1", "fill @e3 'Jane'"]`) |
 | `simulations` | integer | no | `100` | Number of MCTS simulations |
 
 #### `mcts_stats`
@@ -1036,7 +1104,7 @@ Fetch and execute page `<script>` tags (both inline and external). Handles dynam
 |-----------|------|----------|---------|-------------|
 | `max_bytes` | integer | no | `2097152` | Maximum total script bytes (2MB) |
 
-**Behavior:** Finds all `<script>` tags in the page. Executes inline scripts first (may bootstrap SPAs). Then checks for dynamically created `<script>` elements (e.g., Ashby pattern where inline JS creates `<script type="module">`). Fetches external scripts via HTTP and executes them in QuickJS. Flushes `setTimeout` callbacks.
+**Behavior:** Finds all `<script>` tags in the page. Executes inline scripts first (may bootstrap SPAs). Then checks for dynamically created `<script>` elements (e.g., patterns where inline JS creates `<script type="module">`). Fetches external scripts via HTTP and executes them in QuickJS. Flushes `setTimeout` callbacks.
 
 ---
 
@@ -1045,9 +1113,51 @@ Fetch and execute page `<script>` tags (both inline and external). Handles dynam
 #### `browse_config`
 Show engine capabilities and current configuration. No parameters.
 
-Returns: JavaScript status, screenshot capability, layout capability, cookie support, stealth mode, TLS stealth status, evasion count, proxy/FlareSolverr configuration.
+Returns: JavaScript status, screenshot capability, layout capability, cookie support, compatibility mode, TLS status, proxy configuration.
 
 ---
+
+## DOM Snapshots
+
+Wraith produces compact, agent-readable DOM snapshots that show every interactive element with a unique `@e` reference ID. The format is designed for minimal token usage while giving the AI agent full context.
+
+```
+Page: "Apply Now" (https://example.com/careers/apply)
+
+@e1   [text]     "Jane" value="Jane" placeholder="First Name"
+@e2   [text]     "" placeholder="Last Name"
+@e3   [email]    "" placeholder="Email"
+@e4   [tel]      "" placeholder="Phone"
+@e5   [file]     "" (accept=".pdf,.doc,.docx")
+@e6   [select]   "United States" (options: ...)
+@e7   [textarea] "" placeholder="Cover Letter"
+@e8   [button]   "Submit Application"
+```
+
+Each `@e` reference can be used directly with `browse_click`, `browse_fill`, `browse_select`, `browse_upload_file`, and other interaction tools. Values reflect the current DOM state, including changes made by `browse_fill`.
+
+## Form Automation
+
+Wraith handles the full spectrum of web forms:
+
+- **Static HTML forms** -- standard DOM interaction with `browse_fill` and `browse_submit_form`
+- **React-controlled inputs** -- uses native value setters and `_valueTracker` invalidation to ensure React sees changes
+- **Custom dropdowns** -- `browse_custom_dropdown` opens, filters, and selects from non-native dropdown components
+- **File uploads** -- `browse_upload_file` injects files via `DataTransfer` API, handles hidden file inputs
+- **ATS platforms** -- automatic API detection and direct submission using the platform's native API format
+- **SPA hydration** -- `browse_fetch_scripts` downloads and executes JavaScript bundles so React/Vue/Angular event systems activate
+- **Cross-origin iframes** -- `browse_enter_iframe` switches context into embedded forms
+
+## Agent Intelligence
+
+Wraith includes built-in AI planning and orchestration:
+
+- **MCTS Planning** -- Monte Carlo Tree Search explores possible action sequences to find the optimal next step
+- **Task DAGs** -- define parallel task graphs with dependencies; execute ready tasks concurrently
+- **Time-Travel Debugging** -- replay, branch, and diff the agent's decision timeline
+- **Workflow Record/Replay** -- record browsing sessions and replay them with variable substitution
+- **Prefetch Prediction** -- anticipate which URLs the agent will need next and pre-fetch them
+- **Swarm Browsing** -- visit multiple URLs in parallel and collect results
 
 ## Credential Security
 
@@ -1063,7 +1173,7 @@ Returns: JavaScript status, screenshot capability, layout capability, cookie sup
 
 Every page visited is cached, indexed, and searchable. Cache TTLs adapt automatically per domain based on observed content change frequency.
 
-- **SQLite + Tantivy** full-text search
+- **SQLite + full-text search** index
 - Semantic page diffing (detects meaningful changes between visits)
 - Cross-site entity resolution via knowledge graph
 - Embedding store with cosine similarity search
@@ -1090,7 +1200,7 @@ Companies that want to embed Wraith in proprietary products without open-source 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Key areas:
 
-- ATS platform integrations (new GraphQL/API adapters)
+- ATS platform integrations (new API adapters)
 - Search provider integrations
 - Auth flow detection patterns
 - Documentation and examples

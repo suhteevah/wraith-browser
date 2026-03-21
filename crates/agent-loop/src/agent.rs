@@ -213,13 +213,14 @@ impl<L: LlmBackend> Agent<L> {
                 self.auto_cache_page(url, "").await;
             }
             ParsedAction::Click(ref_id) => {
-                self.engine.lock().await.execute_action(BrowserAction::Click { ref_id: *ref_id }).await
+                self.engine.lock().await.execute_action(BrowserAction::Click { ref_id: *ref_id, force: None }).await
                     .map_err(AgentError::Browser)?;
             }
             ParsedAction::Fill(ref_id, text) => {
                 self.engine.lock().await.execute_action(BrowserAction::Fill {
                     ref_id: *ref_id,
                     text: text.clone(),
+                    force: None,
                 }).await
                     .map_err(AgentError::Browser)?;
             }
@@ -227,6 +228,7 @@ impl<L: LlmBackend> Agent<L> {
                 self.engine.lock().await.execute_action(BrowserAction::Select {
                     ref_id: *ref_id,
                     value: value.clone(),
+                    force: Some(false),
                 }).await
                     .map_err(AgentError::Browser)?;
             }

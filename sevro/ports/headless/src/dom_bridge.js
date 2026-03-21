@@ -44,9 +44,18 @@ for (var i = 0; i < __wraith_nodes.length; i++) {
     n.getAttribute = function(k) { return this.attrs ? this.attrs[k] : null; };
     n.hasAttribute = function(k) { return this.attrs ? k in this.attrs : false; };
     n.removeAttribute = function(k) { if (this.attrs) delete this.attrs[k]; };
+    n.scrollIntoView = function(opts) {
+        // Simulate scrolling the viewport to bring this element into view.
+        // Updates window.scrollY to approximate the element's position.
+        var estimatedY = (this.__ref_id || 0) * 30;
+        window.scrollY = Math.max(0, estimatedY - Math.floor(window.innerHeight / 2));
+        window.pageYOffset = window.scrollY;
+    };
     n.getBoundingClientRect = function() {
         var vis = this.isVisible !== false;
-        return { x: 0, y: 0, width: vis ? 100 : 0, height: vis ? 30 : 0, top: 0, left: 0, right: vis ? 100 : 0, bottom: vis ? 30 : 0 };
+        var estimatedY = (this.__ref_id || 0) * 30;
+        var top = estimatedY - (window.scrollY || 0);
+        return { x: 0, y: top, width: vis ? 100 : 0, height: vis ? 30 : 0, top: top, left: 0, right: vis ? 100 : 0, bottom: top + (vis ? 30 : 0) };
     };
     n.parentNode = null;
     n.parentElement = null;
@@ -246,6 +255,11 @@ var __wraith_ensure_node_methods = function(obj) {
     if (!obj.insertBefore) obj.insertBefore = function(n) { if (!this.children) this.children = []; this.children.unshift(n); };
     if (!obj.setAttribute) obj.setAttribute = function(k, v) { if (!this.attrs) this.attrs = {}; this.attrs[k] = v; };
     if (!obj.getAttribute) obj.getAttribute = function(k) { return this.attrs ? this.attrs[k] : null; };
+    if (!obj.scrollIntoView) obj.scrollIntoView = function(opts) {
+        var estimatedY = (this.__ref_id || 0) * 30;
+        window.scrollY = Math.max(0, estimatedY - Math.floor(window.innerHeight / 2));
+        window.pageYOffset = window.scrollY;
+    };
     if (!obj.getBoundingClientRect) obj.getBoundingClientRect = function() { return { x: 0, y: 0, width: 1920, height: 1080, top: 0, left: 0, right: 1920, bottom: 1080 }; };
     if (!obj.contains) obj.contains = function() { return false; };
     if (!obj.closest) obj.closest = function() { return null; };
@@ -750,7 +764,16 @@ document.createElement = function(tag) {
     el.dispatchEvent = function(ev) { return true; };
     el.addEventListener = function() {};
     el.removeEventListener = function() {};
-    el.getBoundingClientRect = function() { return { x: 0, y: 0, width: 100, height: 30, top: 0, left: 0, right: 100, bottom: 30 }; };
+    el.scrollIntoView = function(opts) {
+        var estimatedY = (this.__ref_id || 0) * 30;
+        window.scrollY = Math.max(0, estimatedY - Math.floor(window.innerHeight / 2));
+        window.pageYOffset = window.scrollY;
+    };
+    el.getBoundingClientRect = function() {
+        var estimatedY = (this.__ref_id || 0) * 30;
+        var top = estimatedY - (window.scrollY || 0);
+        return { x: 0, y: top, width: 100, height: 30, top: top, left: 0, right: 100, bottom: top + 30 };
+    };
     el.focus = function() {};
     el.blur = function() {};
     el.click = function() {};
@@ -1037,17 +1060,80 @@ if (typeof FormData === 'undefined') {
     var FormData = window.FormData;
 }
 
+// === FileList constructor (wraps an array of Files) ===
+if (typeof FileList === 'undefined') {
+    window.FileList = function(files) {
+        this._files = files || [];
+        this.length = this._files.length;
+        for (var i = 0; i < this._files.length; i++) {
+            this[i] = this._files[i];
+        }
+    };
+    window.FileList.prototype.item = function(index) {
+        return this._files[index] || null;
+    };
+    window.FileList.prototype[Symbol.iterator] = function() {
+        var i = 0, files = this._files;
+        return {
+            next: function() {
+                if (i < files.length) return { value: files[i++], done: false };
+                return { done: true };
+            }
+        };
+    };
+    var FileList = window.FileList;
+}
+
 if (typeof DataTransfer === 'undefined') {
     window.DataTransfer = function() {
-        this.items = { add: function(file) { this._files = this._files || []; this._files.push(file); } };
-        this.files = [];
+        this._fileList = [];
+        this.dropEffect = 'none';
+        this.effectAllowed = 'all';
+        this.types = [];
+        var self = this;
+        this.items = {
+            _files: [],
+            length: 0,
+            add: function(file) {
+                this._files.push(file);
+                this.length = this._files.length;
+                self._fileList = this._files;
+                if (self.types.indexOf('Files') < 0) self.types.push('Files');
+            },
+            clear: function() { this._files = []; this.length = 0; self._fileList = []; },
+            remove: function(i) { this._files.splice(i, 1); this.length = this._files.length; self._fileList = this._files; }
+        };
     };
     Object.defineProperty(window.DataTransfer.prototype, 'files', {
-        get: function() { return this.items._files || []; },
-        set: function(v) { this.items._files = v; }
+        get: function() { return new FileList(this.items._files || []); },
+        set: function(v) {
+            if (v instanceof FileList) {
+                this.items._files = v._files || [];
+            } else if (Array.isArray(v)) {
+                this.items._files = v;
+            } else {
+                this.items._files = v;
+            }
+            this.items.length = this.items._files.length;
+            if (this.items._files.length > 0 && this.types.indexOf('Files') < 0) {
+                this.types.push('Files');
+            }
+        }
     });
+    window.DataTransfer.prototype.getData = function(type) { return ''; };
+    window.DataTransfer.prototype.setData = function(type, data) {};
+    window.DataTransfer.prototype.clearData = function() {};
     var DataTransfer = window.DataTransfer;
 }
+
+// === DragEvent constructor (extends MouseEvent with dataTransfer) ===
+window.DragEvent = function(type, opts) {
+    window.MouseEvent.call(this, type, opts);
+    this.dataTransfer = (opts && opts.dataTransfer) || new DataTransfer();
+};
+window.DragEvent.prototype = Object.create(window.MouseEvent.prototype);
+window.DragEvent.prototype.constructor = window.DragEvent;
+var DragEvent = window.DragEvent;
 
 if (typeof File === 'undefined') {
     window.File = function(parts, name, options) {
@@ -1072,4 +1158,176 @@ if (typeof Blob === 'undefined') {
         }
     };
     var Blob = window.Blob;
+}
+
+// === Overlay / Modal Detection ===
+// Scans the DOM for modal dialogs, overlays, popups, and backdrops that block interaction.
+// Returns a JSON array of detected overlays with ref_id, type, and title/text.
+function __wraith_detect_overlays() {
+    var overlays = [];
+    var seen = {};
+    var modalClassPatterns = ['modal', 'overlay', 'popup', 'dialog', 'backdrop', 'lightbox', 'drawer'];
+    var viewportW = window.innerWidth || 1920;
+    var viewportH = window.innerHeight || 1080;
+    var viewportArea = viewportW * viewportH;
+
+    for (var i = 0; i < __wraith_nodes.length; i++) {
+        var n = __wraith_nodes[i];
+        if (!n || n.isVisible === false) continue;
+        if (seen[n.__ref_id]) continue;
+
+        var detected = false;
+        var overlayType = '';
+
+        // Check role="dialog" or role="alertdialog"
+        var role = n.attrs ? (n.attrs.role || '') : '';
+        if (role === 'dialog' || role === 'alertdialog') {
+            detected = true;
+            overlayType = role;
+        }
+
+        // Check class names for modal/overlay patterns
+        if (!detected) {
+            var cls = (n.className || '').toLowerCase();
+            for (var p = 0; p < modalClassPatterns.length; p++) {
+                if (cls.indexOf(modalClassPatterns[p]) >= 0) {
+                    detected = true;
+                    overlayType = modalClassPatterns[p];
+                    break;
+                }
+            }
+        }
+
+        // Check for aria-modal="true"
+        if (!detected && n.attrs && n.attrs['aria-modal'] === 'true') {
+            detected = true;
+            overlayType = 'dialog';
+        }
+
+        // Check for fixed/absolute positioning covering most of the viewport with high z-index
+        if (!detected && n.style) {
+            var pos = n.style.position || '';
+            var zIndex = parseInt(n.style.zIndex || n.style['z-index'] || '0', 10);
+            if ((pos === 'fixed' || pos === 'absolute') && zIndex > 1000) {
+                var rect = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+                if (rect) {
+                    var elArea = rect.width * rect.height;
+                    if (elArea > viewportArea * 0.3) {
+                        detected = true;
+                        overlayType = 'overlay';
+                    }
+                }
+            }
+        }
+
+        if (detected && n.__ref_id) {
+            seen[n.__ref_id] = true;
+
+            // Extract title or short text from the overlay
+            var title = '';
+            if (n.attrs && n.attrs['aria-label']) {
+                title = n.attrs['aria-label'];
+            }
+            if (!title) {
+                var textParts = [];
+                if (n.textContent) {
+                    textParts.push(n.textContent);
+                }
+                if (n.children) {
+                    for (var c = 0; c < n.children.length && c < 10; c++) {
+                        var child = n.children[c];
+                        if (child && child.textContent) {
+                            textParts.push(child.textContent);
+                        }
+                    }
+                }
+                title = textParts.join(' ').replace(/\s+/g, ' ').substring(0, 80);
+            }
+
+            overlays.push({
+                ref_id: n.__ref_id,
+                type: overlayType,
+                title: title
+            });
+        }
+    }
+
+    return JSON.stringify(overlays);
+}
+
+// === Overlay Dismiss — find and click close button ===
+// Finds a close/dismiss/accept button within or near the overlay and returns its ref_id.
+function __wraith_find_close_button(overlay_ref_id) {
+    var overlay = overlay_ref_id ? __wraith_ref_index[overlay_ref_id] : null;
+
+    // If no specific overlay given, find the first detected overlay
+    if (!overlay) {
+        var detected = JSON.parse(__wraith_detect_overlays());
+        if (detected.length > 0) {
+            overlay = __wraith_ref_index[detected[0].ref_id];
+        }
+    }
+    if (!overlay) return JSON.stringify({ error: 'No overlay found' });
+
+    // Close button text patterns (case-insensitive matching)
+    var closeTexts = ['close', 'dismiss', 'accept', 'ok', 'got it', 'agree', 'i agree',
+                      'accept all', 'accept cookies', 'allow', 'allow all', 'continue',
+                      'no thanks', 'not now', 'skip', 'reject all', 'deny', 'decline'];
+    var closeAriaLabels = ['close', 'dismiss', 'close dialog', 'close modal'];
+
+    var candidates = [];
+
+    function isCloseCandidate(n) {
+        if (!n || !n.__ref_id) return false;
+        if (n.isVisible === false) return false;
+
+        var tag = n.tag || '';
+        var text = (n.textContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        var ariaLabel = (n.attrs && n.attrs['aria-label'] || '').toLowerCase();
+        var cls = (n.className || '').toLowerCase();
+
+        if (tag === 'button' || tag === 'a' || (n.attrs && n.attrs.role === 'button')) {
+            // X character (common close icon)
+            if (text === 'x' || text === '\u00d7' || text === '\u2715' || text === '\u2716') {
+                return { ref_id: n.__ref_id, priority: 1, text: text };
+            }
+            for (var a = 0; a < closeAriaLabels.length; a++) {
+                if (ariaLabel.indexOf(closeAriaLabels[a]) >= 0) {
+                    return { ref_id: n.__ref_id, priority: 2, text: ariaLabel };
+                }
+            }
+            for (var t = 0; t < closeTexts.length; t++) {
+                if (text === closeTexts[t] || text.indexOf(closeTexts[t]) >= 0) {
+                    return { ref_id: n.__ref_id, priority: 3, text: text };
+                }
+            }
+            if (cls.indexOf('close') >= 0 || cls.indexOf('dismiss') >= 0) {
+                return { ref_id: n.__ref_id, priority: 4, text: text || cls };
+            }
+        }
+        return false;
+    }
+
+    for (var i = 0; i < __wraith_nodes.length; i++) {
+        var result = isCloseCandidate(__wraith_nodes[i]);
+        if (result) {
+            var isChild = false;
+            var parent = __wraith_nodes[i].parentNode;
+            var depth = 0;
+            while (parent && depth < 20) {
+                if (parent === overlay) { isChild = true; break; }
+                parent = parent.parentNode;
+                depth++;
+            }
+            if (isChild) result.priority -= 0.5;
+            candidates.push(result);
+        }
+    }
+
+    if (candidates.length === 0) {
+        return JSON.stringify({ error: 'No close button found in overlay' });
+    }
+
+    candidates.sort(function(a, b) { return a.priority - b.priority; });
+    return JSON.stringify({ ref_id: candidates[0].ref_id, text: candidates[0].text });
 }

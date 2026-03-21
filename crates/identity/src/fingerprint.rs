@@ -33,12 +33,17 @@ use tracing::{info, warn, debug, instrument};
 use crate::error::{IdentityError, IdentityResult};
 
 /// A complete browser fingerprint captured from the user's real browser.
+///
+/// Only `id` and `user_agent` are required when deserializing from JSON.
+/// All other fields have sensible defaults so that partial fingerprints
+/// can be imported without enumerating every field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserFingerprint {
     /// Fingerprint ID
     pub id: String,
 
     /// Friendly name (e.g., "Matt's Chrome on Windows")
+    #[serde(default = "default_name")]
     pub name: String,
 
     // ─── HTTP Headers ───────────────────────────────────────────
@@ -46,134 +51,189 @@ pub struct BrowserFingerprint {
     pub user_agent: String,
 
     /// Accept-Language header value
+    #[serde(default = "default_accept_language")]
     pub accept_language: String,
 
     /// Sec-CH-UA (Client Hints)
+    #[serde(default)]
     pub sec_ch_ua: Option<String>,
 
     /// Sec-CH-UA-Platform
+    #[serde(default)]
     pub sec_ch_ua_platform: Option<String>,
 
     /// Sec-CH-UA-Mobile
+    #[serde(default)]
     pub sec_ch_ua_mobile: Option<String>,
 
     /// Sec-CH-UA-Full-Version-List
+    #[serde(default)]
     pub sec_ch_ua_full_version_list: Option<String>,
 
     // ─── Navigator Properties ───────────────────────────────────
     /// navigator.platform (e.g., "Win32")
+    #[serde(default = "default_platform")]
     pub platform: String,
 
     /// navigator.hardwareConcurrency
+    #[serde(default = "default_hardware_concurrency")]
     pub hardware_concurrency: u32,
 
     /// navigator.deviceMemory (GB, may be None on Firefox)
+    #[serde(default)]
     pub device_memory: Option<f64>,
 
     /// navigator.maxTouchPoints
+    #[serde(default)]
     pub max_touch_points: u32,
 
     /// navigator.language
+    #[serde(default = "default_language")]
     pub language: String,
 
     /// navigator.languages (ordered list)
+    #[serde(default = "default_languages")]
     pub languages: Vec<String>,
 
     /// navigator.vendor
+    #[serde(default = "default_vendor")]
     pub vendor: String,
 
     /// navigator.doNotTrack
+    #[serde(default)]
     pub do_not_track: Option<String>,
 
     // ─── Screen Properties ──────────────────────────────────────
     /// screen.width
+    #[serde(default = "default_screen_width")]
     pub screen_width: u32,
 
     /// screen.height
+    #[serde(default = "default_screen_height")]
     pub screen_height: u32,
 
     /// screen.availWidth
+    #[serde(default = "default_screen_width")]
     pub avail_width: u32,
 
     /// screen.availHeight
+    #[serde(default = "default_screen_height")]
     pub avail_height: u32,
 
     /// screen.colorDepth
+    #[serde(default = "default_color_depth")]
     pub color_depth: u32,
 
     /// screen.pixelDepth
+    #[serde(default = "default_color_depth")]
     pub pixel_depth: u32,
 
     /// window.devicePixelRatio
+    #[serde(default = "default_device_pixel_ratio")]
     pub device_pixel_ratio: f64,
 
     // ─── Timezone ───────────────────────────────────────────────
     /// Intl.DateTimeFormat().resolvedOptions().timeZone
+    #[serde(default = "default_timezone")]
     pub timezone: String,
 
     /// new Date().getTimezoneOffset() (minutes)
+    #[serde(default)]
     pub timezone_offset: i32,
 
     // ─── Graphics ───────────────────────────────────────────────
     /// WebGL renderer string
+    #[serde(default)]
     pub webgl_renderer: Option<String>,
 
     /// WebGL vendor string
+    #[serde(default)]
     pub webgl_vendor: Option<String>,
 
     /// WebGL unmasked renderer (WEBGL_debug_renderer_info)
+    #[serde(default)]
     pub webgl_unmasked_renderer: Option<String>,
 
     /// WebGL unmasked vendor
+    #[serde(default)]
     pub webgl_unmasked_vendor: Option<String>,
 
     /// Canvas fingerprint hash (draw operations → toDataURL → hash)
+    #[serde(default)]
     pub canvas_hash: Option<String>,
 
     /// WebGL fingerprint hash
+    #[serde(default)]
     pub webgl_hash: Option<String>,
 
     /// AudioContext fingerprint hash
+    #[serde(default)]
     pub audio_hash: Option<String>,
 
     // ─── Fonts ──────────────────────────────────────────────────
     /// Detected installed fonts (via CSS fallback measurement)
+    #[serde(default)]
     pub fonts: Vec<String>,
 
     // ─── Feature Detection ──────────────────────────────────────
     /// Plugins (navigator.plugins — usually empty in modern Chrome)
+    #[serde(default)]
     pub plugins: Vec<String>,
 
     /// Supported MIME types
+    #[serde(default)]
     pub mime_types: Vec<String>,
 
     /// Whether WebDriver is detected (navigator.webdriver)
     /// This MUST be false in our spoofed profile
+    #[serde(default)]
     pub webdriver: bool,
 
     /// Whether automation-related properties are present
+    #[serde(default)]
     pub automation_detected: bool,
 
     // ─── Connection Info ────────────────────────────────────────
     /// navigator.connection.effectiveType (e.g., "4g")
+    #[serde(default)]
     pub connection_type: Option<String>,
 
     /// navigator.connection.downlink (Mbps)
+    #[serde(default)]
     pub connection_downlink: Option<f64>,
 
     /// navigator.connection.rtt (ms)
+    #[serde(default)]
     pub connection_rtt: Option<u32>,
 
     // ─── Metadata ───────────────────────────────────────────────
     /// When this fingerprint was captured
+    #[serde(default = "Utc::now")]
     pub captured_at: DateTime<Utc>,
 
     /// Source browser (e.g., "Chrome 131 on Windows 11")
+    #[serde(default = "default_source_browser")]
     pub source_browser: String,
 
     /// Raw JSON of the full capture (for future fields)
+    #[serde(default)]
     pub raw_json: serde_json::Value,
 }
+
+// ─── Default value functions for serde ──────────────────────────────
+fn default_name() -> String { "Imported fingerprint".into() }
+fn default_accept_language() -> String { "en-US,en;q=0.9".into() }
+fn default_platform() -> String { "Win32".into() }
+fn default_hardware_concurrency() -> u32 { 8 }
+fn default_language() -> String { "en-US".into() }
+fn default_languages() -> Vec<String> { vec!["en-US".into(), "en".into()] }
+fn default_vendor() -> String { "Google Inc.".into() }
+fn default_screen_width() -> u32 { 1920 }
+fn default_screen_height() -> u32 { 1080 }
+fn default_color_depth() -> u32 { 24 }
+fn default_device_pixel_ratio() -> f64 { 1.0 }
+fn default_timezone() -> String { "America/New_York".into() }
+fn default_source_browser() -> String { "Unknown (imported)".into() }
 
 /// Manages fingerprint capture, storage, and injection.
 #[derive(Default)]

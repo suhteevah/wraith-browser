@@ -38,3 +38,4 @@ reqwest.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 scraper.workspace = true
+aes-gcm.workspace = true

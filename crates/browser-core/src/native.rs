@@ -216,7 +216,7 @@ impl NativeClient {
                 })
             }
 
-            BrowserAction::Click { ref_id } => {
+            BrowserAction::Click { ref_id, .. } => {
                 // Find the element and follow its link if it's an <a>
                 let snapshot = self.snapshot()?;
                 let element = snapshot.elements.iter()
@@ -248,7 +248,7 @@ impl NativeClient {
                 }
             }
 
-            BrowserAction::Fill { ref_id, text } => {
+            BrowserAction::Fill { ref_id, text, .. } => {
                 // Store the fill value for later form submission
                 self.filled_values.insert(ref_id, text.clone());
                 if let Some(ref mut snapshot) = self.current_snapshot {
@@ -262,7 +262,7 @@ impl NativeClient {
                 })
             }
 
-            BrowserAction::Select { ref_id, value } => {
+            BrowserAction::Select { ref_id, value, .. } => {
                 self.filled_values.insert(ref_id, value.clone());
                 if let Some(ref mut snapshot) = self.current_snapshot {
                     if let Some(el) = snapshot.elements.iter_mut().find(|e| e.ref_id == ref_id) {
@@ -345,6 +345,11 @@ impl NativeClient {
             BrowserAction::SubmitForm { .. } => {
                 Ok(ActionResult::Failed {
                     error: "Form submission not available in native mode. Use Sevro engine.".to_string()
+                })
+            }
+            BrowserAction::ScrollTo { .. } => {
+                Ok(ActionResult::Failed {
+                    error: "ScrollTo not available in native mode. Use Sevro engine.".to_string()
                 })
             }
         }
@@ -784,6 +789,7 @@ fn extract_page_meta(doc: &Html, html: &str, elements: &[DomElement]) -> PageMet
         has_login_form,
         has_captcha,
         interactive_element_count: elements.len(),
+        overlays: vec![],
     }
 }
 

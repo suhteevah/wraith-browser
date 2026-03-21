@@ -27,7 +27,10 @@ pub mod js_runtime;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use scraper::{Html, Selector};
+use std::time::{Duration, Instant};
 use tracing::{info, warn, debug, instrument};
+#[cfg(feature = "stealth-tls")]
+use rquest_util::Emulation;
 
 // ═══════════════════════════════════════════════════════════════
 // Configuration
@@ -58,7 +61,7 @@ impl Default for SevroConfig {
         Self {
             navigation_timeout_ms: 30_000,
             js_timeout_ms: 30_000,
-            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string(),
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string(),
             accept_language: "en-US,en;q=0.9".to_string(),
             viewport_width: 1920,
             viewport_height: 1080,
@@ -99,6 +102,8 @@ pub struct DomNode {
     pub parent: Option<u64>,
     pub bounding_box: Option<BoundingBox>,
     pub is_visible: bool,
+    /// Can be clicked/filled — visible AND not pointer-events:none
+    pub is_interactive: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -160,6 +165,8 @@ pub struct SevroEngine {
     history: Vec<String>,
     #[allow(clippy::type_complexity)]
     _request_interceptor: Option<Box<dyn Fn(&str) -> RequestAction + Send + Sync>>,
+    /// Resolved iframe contents: maps iframe node_id to (src_url, parsed DomNodes)
+    iframe_contents: HashMap<u64, (String, Vec<DomNode>)>,
 }
 
 // SAFETY: SevroEngine is always accessed behind Arc<Mutex<...>>, guaranteeing
@@ -176,6 +183,7 @@ impl SevroEngine {
         let mut client_builder = reqwest::Client::builder()
             .user_agent(&config.user_agent)
             .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::limited(10))
             .gzip(true)
             .brotli(true);
 
@@ -220,6 +228,7 @@ impl SevroEngine {
             js,
             history: Vec::new(),
             _request_interceptor: None,
+            iframe_contents: HashMap::new(),
         }
     }
 
@@ -241,7 +250,10 @@ impl SevroEngine {
         }
 
         // === Tier 1: Direct fetch ===
-        let (status, html, final_url) = self.http_fetch(url).await?;
+        let (status, html, final_url, set_cookies) = self.http_fetch(url).await?;
+
+        // Store Set-Cookie headers from the redirect chain
+        self.store_set_cookies(&set_cookies, &final_url);
 
         if status >= 400 {
             warn!(status, url = %url, body_len = html.len(), "HTTP error status — parsing body anyway");
@@ -250,13 +262,21 @@ impl SevroEngine {
         // Parse HTML and run inline scripts
         self.load_page(&html, &final_url);
 
+        // Wait for page stability (async rendering, setTimeout callbacks, etc.)
+        self.wait_for_stability(500).await;
+
         // SPA handling: if the page has very few visible elements, try platform-specific APIs
         if !Self::is_cloudflare_challenge(&html, status) && !Self::is_ip_blocked(&html) {
-            let visible_count = self.dom_nodes.iter().filter(|n| n.is_visible).count();
-            if visible_count < 10 {
+            let interactive_count = self.dom_nodes.iter()
+                .filter(|n| n.is_visible && matches!(n.tag_name.as_str(),
+                    "a" | "button" | "input" | "select" | "textarea" | "h1" | "h2" | "h3" | "p"))
+                .count();
+            if interactive_count < 5 {
                 // Try API-native form loading for known platforms
                 if final_url.contains("ashbyhq.com") {
                     self.try_ashby_api_hydration(&final_url).await;
+                } else if final_url.contains("greenhouse.io/embed/job_board") {
+                    self.try_greenhouse_embed_hydration(&final_url).await;
                 } else {
                     // Generic SPA — try to hydrate by fetching dynamic scripts
                     self.try_spa_hydration(&final_url).await;
@@ -511,6 +531,90 @@ impl SevroEngine {
 
         // Replace the page with the synthetic form HTML
         info!(html_len = html.len(), fields = sections.map(|s| s.len()).unwrap_or(0), "Ashby: built synthetic form from GraphQL API");
+        self.load_page(&html, page_url);
+    }
+
+    /// Greenhouse embed hydration: fetch job listings via the Greenhouse Boards API
+    /// when the URL is a `boards.greenhouse.io/embed/job_board?for=<company>` embed.
+    async fn try_greenhouse_embed_hydration(&mut self, page_url: &str) {
+        let parsed = match url::Url::parse(page_url) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        // Extract company name from the `for` query parameter
+        let company = match parsed.query_pairs().find(|(k, _)| k == "for").map(|(_, v)| v.to_string()) {
+            Some(c) if !c.is_empty() => c,
+            _ => {
+                debug!("Greenhouse embed: no 'for' query parameter found in URL");
+                return;
+            }
+        };
+
+        info!(company = %company, "Greenhouse embed: fetching jobs via Boards API");
+
+        let api_url = format!(
+            "https://boards-api.greenhouse.io/v1/boards/{}/jobs?content=true",
+            company
+        );
+
+        let resp = match self.client.get(&api_url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "Greenhouse Boards API request failed");
+                return;
+            }
+        };
+
+        let body = match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        let jobs = match data.get("jobs").and_then(|j| j.as_array()) {
+            Some(j) => j,
+            None => {
+                debug!("Greenhouse embed: no jobs array in API response");
+                return;
+            }
+        };
+
+        // Build synthetic HTML from the job listings
+        let mut html = format!(
+            r#"<html><head><title>{} — Open Positions</title></head><body>
+<h1>{} — Open Positions</h1>
+<div id="greenhouse-job-list">
+"#,
+            company, company
+        );
+
+        for job in jobs {
+            let title = job.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+            let job_id = job.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+            let location = job.get("location").and_then(|l| l.get("name")).and_then(|n| n.as_str()).unwrap_or("");
+            let abs_url = job.get("absolute_url").and_then(|u| u.as_str()).unwrap_or("#");
+            let content = job.get("content").and_then(|c| c.as_str()).unwrap_or("");
+
+            html.push_str(&format!(
+                r#"<div class="greenhouse-job" data-job-id="{}">
+<h2><a href="{}">{}</a></h2>
+<p class="location">{}</p>
+<div class="description">{}</div>
+</div>
+"#,
+                job_id, abs_url, title, location,
+                if content.len() > 500 { &content[..500] } else { content }
+            ));
+        }
+
+        html.push_str("</div>\n</body></html>");
+
+        info!(html_len = html.len(), job_count = jobs.len(), "Greenhouse embed: built synthetic listing from Boards API");
         self.load_page(&html, page_url);
     }
 
@@ -807,7 +911,7 @@ impl SevroEngine {
             .map_err(|e| format!("Proxy client build failed: {e}"))?;
 
         let response = client.get(url)
-            .header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+            .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
             .header("sec-ch-ua-mobile", "?0")
             .header("sec-ch-ua-platform", "\"Windows\"")
             .header("Upgrade-Insecure-Requests", "1")
@@ -826,6 +930,30 @@ impl SevroEngine {
         let final_url = response.url().to_string();
         let body = response.text().await.map_err(|e| format!("body failed: {e}"))?;
         Ok((status, body, final_url))
+    }
+
+    /// Wait for page stability by checking if the visible element count has settled.
+    /// This catches pages that render asynchronously (setTimeout callbacks, fetch-then-render).
+    async fn wait_for_stability(&mut self, max_wait_ms: u64) {
+        let mut last_count = self.dom_nodes.iter().filter(|n| n.is_visible).count();
+        let start = Instant::now();
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Flush JS timers
+            if let Some(ref js) = self.js {
+                let _ = js.run_script("__wraith_flush_timers()");
+            }
+            // Re-extract DOM
+            if let Some(ref html) = self.current_html.clone() {
+                let parsed = scraper::Html::parse_document(html);
+                self.dom_nodes = extract_dom_nodes(&parsed);
+            }
+            let new_count = self.dom_nodes.iter().filter(|n| n.is_visible).count();
+            if new_count == last_count || start.elapsed().as_millis() > max_wait_ms as u128 {
+                break;
+            }
+            last_count = new_count;
+        }
     }
 
     /// Load HTML into the DOM engine and execute scripts.
@@ -894,6 +1022,7 @@ impl SevroEngine {
         #[cfg(feature = "stealth-tls")]
         {
             let client = rquest::Client::builder()
+                .emulation(Emulation::Chrome136)
                 .cookie_store(true)
                 .build()
                 .map_err(|e| format!("rquest build failed: {e}"))?;
@@ -901,12 +1030,6 @@ impl SevroEngine {
             let response = client.get(url)
                 .header("Cookie", cookies)
                 .header("Accept-Language", &self.config.accept_language)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                .header("Sec-Fetch-Dest", "document")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-Site", "none")
-                .header("Sec-Fetch-User", "?1")
-                .header("Upgrade-Insecure-Requests", "1")
                 .send()
                 .await
                 .map_err(|e| format!("retry request failed: {e}"))?;
@@ -921,7 +1044,7 @@ impl SevroEngine {
         {
             let response = self.client.get(url)
                 .header("Cookie", cookies)
-                .header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+                .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
                 .header("sec-ch-ua-mobile", "?0")
                 .header("sec-ch-ua-platform", "\"Windows\"")
                 .header("Upgrade-Insecure-Requests", "1")
@@ -954,6 +1077,132 @@ impl SevroEngine {
     pub fn dom_snapshot_with_layout(&self) -> Vec<DomNode> {
         // Phase 2: add Stylo layout computation here
         self.dom_nodes.clone()
+    }
+
+    /// Get the resolved iframe contents map.
+    pub fn iframe_contents(&self) -> &HashMap<u64, (String, Vec<DomNode>)> {
+        &self.iframe_contents
+    }
+
+    /// Resolve iframes: fetch content for each `<iframe src="...">` in the DOM.
+    /// Parses the iframe HTML into DomNodes with prefixed node_ids to avoid collisions.
+    /// Called automatically after navigate().
+    #[instrument(skip(self))]
+    pub async fn resolve_iframes(&mut self) {
+        self.iframe_contents.clear();
+
+        let base_url = match &self.current_url {
+            Some(u) => u.clone(),
+            None => return,
+        };
+
+        // Collect iframe src URLs and their node_ids
+        let iframes: Vec<(u64, String)> = self.dom_nodes.iter()
+            .filter(|n| n.tag_name == "iframe" && n.node_type == DomNodeType::Element)
+            .filter_map(|n| {
+                n.attributes.get("src").and_then(|src| {
+                    if src.is_empty() || src.starts_with("about:") || src.starts_with("javascript:") {
+                        return None;
+                    }
+                    // Resolve relative URLs
+                    let absolute = if src.starts_with("http://") || src.starts_with("https://") {
+                        src.clone()
+                    } else if let Ok(base) = url::Url::parse(&base_url) {
+                        base.join(src).map(|u| u.to_string()).unwrap_or_default()
+                    } else {
+                        return None;
+                    };
+                    if absolute.is_empty() { return None; }
+                    Some((n.node_id, absolute))
+                })
+            })
+            .collect();
+
+        if iframes.is_empty() {
+            return;
+        }
+
+        info!(count = iframes.len(), "Resolving iframe contents");
+
+        for (iframe_node_id, src_url) in iframes {
+            debug!(node_id = iframe_node_id, url = %src_url, "Fetching iframe content");
+
+            // Fetch the iframe HTML
+            let fetch_result = self.client.get(&src_url)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", &self.config.accept_language)
+                .header("Sec-Fetch-Dest", "iframe")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "cross-site")
+                .send()
+                .await;
+
+            match fetch_result {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        debug!(status = response.status().as_u16(), url = %src_url, "Iframe fetch failed with HTTP error");
+                        continue;
+                    }
+                    match response.text().await {
+                        Ok(iframe_html) => {
+                            if iframe_html.is_empty() {
+                                continue;
+                            }
+                            // Parse iframe HTML and extract nodes
+                            let iframe_dom = Html::parse_document(&iframe_html);
+                            let mut iframe_nodes = extract_dom_nodes(&iframe_dom);
+
+                            // Prefix node_ids to avoid collision with parent DOM
+                            // Use iframe_node_id * 10000 + child_id scheme
+                            let id_base = iframe_node_id * 10000;
+                            for node in &mut iframe_nodes {
+                                node.node_id = id_base + node.node_id;
+                                node.parent = node.parent.map(|p| id_base + p);
+                                node.children = node.children.iter().map(|c| id_base + c).collect();
+                            }
+
+                            info!(
+                                iframe_node_id = iframe_node_id,
+                                url = %src_url,
+                                child_nodes = iframe_nodes.len(),
+                                "Iframe content resolved"
+                            );
+                            self.iframe_contents.insert(iframe_node_id, (src_url, iframe_nodes));
+                        }
+                        Err(e) => {
+                            debug!(error = %e, url = %src_url, "Failed to read iframe body");
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(error = %e, url = %src_url, "Failed to fetch iframe");
+                }
+            }
+        }
+    }
+
+    /// Enter an iframe context: switches current page state to the iframe's content.
+    /// Returns the iframe's DomNodes, or an error if the iframe was not resolved.
+    pub fn enter_iframe(&mut self, iframe_node_id: u64) -> Result<Vec<DomNode>, String> {
+        let (src_url, iframe_nodes) = self.iframe_contents.get(&iframe_node_id)
+            .ok_or_else(|| format!("No resolved iframe content for node_id {}", iframe_node_id))?;
+
+        let src_url = src_url.clone();
+        let iframe_nodes = iframe_nodes.clone();
+
+        // Save current URL to history
+        if let Some(ref current) = self.current_url {
+            self.history.push(current.clone());
+        }
+
+        // Replace current page state with iframe content
+        self.current_url = Some(src_url);
+        self.dom_nodes = iframe_nodes.clone();
+        // Clear parsed_dom since it no longer matches dom_nodes
+        self.parsed_dom = None;
+
+        info!(iframe_node_id = iframe_node_id, nodes = iframe_nodes.len(), "Entered iframe context");
+        Ok(iframe_nodes)
     }
 
     /// Query CSS selector against the live DOM tree. Returns matching node IDs.
@@ -1040,6 +1289,17 @@ impl SevroEngine {
     pub fn set_cookie(&mut self, cookie: Cookie) {
         self.cookies.retain(|c| !(c.name == cookie.name && c.domain == cookie.domain));
         self.cookies.push(cookie);
+    }
+
+    /// Build a Cookie header string from stored cookies for a given URL.
+    pub fn cookie_header_for_url(&self, url: &str) -> Option<String> {
+        let domain = url::Url::parse(url).ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()))?;
+        let matching: Vec<String> = self.cookies.iter()
+            .filter(|c| domain == c.domain || domain.ends_with(&format!(".{}", c.domain)))
+            .map(|c| format!("{}={}", c.name, c.value))
+            .collect();
+        if matching.is_empty() { None } else { Some(matching.join("; ")) }
     }
 
     pub fn set_request_interceptor(
@@ -1150,6 +1410,180 @@ impl SevroEngine {
         scripts
     }
 
+    /// Parse Set-Cookie header strings and store them in self.cookies.
+    fn store_set_cookies(&mut self, set_cookie_headers: &[String], response_url: &str) {
+        let domain = url::Url::parse(response_url).ok()
+            .and_then(|u| u.host_str().map(|h| h.to_string()))
+            .unwrap_or_default();
+
+        for header in set_cookie_headers {
+            // Parse "name=value; Path=/; Domain=.example.com; ..."
+            let parts: Vec<&str> = header.splitn(2, ';').collect();
+            let name_value = parts[0].trim();
+            let (name, value) = match name_value.split_once('=') {
+                Some((n, v)) => (n.trim().to_string(), v.trim().to_string()),
+                None => continue,
+            };
+
+            let attrs = if parts.len() > 1 { parts[1] } else { "" };
+            let attrs_lower = attrs.to_lowercase();
+
+            let cookie_domain = attrs_lower
+                .split(';')
+                .find_map(|a| {
+                    let a = a.trim();
+                    if a.starts_with("domain=") {
+                        Some(a.trim_start_matches("domain=").trim_start_matches('.').to_string())
+                    } else { None }
+                })
+                .unwrap_or_else(|| domain.clone());
+
+            let path = attrs_lower
+                .split(';')
+                .find_map(|a| {
+                    let a = a.trim();
+                    if a.starts_with("path=") {
+                        Some(a.trim_start_matches("path=").to_string())
+                    } else { None }
+                })
+                .unwrap_or_else(|| "/".to_string());
+
+            let secure = attrs_lower.contains("secure");
+            let http_only = attrs_lower.contains("httponly");
+
+            debug!(name = %name, domain = %cookie_domain, "Storing cookie from Set-Cookie header");
+            self.set_cookie(Cookie {
+                name,
+                value,
+                domain: cookie_domain,
+                path,
+                secure,
+                http_only,
+                expires: None,
+            });
+        }
+    }
+
+    /// Navigate with full OAuth/auth redirect chain handling.
+    ///
+    /// Follows all redirects (302 -> 302 -> 302 -> 200), captures Set-Cookie
+    /// headers at each hop, detects OAuth callback URLs (`?code=` or `?token=`),
+    /// and returns the final page event.
+    #[instrument(skip(self), fields(url = %url))]
+    pub async fn navigate_with_auth(&mut self, url: &str) -> Result<PageEvent, String> {
+        info!(url = %url, "Navigating with auth redirect tracking");
+
+        // Use a no-redirect client so we can manually follow each hop and capture cookies
+        let mut client_builder = reqwest::Client::builder()
+            .user_agent(&self.config.user_agent)
+            .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .gzip(true)
+            .brotli(true);
+
+        if let Some(ref proxy_url) = self.config.proxy_url {
+            if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+                client_builder = client_builder.proxy(proxy);
+            }
+        }
+
+        let redirect_client = client_builder.build()
+            .map_err(|e| format!("Failed to build redirect client: {e}"))?;
+
+        let mut current_url = url.to_string();
+        let mut hop_count = 0u32;
+        let max_hops = 10u32;
+
+        loop {
+            if hop_count >= max_hops {
+                warn!(hops = hop_count, "OAuth redirect chain exceeded max hops");
+                break;
+            }
+
+            debug!(url = %current_url, hop = hop_count, "Auth redirect hop");
+
+            let mut req = redirect_client.get(&current_url)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", &self.config.accept_language);
+
+            // Attach stored cookies
+            if let Some(cookie_header) = self.cookie_header_for_url(&current_url) {
+                req = req.header("Cookie", cookie_header);
+            }
+
+            let response = req.send().await
+                .map_err(|e| format!("Auth redirect fetch failed: {e}"))?;
+
+            let status = response.status().as_u16();
+
+            // Capture Set-Cookie headers from this hop
+            let hop_cookies: Vec<String> = response.headers().get_all("set-cookie")
+                .iter()
+                .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+                .collect();
+            self.store_set_cookies(&hop_cookies, &current_url);
+
+            if !hop_cookies.is_empty() {
+                info!(hop = hop_count, cookies = hop_cookies.len(), url = %current_url,
+                    "Captured cookies at redirect hop");
+            }
+
+            // Check for redirect
+            if (300..400).contains(&status) {
+                if let Some(location) = response.headers().get("location") {
+                    let location_str = location.to_str()
+                        .map_err(|e| format!("Invalid Location header: {e}"))?;
+
+                    // Resolve relative redirect URLs
+                    let next_url = if location_str.starts_with("http") {
+                        location_str.to_string()
+                    } else {
+                        let base = url::Url::parse(&current_url)
+                            .map_err(|e| format!("Invalid base URL: {e}"))?;
+                        base.join(location_str)
+                            .map_err(|e| format!("Failed to resolve redirect: {e}"))?
+                            .to_string()
+                    };
+
+                    // Detect OAuth callback URLs
+                    if next_url.contains("?code=") || next_url.contains("&code=")
+                        || next_url.contains("?token=") || next_url.contains("&token=")
+                        || next_url.contains("?access_token=") || next_url.contains("&access_token=")
+                    {
+                        info!(url = %next_url, "OAuth callback URL detected in redirect chain");
+                    }
+
+                    current_url = next_url;
+                    hop_count += 1;
+                    continue;
+                }
+            }
+
+            // Final response (non-redirect) -- read the body and load the page
+            let final_url = current_url.clone();
+            let body = response.text().await
+                .map_err(|e| format!("Body read failed: {e}"))?;
+
+            info!(
+                hops = hop_count,
+                status,
+                final_url = %final_url,
+                cookies_total = self.cookies.len(),
+                "Auth redirect chain complete"
+            );
+
+            // Push to history and load the page
+            if let Some(ref current) = self.current_url {
+                self.history.push(current.clone());
+            }
+            self.load_page(&body, &final_url);
+            return Ok(PageEvent::Load);
+        }
+
+        // Fallback: if we exhausted hops, do a normal navigate on the last URL
+        self.navigate(&current_url).await
+    }
+
     /// Go back in history.
     pub async fn go_back(&mut self) -> Result<PageEvent, String> {
         if let Some(url) = self.history.pop() {
@@ -1162,42 +1596,54 @@ impl SevroEngine {
 
     /// Fetch a URL using stealth TLS (rquest/BoringSSL) if available,
     /// falling back to reqwest (rustls) otherwise.
-    async fn http_fetch(&self, url: &str) -> Result<(u16, String, String), String> {
+    /// Returns (status, body, final_url, set_cookie_headers).
+    /// Redirect policy follows up to 10 hops; cookie_store preserves cookies
+    /// across redirects. set_cookie_headers captures Set-Cookie from the final response.
+    async fn http_fetch(&self, url: &str) -> Result<(u16, String, String, Vec<String>), String> {
         #[cfg(feature = "stealth-tls")]
         {
             debug!(url = %url, "Fetching with stealth TLS (rquest + BoringSSL)");
 
             let client = rquest::Client::builder()
+                .emulation(Emulation::Chrome136)
                 .cookie_store(true)
                 .build()
                 .map_err(|e| format!("rquest build failed: {e}"))?;
 
-            let response = client.get(url)
-                .header("Accept-Language", &self.config.accept_language)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                .header("Sec-Fetch-Dest", "document")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-Site", "none")
-                .header("Sec-Fetch-User", "?1")
-                .header("Upgrade-Insecure-Requests", "1")
-                .send()
+            let mut req = client.get(url)
+                .header("Accept-Language", &self.config.accept_language);
+
+            // Attach stored cookies (including any injected via cookie_set)
+            if let Some(cookie_header) = self.cookie_header_for_url(url) {
+                debug!(cookies = %cookie_header, "Attaching stored cookies to stealth request");
+                req = req.header("Cookie", cookie_header);
+            }
+
+            let response = req.send()
                 .await
                 .map_err(|e| format!("rquest request failed: {e}"))?;
 
             let status = response.status().as_u16();
             let final_url = response.url().to_string();
+            let set_cookies: Vec<String> = response.headers().get_all("set-cookie")
+                .iter()
+                .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+                .collect();
+            if !set_cookies.is_empty() {
+                debug!(count = set_cookies.len(), "Captured Set-Cookie headers from stealth response");
+            }
             let body = response.text().await
                 .map_err(|e| format!("rquest body failed: {e}"))?;
 
-            Ok((status, body, final_url))
+            Ok((status, body, final_url, set_cookies))
         }
 
         #[cfg(not(feature = "stealth-tls"))]
         {
             debug!(url = %url, "Fetching with reqwest (rustls — TLS fingerprint may differ from Chrome)");
 
-            let response = self.client.get(url)
-                .header("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"")
+            let mut req = self.client.get(url)
+                .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
                 .header("sec-ch-ua-mobile", "?0")
                 .header("sec-ch-ua-platform", "\"Windows\"")
                 .header("Upgrade-Insecure-Requests", "1")
@@ -1208,17 +1654,31 @@ impl SevroEngine {
                 .header("Sec-Fetch-Dest", "document")
                 .header("Accept-Encoding", "gzip, deflate, br, zstd")
                 .header("Accept-Language", &self.config.accept_language)
-                .header("Priority", "u=0, i")
-                .send()
+                .header("Priority", "u=0, i");
+
+            // Attach stored cookies (including any injected via cookie_set)
+            if let Some(cookie_header) = self.cookie_header_for_url(url) {
+                debug!(cookies = %cookie_header, "Attaching stored cookies to request");
+                req = req.header("Cookie", cookie_header);
+            }
+
+            let response = req.send()
                 .await
                 .map_err(|e| format!("HTTP request failed: {e}"))?;
 
             let status = response.status().as_u16();
             let final_url = response.url().to_string();
+            let set_cookies: Vec<String> = response.headers().get_all("set-cookie")
+                .iter()
+                .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
+                .collect();
+            if !set_cookies.is_empty() {
+                debug!(count = set_cookies.len(), "Captured Set-Cookie headers from response");
+            }
             let body = response.text().await
                 .map_err(|e| format!("Body read failed: {e}"))?;
 
-            Ok((status, body, final_url))
+            Ok((status, body, final_url, set_cookies))
         }
     }
 
@@ -1352,12 +1812,185 @@ impl Default for SevroEngine {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// CSS visibility detection
+// ═══════════════════════════════════════════════════════════════
+
+/// Parsed inline style properties relevant to visibility detection.
+#[derive(Debug, Default)]
+struct StyleProperties {
+    display: Option<String>,
+    visibility: Option<String>,
+    opacity: Option<String>,
+    width: Option<String>,
+    height: Option<String>,
+    position: Option<String>,
+    left: Option<String>,
+    top: Option<String>,
+    pointer_events: Option<String>,
+    overflow: Option<String>,
+    clip: Option<String>,
+    clip_path: Option<String>,
+}
+
+/// Parse an inline `style` attribute into structured properties.
+fn parse_inline_style(style: &str) -> StyleProperties {
+    let mut props = StyleProperties::default();
+    for decl in style.split(';') {
+        let decl = decl.trim();
+        if decl.is_empty() {
+            continue;
+        }
+        if let Some((prop, val)) = decl.split_once(':') {
+            let prop = prop.trim().to_lowercase();
+            let val = val.trim().to_string();
+            match prop.as_str() {
+                "display" => props.display = Some(val),
+                "visibility" => props.visibility = Some(val),
+                "opacity" => props.opacity = Some(val),
+                "width" => props.width = Some(val),
+                "height" => props.height = Some(val),
+                "position" => props.position = Some(val),
+                "left" => props.left = Some(val),
+                "top" => props.top = Some(val),
+                "pointer-events" => props.pointer_events = Some(val),
+                "overflow" => props.overflow = Some(val),
+                "clip" => props.clip = Some(val),
+                "clip-path" => props.clip_path = Some(val),
+                _ => {}
+            }
+        }
+    }
+    props
+}
+
+/// Check style properties for hidden/non-interactive indicators.
+/// Returns (is_hidden, is_non_interactive).
+fn check_style_visibility(style: &StyleProperties) -> (bool, bool) {
+    let mut hidden = false;
+    let mut non_interactive = false;
+
+    // display: none
+    if let Some(ref d) = style.display {
+        if d.eq_ignore_ascii_case("none") {
+            hidden = true;
+        }
+    }
+    // visibility: hidden | collapse
+    if let Some(ref v) = style.visibility {
+        let vl = v.to_lowercase();
+        if vl == "hidden" || vl == "collapse" {
+            hidden = true;
+        }
+    }
+    // opacity: 0
+    if let Some(ref o) = style.opacity {
+        if o.parse::<f64>().map(|v| v == 0.0).unwrap_or(false) {
+            hidden = true;
+        }
+    }
+    // width: 0
+    if let Some(ref w) = style.width {
+        let wt = w.trim_end_matches("px").trim_end_matches("em")
+            .trim_end_matches("rem").trim_end_matches('%').trim();
+        if wt.parse::<f64>().map(|v| v == 0.0).unwrap_or(false) {
+            hidden = true;
+        }
+    }
+    // height: 0
+    if let Some(ref h) = style.height {
+        let ht = h.trim_end_matches("px").trim_end_matches("em")
+            .trim_end_matches("rem").trim_end_matches('%').trim();
+        if ht.parse::<f64>().map(|v| v == 0.0).unwrap_or(false) {
+            hidden = true;
+        }
+    }
+    // overflow: hidden with zero dimensions
+    if let Some(ref ov) = style.overflow {
+        if ov.eq_ignore_ascii_case("hidden") {
+            if let (Some(ref w), Some(ref h)) = (&style.width, &style.height) {
+                let wv = w.trim_end_matches("px").trim().parse::<f64>().unwrap_or(1.0);
+                let hv = h.trim_end_matches("px").trim().parse::<f64>().unwrap_or(1.0);
+                if wv == 0.0 || hv == 0.0 {
+                    hidden = true;
+                }
+            }
+        }
+    }
+    // position: absolute/fixed with left/top <= -9999px (off-screen)
+    if let Some(ref pos) = style.position {
+        if pos.eq_ignore_ascii_case("absolute") || pos.eq_ignore_ascii_case("fixed") {
+            if let Some(ref left) = style.left {
+                if left.trim_end_matches("px").trim().parse::<f64>().unwrap_or(0.0) <= -9999.0 {
+                    hidden = true;
+                }
+            }
+            if let Some(ref top) = style.top {
+                if top.trim_end_matches("px").trim().parse::<f64>().unwrap_or(0.0) <= -9999.0 {
+                    hidden = true;
+                }
+            }
+        }
+    }
+    // clip: rect(0,0,0,0)
+    if let Some(ref clip) = style.clip {
+        let cn = clip.to_lowercase().replace(' ', "");
+        if cn.contains("rect(0,0,0,0)") || cn.contains("rect(0px,0px,0px,0px)") {
+            hidden = true;
+        }
+    }
+    // clip-path: inset(100%)
+    if let Some(ref cp) = style.clip_path {
+        if cp.to_lowercase().replace(' ', "").contains("inset(100%)") {
+            hidden = true;
+        }
+    }
+    // pointer-events: none -- visible but non-interactive
+    if let Some(ref pe) = style.pointer_events {
+        if pe.eq_ignore_ascii_case("none") {
+            non_interactive = true;
+        }
+    }
+
+    (hidden, non_interactive)
+}
+
+/// Class-name patterns that indicate hidden / screen-reader-only elements.
+const HIDDEN_CLASS_PATTERNS: &[&str] = &[
+    "hidden", "hide", "invisible", "sr-only", "visually-hidden",
+    "screen-reader", "screenreader", "sr_only", "visually_hidden",
+];
+
+/// Returns true if any CSS class on the element matches a hidden pattern.
+fn has_hidden_class(class_attr: &str) -> bool {
+    let lower = class_attr.to_lowercase();
+    for cls in lower.split_whitespace() {
+        for pat in HIDDEN_CLASS_PATTERNS {
+            if cls.contains(pat) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+// ═══════════════════════════════════════════════════════════════
 // DOM extraction from parsed HTML
 // ═══════════════════════════════════════════════════════════════
 
 /// Extract DomNode list from a parsed HTML document.
-/// Walks the FULL document tree — all elements, not just interactive ones.
-/// This ensures script tags, divs, forms, and SPA containers are all captured.
+/// Walks the FULL document tree -- all elements, not just interactive ones.
+///
+/// Visibility detection checks:
+/// - `hidden` attribute and `aria-hidden="true"`
+/// - `display: none` (on element AND inherited from ancestors via tree walk)
+/// - `visibility: hidden` / `visibility: collapse`
+/// - `opacity: 0`
+/// - `width: 0` or `height: 0` in inline style
+/// - `overflow: hidden` with zero dimensions
+/// - `position: absolute; left: -9999px` (off-screen)
+/// - `clip: rect(0,0,0,0)` or `clip-path: inset(100%)`
+/// - `pointer-events: none` (visible but non-interactive)
+/// - Class names containing "hidden", "hide", "invisible", "sr-only", "visually-hidden"
 fn extract_dom_nodes(dom: &Html) -> Vec<DomNode> {
     use ego_tree::iter::Edge;
 
@@ -1373,12 +2006,13 @@ fn extract_dom_nodes(dom: &Html) -> Vec<DomNode> {
         "h1", "h2", "h3", "h4", "h5", "h6", "img", "p",
     ];
 
-    // Hidden CSS indicators
-    let hidden_indicators = ["display:none", "display: none", "visibility:hidden", "visibility: hidden"];
-
     // Parent tracking for tree structure
     let mut id_stack: Vec<u64> = Vec::new();
     let mut node_id_map: HashMap<ego_tree::NodeId, u64> = HashMap::new();
+
+    // Ancestor visibility: stack of (is_ancestor_hidden, is_ancestor_non_interactive).
+    // display:none on a parent hides all descendants; pointer-events:none inherits too.
+    let mut visibility_stack: Vec<(bool, bool)> = Vec::new();
 
     for edge in dom.tree.root().traverse() {
         match edge {
@@ -1401,20 +2035,43 @@ fn extract_dom_nodes(dom: &Html) -> Vec<DomNode> {
                         .trim()
                         .to_string();
 
-                    // Visibility heuristic
-                    let style = attributes.get("style").map(|s| s.as_str()).unwrap_or("");
-                    let is_hidden = attributes.contains_key("hidden")
-                        || attributes.get("aria-hidden").map(|v| v == "true").unwrap_or(false)
-                        || hidden_indicators.iter().any(|h| style.contains(h));
+                    // -- Enhanced visibility heuristic --
 
                     let is_invisible_tag = invisible_tags.contains(&tag.as_str());
-                    let is_interactive = interactive_tags.contains(&tag.as_str())
+
+                    // HTML attribute checks
+                    let attr_hidden = attributes.contains_key("hidden")
+                        || attributes.get("aria-hidden").map(|v| v == "true").unwrap_or(false);
+
+                    // Inline style checks (parse once, check many properties)
+                    let style_str = attributes.get("style").map(|s| s.as_str()).unwrap_or("");
+                    let parsed_style = parse_inline_style(style_str);
+                    let (style_hidden, style_non_interactive) = check_style_visibility(&parsed_style);
+
+                    // Class-name checks
+                    let class_hidden = attributes.get("class")
+                        .map(|c| has_hidden_class(c))
+                        .unwrap_or(false);
+
+                    // Combine self + ancestor state
+                    let self_hidden = attr_hidden || style_hidden || class_hidden;
+                    let (ancestor_hidden, ancestor_non_interactive) = visibility_stack
+                        .last().copied().unwrap_or((false, false));
+
+                    let is_hidden = self_hidden || ancestor_hidden;
+                    let is_non_interactive = style_non_interactive || ancestor_non_interactive;
+
+                    // Push inherited state for this node's descendants
+                    visibility_stack.push((is_hidden, is_non_interactive));
+
+                    let is_visible = !is_hidden && !is_invisible_tag;
+
+                    // Interactive = visible interactive-tag element that is not pointer-events:none
+                    let is_interactive_tag = interactive_tags.contains(&tag.as_str())
                         || attributes.contains_key("role")
                         || attributes.contains_key("onclick")
                         || attributes.contains_key("href");
-
-                    // Determine visibility: interactive/content elements that aren't hidden
-                    let is_visible = !is_hidden && !is_invisible_tag;
+                    let is_interactive = is_visible && is_interactive_tag && !is_non_interactive;
 
                     // Skip empty non-interactive, non-structural elements to keep size manageable
                     let is_structural = matches!(tag.as_str(),
@@ -1422,7 +2079,7 @@ fn extract_dom_nodes(dom: &Html) -> Vec<DomNode> {
                         | "article" | "aside" | "ul" | "ol" | "li" | "table" | "tr" | "td"
                         | "th" | "thead" | "tbody" | "span" | "fieldset" | "legend"
                     );
-                    let should_include = is_interactive
+                    let should_include = is_interactive_tag
                         || is_invisible_tag  // Always include scripts/styles for JS execution
                         || is_structural
                         || !text_content.is_empty()
@@ -1457,17 +2114,18 @@ fn extract_dom_nodes(dom: &Html) -> Vec<DomNode> {
                         parent: parent_id,
                         bounding_box: None,
                         is_visible,
+                        is_interactive,
                     });
                 } else {
                     id_stack.push(id_stack.last().copied().unwrap_or(0));
+                    visibility_stack.push(
+                        visibility_stack.last().copied().unwrap_or((false, false))
+                    );
                 }
             }
-            Edge::Close(node_ref) => {
-                if node_ref.value().as_element().is_some() {
-                    id_stack.pop();
-                } else {
-                    id_stack.pop();
-                }
+            Edge::Close(_node_ref) => {
+                id_stack.pop();
+                visibility_stack.pop();
             }
         }
     }

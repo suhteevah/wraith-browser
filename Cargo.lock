@@ -3908,6 +3908,7 @@ dependencies = [
 name = "openclaw-mcp-server"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "axum",
  "base64",
@@ -5009,6 +5010,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rquest-util"
+version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3e3762f6e3e0d1674a6e74ebcbcb3b8d56c895757fc2cc2aa0d5e62ccfcb21e"
+dependencies = [
+ "rquest",
+ "typed-builder",
+]
+
+[[package]]
 name = "rquickjs"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5583,6 +5594,7 @@ dependencies = [
  "ego-tree",
  "reqwest",
  "rquest",
+ "rquest-util",
  "rquickjs",
  "scraper",
  "serde",

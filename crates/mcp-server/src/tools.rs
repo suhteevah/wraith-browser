@@ -43,6 +43,12 @@ pub struct ScrollInput {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScrollToInput {
+    /// The @ref ID of the element to scroll into view (centers it in the viewport).
+    pub ref_id: u32,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct WaitInput {
     /// CSS selector to wait for (e.g., "#results", ".job-card"). If omitted, waits for fixed time.
     pub selector: Option<String>,
@@ -64,6 +70,9 @@ pub struct WaitForNavigationInput {
 pub struct ClickInput {
     /// The @ref ID number from the snapshot (e.g., 5 means the element shown as @e5).
     pub ref_id: u32,
+    /// Set to true to bypass hidden/disabled/obscured safety checks.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -72,6 +81,9 @@ pub struct FillInput {
     pub ref_id: u32,
     /// The text to fill into the field. Replaces existing content.
     pub text: String,
+    /// Set to true to bypass hidden/disabled/obscured safety checks.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -80,6 +92,9 @@ pub struct SelectInput {
     pub ref_id: u32,
     /// The option value to select.
     pub value: String,
+    /// Set to true to bypass hidden/disabled/obscured safety checks.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -90,6 +105,9 @@ pub struct TypeTextInput {
     pub text: String,
     /// Delay between keystrokes in milliseconds. Default: 50. Higher values look more human.
     pub delay_ms: Option<u32>,
+    /// Set to true to bypass hidden/disabled/obscured safety checks.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -834,4 +852,87 @@ pub struct ChromeCookieImportInput {
 pub struct FetchScriptsInput {
     /// Maximum total bytes to fetch (default: 2MB). Larger values load more scripts but take longer.
     pub max_bytes: Option<usize>,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// IFRAME NAVIGATION
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: enter an iframe's content by switching the current page context
+/// to the iframe's parsed DOM. Use this when a page contains cross-origin
+/// iframes (e.g., Indeed's smartapply.indeed.com iframe) whose content
+/// you need to interact with. The @ref ID comes from the snapshot where
+/// the iframe element is listed.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EnterIframeInput {
+    /// The @ref ID of the iframe element from the snapshot.
+    pub ref_id: u32,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// OVERLAY / MODAL DISMISSAL
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: dismiss a modal, overlay, popup, or cookie banner that is blocking interaction.
+/// Automatically finds the close/dismiss/accept button and clicks it.
+/// If ref_id is omitted, auto-detects the topmost overlay.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DismissOverlayInput {
+    /// The @ref ID of the overlay element to dismiss. If omitted, auto-detects the first overlay.
+    pub ref_id: Option<u32>,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CAPTCHA SOLVING (2captcha API)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: solve a CAPTCHA on the current page using the 2captcha API.
+/// Supports reCAPTCHA v3 and Cloudflare Turnstile.
+/// Requires TWOCAPTCHA_API_KEY environment variable.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SolveCaptchaInput {
+    /// The site key for the CAPTCHA. If omitted, auto-detected from the page via data-sitekey attribute or recaptcha script URL.
+    pub site_key: Option<String>,
+    /// The page URL where the CAPTCHA appears. If omitted, uses the current page URL.
+    pub url: Option<String>,
+    /// CAPTCHA type: "recaptchav3" (default) or "turnstile" (Cloudflare).
+    pub captcha_type: Option<String>,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TLS VERIFICATION
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: verify that Wraith's TLS fingerprint matches a real Chrome browser.
+/// Fetches a TLS fingerprinting service using the engine's HTTP stack and
+/// compares the observed JA3/JA4/cipher suite values against known Chrome 136
+/// reference values. Returns a pass/fail verdict.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TlsVerifyInput {
+    /// URL of the TLS fingerprint service to query. Default: "https://tls.peet.ws/api/all".
+    /// Alternative: "https://tls.browserleaks.com/json".
+    pub url: Option<String>,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// LOGIN (OAuth / credential-based auth flow)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: perform a full login flow — navigate to a login page, fill credentials,
+/// click submit, and follow the entire redirect chain (including OAuth 302 hops).
+/// Returns the final page snapshot and all cookies set during the flow.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LoginInput {
+    /// The login page URL (e.g., "https://example.com/login").
+    pub url: String,
+    /// The @ref ID of the username/email input field from the snapshot.
+    pub username_ref_id: u32,
+    /// The @ref ID of the password input field from the snapshot.
+    pub password_ref_id: u32,
+    /// The username or email to fill.
+    pub username: String,
+    /// The password to fill.
+    pub password: String,
+    /// The @ref ID of the submit/login button from the snapshot.
+    pub submit_ref_id: u32,
 }

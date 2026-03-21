@@ -226,6 +226,7 @@ fn build_node_json(nodes: &[DomNode]) -> Vec<serde_json::Value> {
             obj.insert("tag".to_string(), serde_json::json!(n.tag_name));
             obj.insert("textContent".to_string(), serde_json::json!(n.text_content));
             obj.insert("isVisible".to_string(), serde_json::json!(n.is_visible));
+            obj.insert("isInteractive".to_string(), serde_json::json!(n.is_interactive));
 
             // Assign ref_id matching snapshot logic (visible elements get sequential IDs)
             if n.is_visible {
@@ -287,6 +288,7 @@ mod tests {
                 parent: None,
                 bounding_box: None,
                 is_visible: true,
+                is_interactive: true,
             },
             DomNode {
                 node_id: 2,
@@ -300,6 +302,7 @@ mod tests {
                 parent: Some(1),
                 bounding_box: None,
                 is_visible: true,
+                is_interactive: true,
             },
             DomNode {
                 node_id: 3,
@@ -315,6 +318,7 @@ mod tests {
                 parent: Some(1),
                 bounding_box: None,
                 is_visible: true,
+                is_interactive: true,
             },
         ]
     }
@@ -451,6 +455,7 @@ mod tests {
             parent: Some(1),
             bounding_box: None,
             is_visible: true,
+            is_interactive: true,
         });
         let rt = JsRuntime::new().unwrap();
         rt.setup_dom_bridge(&nodes).unwrap();

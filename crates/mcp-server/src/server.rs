@@ -21,6 +21,99 @@ use openclaw_browser_core::actions::{BrowserAction, ActionResult};
 
 use crate::tools::*;
 
+// ---------------------------------------------------------------------------
+// Chrome cookie decryption helpers (Windows DPAPI + AES-256-GCM)
+// ---------------------------------------------------------------------------
+
+/// Decrypt data protected by Windows DPAPI (CryptUnprotectData).
+#[cfg(target_os = "windows")]
+fn dpapi_decrypt(data: &[u8]) -> Result<Vec<u8>, String> {
+    use std::ptr;
+
+    #[repr(C)]
+    struct DataBlob {
+        cb_data: u32,
+        pb_data: *mut u8,
+    }
+
+    extern "system" {
+        fn CryptUnprotectData(
+            pDataIn: *const DataBlob,
+            ppszDataDescr: *mut *mut u16,
+            pOptionalEntropy: *const DataBlob,
+            pvReserved: *mut std::ffi::c_void,
+            pPromptStruct: *mut std::ffi::c_void,
+            dwFlags: u32,
+            pDataOut: *mut DataBlob,
+        ) -> i32;
+        fn LocalFree(hMem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    }
+
+    let input = DataBlob {
+        cb_data: data.len() as u32,
+        pb_data: data.as_ptr() as *mut u8,
+    };
+    let mut output = DataBlob {
+        cb_data: 0,
+        pb_data: ptr::null_mut(),
+    };
+
+    let result = unsafe {
+        CryptUnprotectData(
+            &input,
+            ptr::null_mut(),
+            ptr::null(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            &mut output,
+        )
+    };
+
+    if result == 0 {
+        return Err("DPAPI decryption failed".into());
+    }
+
+    let decrypted =
+        unsafe { std::slice::from_raw_parts(output.pb_data, output.cb_data as usize).to_vec() };
+    unsafe {
+        LocalFree(output.pb_data as *mut std::ffi::c_void);
+    }
+    Ok(decrypted)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dpapi_decrypt(_data: &[u8]) -> Result<Vec<u8>, String> {
+    Err("Chrome cookie decryption via DPAPI is only supported on Windows".into())
+}
+
+/// Decrypt a single Chrome cookie `encrypted_value` using the decrypted master key.
+fn decrypt_chrome_cookie(encrypted_value: &[u8], key: &[u8]) -> Result<String, String> {
+    if encrypted_value.len() < 3 {
+        return Ok(String::new());
+    }
+    let prefix = &encrypted_value[..3];
+    if prefix == b"v10" || prefix == b"v20" {
+        // v10/v20: 3-byte prefix + 12-byte nonce + ciphertext + 16-byte GCM tag
+        if encrypted_value.len() < 15 + 16 {
+            return Err("encrypted_value too short for AES-GCM".into());
+        }
+        let nonce = &encrypted_value[3..15];
+        let ciphertext = &encrypted_value[15..];
+        use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|e| format!("AES key error: {e}"))?;
+        let nonce = Nonce::from_slice(nonce);
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("AES decrypt error: {e}"))?;
+        Ok(String::from_utf8_lossy(&plaintext).to_string())
+    } else {
+        // Old-style unencrypted or DPAPI-only encrypted value
+        Ok(String::from_utf8_lossy(encrypted_value).to_string())
+    }
+}
+
 /// The Wraith MCP server handler — backed by any BrowserEngine.
 pub struct WraithHandler {
     tools: Vec<Tool>,
@@ -85,6 +178,9 @@ impl WraithHandler {
             make_tool("browse_scroll",
                 "Scroll the current page up or down.",
                 &schema_for!(ScrollInput), rw_closed.clone()),
+            make_tool("browse_scroll_to",
+                "Scroll the viewport to center a specific element by its @ref ID. Returns the new scroll position.",
+                &schema_for!(ScrollToInput), rw_closed.clone()),
             make_tool("browse_vault_store",
                 "Store a credential (password, API key, token) in the encrypted vault.",
                 &schema_for!(VaultStoreInput), rw_closed.clone()),
@@ -255,7 +351,22 @@ impl WraithHandler {
                 &schema_for!(ChromeCookieImportInput), rw_open.clone()),
             make_tool("browse_fetch_scripts",
                 "Fetch and execute external <script src='...'> tags from the current page. Call this AFTER browse_navigate when you need React/Vue/Angular to mount for form filling. Downloads JS bundles and runs them in QuickJS so React's event system activates.",
-                &schema_for!(FetchScriptsInput), rw_open),
+                &schema_for!(FetchScriptsInput), rw_open.clone()),
+            make_tool("browse_solve_captcha",
+                "Solve a CAPTCHA on the current page using the 2captcha API. Supports reCAPTCHA v3 (default) and Cloudflare Turnstile. Auto-detects the site key from the page if not provided. Requires TWOCAPTCHA_API_KEY env var. Returns the solved token and injects it into the page.",
+                &schema_for!(SolveCaptchaInput), rw_open.clone()),
+            make_tool("browse_enter_iframe",
+                "Enter an iframe's content by switching the page context to the iframe's parsed DOM. Use when a page has cross-origin iframes (e.g., Indeed's smartapply.indeed.com) whose elements you need to interact with. After entering, browse_snapshot shows the iframe's content. Use browse_back to return to the parent page.",
+                &schema_for!(EnterIframeInput), rw_open.clone()),
+            make_tool("browse_dismiss_overlay",
+                "Dismiss a modal, overlay, popup, or cookie banner that is blocking interaction. Automatically finds the close/dismiss/accept button within the overlay and clicks it. If ref_id is omitted, auto-detects the topmost overlay. Returns an updated page snapshot after dismissal.",
+                &schema_for!(DismissOverlayInput), rw_open.clone()),
+            make_tool("tls_verify",
+                "Verify that Wraith's TLS fingerprint matches a real Chrome 136 browser. Fetches a TLS fingerprinting service using the same HTTP stack as browse_navigate, then compares JA3/JA4 hashes, cipher suites, extensions, and HTTP/2 SETTINGS against known Chrome 136 values. Returns a detailed pass/fail report. One-command TLS stealth check — no external tools needed.",
+                &schema_for!(TlsVerifyInput), ro_open),
+            make_tool("browse_login",
+                "Perform a full login flow: navigate to a login page, fill username + password, click submit, and follow the entire OAuth/auth redirect chain (302 -> 302 -> 200). Captures all Set-Cookie headers at every redirect hop. Returns the final page snapshot and all cookies set during the flow. Use this instead of separate navigate/fill/click when you need reliable auth with cookie persistence across redirects.",
+                &schema_for!(LoginInput), rw_open),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
@@ -336,7 +447,7 @@ impl WraithHandler {
                 info!(ref_id = input.ref_id, "Clicking element");
 
                 let mut engine = self.engine.lock().await;
-                let result = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id }).await
+                let result = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id, force: input.force }).await
                     .map_err(|e| ErrorData::internal_error(format!("Click failed: {e}"), None))?;
 
                 match result {
@@ -360,6 +471,7 @@ impl WraithHandler {
                 let result = engine.execute_action(BrowserAction::Fill {
                     ref_id: input.ref_id,
                     text: input.text,
+                    force: input.force,
                 }).await
                     .map_err(|e| ErrorData::internal_error(format!("Fill failed: {e}"), None))?;
 
@@ -521,7 +633,7 @@ impl WraithHandler {
                         });
                         if let Some(el) = submit_el {
                             let ref_id = el.ref_id;
-                            let result = engine.execute_action(BrowserAction::Click { ref_id }).await;
+                            let result = engine.execute_action(BrowserAction::Click { ref_id, force: None }).await;
                             if let Ok(r) = result {
                                 return Ok(CallToolResult::success(vec![Content::text(format_action_result(&r))]));
                             }
@@ -550,6 +662,15 @@ impl WraithHandler {
                 let mut engine = self.engine.lock().await;
                 let result = engine.execute_action(BrowserAction::Scroll { direction, amount }).await
                     .map_err(|e| ErrorData::internal_error(format!("Scroll failed: {e}"), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+            }
+
+            "browse_scroll_to" => {
+                let input: ScrollToInput = parse_args(args)?;
+                let mut engine = self.engine.lock().await;
+                let result = engine.execute_action(BrowserAction::ScrollTo { ref_id: input.ref_id }).await
+                    .map_err(|e| ErrorData::internal_error(format!("ScrollTo failed: {e}"), None))?;
 
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
@@ -703,7 +824,7 @@ impl WraithHandler {
             "browse_select" => {
                 let input: SelectInput = parse_args(args)?;
                 let mut engine = self.engine.lock().await;
-                let result = engine.execute_action(BrowserAction::Select { ref_id: input.ref_id, value: input.value }).await
+                let result = engine.execute_action(BrowserAction::Select { ref_id: input.ref_id, value: input.value, force: input.force }).await
                     .map_err(|e| ErrorData::internal_error(format!("Select failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
@@ -715,6 +836,7 @@ impl WraithHandler {
                     ref_id: input.ref_id,
                     text: input.text,
                     delay_ms: input.delay_ms.unwrap_or(50),
+                    force: input.force,
                 }).await
                     .map_err(|e| ErrorData::internal_error(format!("Type failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
@@ -894,17 +1016,21 @@ impl WraithHandler {
             "cookie_set" => {
                 let input: CookieSetInput = parse_args(args)?;
                 let path = input.path.unwrap_or_else(|| "/".to_string());
-                let engine = self.engine.lock().await;
+                let mut engine = self.engine.lock().await;
+
+                // Store in the engine's cookie jar (used by http_fetch)
+                engine.set_cookie_values(&input.domain, &input.name, &input.value, &path).await;
+
+                // Also set in QuickJS document.cookie (for JS-side access)
                 let script = format!(
                     "document.cookie = '{}={}; domain={}; path={}'",
                     input.name, input.value, input.domain, path
                 );
-                match engine.eval_js(&script).await {
-                    Ok(_) => Ok(CallToolResult::success(vec![Content::text(
-                        format!("Cookie set: {}={} for {}", input.name, input.value, input.domain)
-                    )])),
-                    Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cookie set failed: {e}"))]))
-                }
+                let _ = engine.eval_js(&script).await;
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Cookie set: {}={} for {} (HTTP jar + JS)", input.name, input.value, input.domain)
+                )]))
             }
 
             // === Fingerprints ===
@@ -1597,7 +1723,7 @@ impl WraithHandler {
                 let mut engine = self.engine.lock().await;
 
                 // Step 1: Click to open the dropdown
-                let _ = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id }).await;
+                let _ = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id, force: None }).await;
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
                 // Step 2: Type to filter options
@@ -1605,6 +1731,7 @@ impl WraithHandler {
                     ref_id: input.ref_id,
                     text: input.value.clone(),
                     delay_ms: 50,
+                    force: None,
                 }).await;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1644,45 +1771,61 @@ impl WraithHandler {
                 let profile = input.profile.unwrap_or_else(|| "Default".to_string());
 
                 // Chrome cookie DB path on Windows
-                let cookie_db = dirs::data_local_dir()
+                // Chrome v96+ moved cookies from {Profile}/Cookies to {Profile}/Network/Cookies
+                let profile_dir = dirs::data_local_dir()
                     .unwrap_or_default()
                     .join("Google")
                     .join("Chrome")
                     .join("User Data")
-                    .join(&profile)
-                    .join("Cookies");
-
-                if !cookie_db.exists() {
+                    .join(&profile);
+                let modern_path = profile_dir.join("Network").join("Cookies");
+                let legacy_path = profile_dir.join("Cookies");
+                let cookie_db = if modern_path.exists() {
+                    modern_path
+                } else if legacy_path.exists() {
+                    legacy_path
+                } else {
                     return Ok(CallToolResult::success(vec![Content::text(
-                        format!("Chrome cookie DB not found at: {}\nTry a different profile name.", cookie_db.display())
+                        format!("Chrome cookie DB not found at: {}\nor: {}\nTry a different profile name.", modern_path.display(), legacy_path.display())
                     )]));
-                }
+                };
 
-                // Chrome locks the cookie file while running — need to copy it first
-                let temp_db = std::env::temp_dir().join("wraith_chrome_cookies_copy");
-                match std::fs::copy(&cookie_db, &temp_db) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        return Ok(CallToolResult::success(vec![Content::text(
-                            format!("Cannot copy cookie DB (Chrome may be running): {e}\nClose Chrome or copy the file manually.")
-                        )]));
-                    }
-                }
+                // Chrome locks the cookie file while running. We use a tiered
+                // strategy to read it despite the lock:
+                //   1. Open directly via SQLite URI mode with immutable=1 (skips all locking)
+                //   2. Fall back to copying the file to a temp location
+                //   3. If both fail, return a helpful error
 
-                // Read cookies from SQLite (sync — rusqlite isn't Send)
                 let domain_filter = input.domain.clone().unwrap_or_else(|| "%".to_string());
-                let temp_db_clone = temp_db.clone();
-                let cookies_result: Result<Vec<(String, String, String)>, String> = (|| {
-                    let conn = rusqlite::Connection::open(&temp_db_clone)
-                        .map_err(|e| format!("DB open failed: {e}"))?;
+
+                // Read the Chrome master key for cookie decryption (v80+)
+                let master_key: Option<Vec<u8>> = (|| -> Result<Vec<u8>, String> {
+                    let local_state_path = profile_dir.parent().unwrap().join("Local State");
+                    let local_state: serde_json::Value = serde_json::from_str(
+                        &std::fs::read_to_string(&local_state_path)
+                            .map_err(|e| format!("read Local State: {e}"))?
+                    ).map_err(|e| format!("parse Local State: {e}"))?;
+                    let encrypted_key_b64 = local_state["os_crypt"]["encrypted_key"]
+                        .as_str()
+                        .ok_or_else(|| "missing os_crypt.encrypted_key".to_string())?;
+                    let encrypted_key = base64::engine::general_purpose::STANDARD
+                        .decode(encrypted_key_b64)
+                        .map_err(|e| format!("base64 decode key: {e}"))?;
+                    // Strip "DPAPI" prefix (first 5 bytes)
+                    let dpapi_key = &encrypted_key[5..];
+                    dpapi_decrypt(dpapi_key)
+                })().ok();
+
+                // Helper: run the cookie query on an already-opened connection
+                let run_query = |conn: &rusqlite::Connection, domain_filter: &str| -> Result<Vec<(String, String, Vec<u8>)>, String> {
                     let query = if domain_filter == "%" {
-                        "SELECT host_key, name, value FROM cookies ORDER BY host_key LIMIT 500"
+                        "SELECT host_key, name, encrypted_value FROM cookies ORDER BY host_key LIMIT 500"
                     } else {
-                        "SELECT host_key, name, value FROM cookies WHERE host_key LIKE ?1 ORDER BY host_key LIMIT 500"
+                        "SELECT host_key, name, encrypted_value FROM cookies WHERE host_key LIKE ?1 ORDER BY host_key LIMIT 500"
                     };
                     let mut stmt = conn.prepare(query).map_err(|e| format!("SQL: {e}"))?;
                     let domain_param = format!("%{}%", domain_filter);
-                    let rows: Vec<(String, String, String)> = if domain_filter == "%" {
+                    let rows: Vec<(String, String, Vec<u8>)> = if domain_filter == "%" {
                         stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                             .map_err(|e| format!("Query: {e}"))?
                             .filter_map(|r| r.ok()).collect()
@@ -1692,25 +1835,79 @@ impl WraithHandler {
                             .filter_map(|r| r.ok()).collect()
                     };
                     Ok(rows)
-                })();
+                };
 
-                let _ = std::fs::remove_file(&temp_db);
+                // Strategy 1: SQLite URI with immutable=1 — reads the DB as a
+                // lock-free snapshot, works even while Chrome holds a lock.
+                let uri = format!(
+                    "file:{}?immutable=1&mode=ro",
+                    cookie_db.display()
+                );
+                let immutable_result = rusqlite::Connection::open_with_flags(
+                    &uri,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+                )
+                .map_err(|e| format!("immutable open: {e}"))
+                .and_then(|conn| run_query(&conn, &domain_filter));
+
+                let (cookies_result, used_temp) = match immutable_result {
+                    Ok(rows) => (Ok(rows), false),
+                    Err(_immutable_err) => {
+                        // Strategy 2: copy the file to a temp location, then open normally.
+                        let temp_db = std::env::temp_dir().join("wraith_chrome_cookies_copy");
+                        match std::fs::copy(&cookie_db, &temp_db) {
+                            Ok(_) => {
+                                let res = rusqlite::Connection::open(&temp_db)
+                                    .map_err(|e| format!("DB open failed: {e}"))
+                                    .and_then(|conn| run_query(&conn, &domain_filter));
+                                let _ = std::fs::remove_file(&temp_db);
+                                (res, false)
+                            }
+                            Err(copy_err) => {
+                                // Strategy 3: give up with a helpful message
+                                (Err(format!(
+                                    "Cannot read Chrome cookie DB while Chrome is running.\n\
+                                     Immutable open failed, file copy also failed: {copy_err}\n\
+                                     Please close Chrome and try again, or manually copy\n  \
+                                     {}\nto a temporary location.",
+                                    cookie_db.display()
+                                )), false)
+                            }
+                        }
+                    }
+                };
+                let _ = used_temp; // suppress unused warning
 
                 match cookies_result {
                     Ok(rows) => {
                         let engine = self.engine.lock().await;
                         let mut injected = 0;
-                        for (host, name, value) in &rows {
+                        let mut decrypt_errors = 0u32;
+                        for (host, name, encrypted_value) in &rows {
+                            let value = if let Some(ref key) = master_key {
+                                match decrypt_chrome_cookie(encrypted_value, key) {
+                                    Ok(v) => v,
+                                    Err(_) => { decrypt_errors += 1; continue; }
+                                }
+                            } else if encrypted_value.is_empty() {
+                                continue;
+                            } else {
+                                // No master key available; try raw UTF-8 (legacy/unencrypted)
+                                String::from_utf8_lossy(encrypted_value).to_string()
+                            };
                             if !value.is_empty() {
                                 let script = format!("document.cookie = '{}={}; domain={}; path=/'", name, value, host);
                                 let _ = engine.eval_js(&script).await;
                                 injected += 1;
                             }
                         }
-                        Ok(CallToolResult::success(vec![Content::text(
-                            format!("Imported {} cookies from Chrome profile '{}'{}", injected, profile,
-                                if domain_filter != "%" { format!(" (filtered: {})", domain_filter) } else { String::new() })
-                        )]))
+                        let mut msg = format!("Imported {} cookies from Chrome profile '{}'{}",
+                            injected, profile,
+                            if domain_filter != "%" { format!(" (filtered: {})", domain_filter) } else { String::new() });
+                        if decrypt_errors > 0 {
+                            msg.push_str(&format!(" ({} cookies failed to decrypt)", decrypt_errors));
+                        }
+                        Ok(CallToolResult::success(vec![Content::text(msg)]))
                     }
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Cookie import failed: {e}"))]))
                 }
@@ -1874,6 +2071,538 @@ impl WraithHandler {
                             total_found, inline_scripts.len(), script_urls.len(), dynamic_urls.len(), executed, failed)
                     )]))
                 }
+            }
+
+            "browse_dismiss_overlay" => {
+                let input: DismissOverlayInput = parse_args(args)?;
+                info!(ref_id = ?input.ref_id, "Dismissing overlay");
+
+                let mut engine = self.engine.lock().await;
+
+                // Find the close button via JS
+                let find_js = if let Some(ref_id) = input.ref_id {
+                    format!("__wraith_find_close_button({})", ref_id)
+                } else {
+                    "__wraith_find_close_button()".to_string()
+                };
+
+                let close_result = engine.eval_js(&find_js).await
+                    .map_err(|e| ErrorData::internal_error(format!("Overlay detection failed: {e}"), None))?;
+
+                let parsed: serde_json::Value = serde_json::from_str(&close_result)
+                    .map_err(|e| ErrorData::internal_error(format!("Failed to parse overlay result: {e}"), None))?;
+
+                if let Some(error) = parsed.get("error").and_then(|v| v.as_str()) {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("Could not dismiss overlay: {}", error)
+                    )]));
+                }
+
+                let close_ref_id = parsed.get("ref_id")
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| ErrorData::internal_error("No close button ref_id found".to_string(), None))?
+                    as u32;
+
+                let close_text = parsed.get("text").and_then(|v| v.as_str()).unwrap_or("?");
+                info!(close_ref_id = close_ref_id, close_text = %close_text, "Clicking overlay close button");
+
+                // Click the close button
+                let click_result = engine.execute_action(BrowserAction::Click { ref_id: close_ref_id, force: None }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Failed to click close button: {e}"), None))?;
+
+                debug!(result = ?click_result, "Overlay close button clicked");
+
+                // Return updated snapshot
+                let snapshot = engine.snapshot().await
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Dismissed overlay (clicked \"{}\" @e{})\n\n{}", close_text, close_ref_id, snapshot.to_agent_text())
+                )]))
+            }
+
+            "browse_solve_captcha" => {
+                let input: SolveCaptchaInput = parse_args(args)?;
+                let captcha_type = input.captcha_type.unwrap_or_else(|| "recaptchav3".to_string());
+                info!(captcha_type = %captcha_type, "Solving CAPTCHA via 2captcha");
+
+                let api_key = std::env::var("TWOCAPTCHA_API_KEY")
+                    .map_err(|_| ErrorData::internal_error(
+                        "TWOCAPTCHA_API_KEY environment variable not set. Get an API key from https://2captcha.com".to_string(), None))?;
+
+                // Determine page URL
+                let page_url = if let Some(u) = input.url {
+                    u
+                } else {
+                    let engine = self.engine.lock().await;
+                    engine.current_url().await.unwrap_or_default()
+                };
+
+                // Determine site key — auto-detect if not provided
+                let site_key = if let Some(sk) = input.site_key {
+                    sk
+                } else {
+                    let engine = self.engine.lock().await;
+                    let detect_js = r#"(() => {
+                        var el = document.querySelector('[data-sitekey]');
+                        if (el) return el.dataset.sitekey || el.getAttribute('data-sitekey');
+                        var script = document.querySelector('script[src*="recaptcha"]');
+                        if (script) {
+                            var m = script.src.match(/render=([^&]+)/);
+                            if (m) return m[1];
+                        }
+                        var turnstile = document.querySelector('[data-cf-turnstile-sitekey]');
+                        if (turnstile) return turnstile.getAttribute('data-cf-turnstile-sitekey') || turnstile.dataset.cfTurnstileSitekey;
+                        var tScript = document.querySelector('script[src*="turnstile"]');
+                        if (tScript) {
+                            var tm = tScript.src.match(/sitekey=([^&]+)/);
+                            if (tm) return tm[1];
+                        }
+                        return '';
+                    })()"#;
+                    let detected = engine.eval_js(detect_js).await.unwrap_or_default();
+                    if detected.is_empty() {
+                        return Err(ErrorData::internal_error(
+                            "Could not auto-detect CAPTCHA site key. Provide site_key manually.".to_string(), None));
+                    }
+                    detected
+                };
+
+                info!(site_key = %site_key, page_url = %page_url, "CAPTCHA site key resolved");
+
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(130))
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new());
+
+                // Step 1: Submit CAPTCHA task to 2captcha
+                let mut submit_params = vec![
+                    ("key", api_key.clone()),
+                    ("pageurl", page_url.clone()),
+                    ("json", "1".to_string()),
+                ];
+
+                match captcha_type.as_str() {
+                    "turnstile" => {
+                        submit_params.push(("method", "turnstile".to_string()));
+                        submit_params.push(("sitekey", site_key.clone()));
+                    }
+                    _ => {
+                        // reCAPTCHA v3 (default)
+                        submit_params.push(("method", "userrecaptcha".to_string()));
+                        submit_params.push(("googlekey", site_key.clone()));
+                        submit_params.push(("version", "v3".to_string()));
+                        submit_params.push(("action", "submit".to_string()));
+                        submit_params.push(("min_score", "0.7".to_string()));
+                    }
+                }
+
+                let submit_resp = client
+                    .post("http://2captcha.com/in.php")
+                    .form(&submit_params)
+                    .send()
+                    .await
+                    .map_err(|e| ErrorData::internal_error(format!("2captcha submit failed: {e}"), None))?;
+
+                let submit_body: serde_json::Value = submit_resp
+                    .json()
+                    .await
+                    .map_err(|e| ErrorData::internal_error(format!("2captcha response parse error: {e}"), None))?;
+
+                if submit_body.get("status").and_then(|v| v.as_i64()) != Some(1) {
+                    let err_text = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("unknown error");
+                    return Err(ErrorData::internal_error(format!("2captcha rejected task: {err_text}"), None));
+                }
+
+                let task_id = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("")
+                    .to_string();
+                info!(task_id = %task_id, "2captcha task submitted, polling for result");
+
+                // Step 2: Poll for result (every 5s, max 120s)
+                let poll_url = format!(
+                    "http://2captcha.com/res.php?key={}&action=get&id={}&json=1",
+                    api_key, task_id
+                );
+                let max_attempts = 24; // 24 * 5s = 120s
+                let mut token = String::new();
+
+                for attempt in 0..max_attempts {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                    let poll_resp = client.get(&poll_url).send().await;
+                    match poll_resp {
+                        Ok(resp) => {
+                            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                                let status = body.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
+                                let request = body.get("request").and_then(|v| v.as_str()).unwrap_or("");
+
+                                if status == 1 {
+                                    token = request.to_string();
+                                    info!(attempt = attempt, "CAPTCHA solved");
+                                    break;
+                                } else if request == "CAPCHA_NOT_READY" || request == "CAPTCHA_NOT_READY" {
+                                    debug!(attempt = attempt, "CAPTCHA not ready, polling again");
+                                    continue;
+                                } else {
+                                    return Err(ErrorData::internal_error(
+                                        format!("2captcha error: {request}"), None));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(attempt = attempt, error = %e, "Poll request failed, retrying");
+                        }
+                    }
+                }
+
+                if token.is_empty() {
+                    return Err(ErrorData::internal_error(
+                        "CAPTCHA solving timed out after 120 seconds".to_string(), None));
+                }
+
+                // Step 3: Inject the token into the page
+                let inject_js = match captcha_type.as_str() {
+                    "turnstile" => format!(
+                        r#"(() => {{
+                            var el = document.querySelector('[name="cf-turnstile-response"]') || document.querySelector('input[name*="turnstile"]');
+                            if (el) el.value = '{}';
+                            var cb = document.querySelector('[data-cf-turnstile-sitekey]');
+                            if (cb && cb.dataset.callback && typeof window[cb.dataset.callback] === 'function') {{
+                                window[cb.dataset.callback]('{}');
+                            }}
+                            return 'injected';
+                        }})()"#,
+                        token.replace('\'', "\\'"),
+                        token.replace('\'', "\\'")
+                    ),
+                    _ => format!(
+                        r#"(() => {{
+                            var el = document.getElementById('g-recaptcha-response');
+                            if (!el) {{
+                                var els = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
+                                if (els.length > 0) el = els[0];
+                            }}
+                            if (el) el.value = '{}';
+                            if (typeof grecaptcha !== 'undefined' && grecaptcha.getResponse) {{
+                                try {{ grecaptcha.callback('{}'); }} catch(e) {{}}
+                            }}
+                            if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                                try {{
+                                    var clients = ___grecaptcha_cfg.clients;
+                                    for (var k in clients) {{
+                                        var c = clients[k];
+                                        for (var kk in c) {{
+                                            var item = c[kk];
+                                            if (item && typeof item === 'object') {{
+                                                for (var kkk in item) {{
+                                                    if (typeof item[kkk] === 'function') {{
+                                                        try {{ item[kkk]('{}'); }} catch(e2) {{}}
+                                                    }}
+                                                }}
+                                            }}
+                                        }}
+                                    }}
+                                }} catch(e3) {{}}
+                            }}
+                            return 'injected';
+                        }})()"#,
+                        token.replace('\'', "\\'"),
+                        token.replace('\'', "\\'"),
+                        token.replace('\'', "\\'")
+                    ),
+                };
+
+                let engine = self.engine.lock().await;
+                let _ = engine.eval_js(&inject_js).await;
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("CAPTCHA solved (type: {}). Token: {}", captcha_type, token)
+                )]))
+            }
+
+            // === TLS Verification ===
+
+            "tls_verify" => {
+                let input: TlsVerifyInput = parse_args(args)?;
+                let service_url = input.url.as_deref().unwrap_or("https://tls.peet.ws/api/all");
+                info!(url = %service_url, "TLS fingerprint verification");
+
+                // Use the same stealth HTTP stack the engine uses for navigation
+                let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                           (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
+                let (status, body, _final_url) = openclaw_browser_core::stealth_http::stealth_fetch(
+                    service_url, ua, "en-US,en;q=0.9",
+                ).await.map_err(|e| ErrorData::internal_error(
+                    format!("TLS verification fetch failed: {e}"), None))?;
+
+                if status != 200 {
+                    return Ok(CallToolResult::success(vec![Content::text(
+                        format!("TLS service returned HTTP {status}. Try a different URL with the `url` parameter.")
+                    )]));
+                }
+
+                let tls_json: serde_json::Value = serde_json::from_str(&body)
+                    .map_err(|e| ErrorData::internal_error(
+                        format!("Failed to parse TLS service JSON: {e}"), None))?;
+
+                // --- Known Chrome 136 reference values ---
+                let ref_ja3 = "cd08e31494f9531f560d64c695473da9";
+                let ref_ja4 = "t13d1517h2_8daaf6152771_b0da82dd1658";
+                let ref_tls_version = "TLSv1.3";
+                let ref_cipher_count: usize = 17;
+                let ref_extension_count: usize = 16;
+                let ref_h2_window: u32 = 6291456;
+
+                // --- Extract observed values from the JSON response ---
+                // tls.peet.ws format: { tls: { ja3_hash, ja4, ... }, http2: { ... } }
+                // browserleaks format: { ja3_hash, ja4, tls_version, ... }
+                let tls_section = tls_json.get("tls").unwrap_or(&tls_json);
+
+                let obs_ja3 = tls_section.get("ja3_hash")
+                    .or_else(|| tls_section.get("ja3"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("N/A");
+
+                let obs_ja4 = tls_section.get("ja4")
+                    .or_else(|| tls_section.get("ja4_hash"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("N/A");
+
+                let obs_tls_version = tls_section.get("tls_version")
+                    .or_else(|| tls_section.get("version"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("N/A");
+
+                let obs_cipher_count = tls_section.get("cipher_suites")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .or_else(|| tls_section.get("ciphers")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len()))
+                    .unwrap_or(0);
+
+                let obs_extension_count = tls_section.get("extensions")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+
+                // HTTP/2 settings (tls.peet.ws nests under "http2")
+                let h2_section = tls_json.get("http2").or_else(|| tls_json.get("h2"));
+                let obs_h2_window = h2_section
+                    .and_then(|h2| h2.get("settings"))
+                    .and_then(|s| s.get("INITIAL_WINDOW_SIZE")
+                        .or_else(|| s.get("initial_window_size"))
+                        .or_else(|| {
+                            // tls.peet.ws: settings is an array of { id, value }
+                            s.as_array().and_then(|arr| {
+                                arr.iter().find(|item| {
+                                    item.get("id").and_then(|v| v.as_str()) == Some("INITIAL_WINDOW_SIZE")
+                                    || item.get("id").and_then(|v| v.as_u64()) == Some(4)
+                                }).and_then(|item| item.get("value"))
+                            })
+                        }))
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .unwrap_or(0);
+
+                // --- Compare and build report ---
+                let match_sym = |m: bool| if m { "MATCH" } else { "MISMATCH" };
+                let check_sym = |m: bool| if m { "\u{2713}" } else { "\u{2717}" };
+
+                let ja3_match = obs_ja3 == ref_ja3;
+                let ja4_match = obs_ja4 == ref_ja4 || obs_ja4 == "N/A"; // N/A = service doesn't provide it
+                let tls_match = obs_tls_version.contains("1.3");
+                let cipher_match = obs_cipher_count == ref_cipher_count;
+                let ext_match = obs_extension_count == ref_extension_count;
+                let h2_match = obs_h2_window == ref_h2_window || obs_h2_window == 0;
+
+                let stealth_active = openclaw_browser_core::stealth_http::has_stealth_tls();
+
+                // Determine overall verdict
+                let critical_pass = ja3_match && tls_match;
+                let all_pass = ja3_match && ja4_match && tls_match && cipher_match && ext_match && h2_match;
+                let verdict = if all_pass {
+                    "PASS \u{2014} fingerprint matches Chrome 136"
+                } else if critical_pass {
+                    "PARTIAL \u{2014} JA3/TLS match but some secondary fields differ"
+                } else {
+                    "FAIL \u{2014} fingerprint does NOT match Chrome 136"
+                };
+
+                let report = format!(
+                    "TLS Fingerprint Verification:\n\
+                     \n\
+                     Stealth TLS: {stealth}\n\
+                     Service:     {service}\n\
+                     \n\
+                     JA3:  {obs_ja3} (Chrome 136: {ref_ja3} {ja3_check} {ja3_verdict})\n\
+                     JA4:  {obs_ja4} (Chrome 136: {ref_ja4} {ja4_check} {ja4_verdict})\n\
+                     TLS:  {obs_tls} (Chrome 136: {ref_tls} {tls_check} {tls_verdict})\n\
+                     Cipher Suites: {obs_ciphers} (Chrome 136: {ref_ciphers} {cipher_check} {cipher_verdict})\n\
+                     Extensions:    {obs_exts} (Chrome 136: {ref_exts} {ext_check} {ext_verdict})\n\
+                     HTTP/2: INITIAL_WINDOW_SIZE {obs_h2} (Chrome 136: {ref_h2} {h2_check} {h2_verdict})\n\
+                     \n\
+                     Verdict: {verdict}",
+                    stealth = if stealth_active { "ACTIVE (BoringSSL)" } else { "INACTIVE (rustls)" },
+                    service = service_url,
+                    obs_ja3 = obs_ja3,
+                    ref_ja3 = ref_ja3,
+                    ja3_check = check_sym(ja3_match),
+                    ja3_verdict = match_sym(ja3_match),
+                    obs_ja4 = obs_ja4,
+                    ref_ja4 = ref_ja4,
+                    ja4_check = check_sym(ja4_match),
+                    ja4_verdict = match_sym(ja4_match),
+                    obs_tls = obs_tls_version,
+                    ref_tls = ref_tls_version,
+                    tls_check = check_sym(tls_match),
+                    tls_verdict = match_sym(tls_match),
+                    obs_ciphers = obs_cipher_count,
+                    ref_ciphers = ref_cipher_count,
+                    cipher_check = check_sym(cipher_match),
+                    cipher_verdict = match_sym(cipher_match),
+                    obs_exts = obs_extension_count,
+                    ref_exts = ref_extension_count,
+                    ext_check = check_sym(ext_match),
+                    ext_verdict = match_sym(ext_match),
+                    obs_h2 = if obs_h2_window == 0 { "N/A".to_string() } else { obs_h2_window.to_string() },
+                    ref_h2 = ref_h2_window,
+                    h2_check = check_sym(h2_match),
+                    h2_verdict = match_sym(h2_match),
+                    verdict = verdict,
+                );
+
+                Ok(CallToolResult::success(vec![Content::text(report)]))
+            }
+
+            "browse_enter_iframe" => {
+                let input: EnterIframeInput = parse_args(args)?;
+                info!(ref_id = input.ref_id, "Entering iframe context");
+
+                let mut engine = self.engine.lock().await;
+
+                // Get the current snapshot to find the iframe element's src URL
+                let snapshot = engine.snapshot().await
+                    .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?;
+
+                // Find the element matching the ref_id
+                let iframe_el = snapshot.elements.iter()
+                    .find(|e| e.ref_id == input.ref_id)
+                    .ok_or_else(|| ErrorData::invalid_params(
+                        format!("No element found with @e{}", input.ref_id), None))?;
+
+                // Check if this is an iframe element
+                if !iframe_el.selector.starts_with("iframe") && !iframe_el.role.contains("iframe") {
+                    return Err(ErrorData::invalid_params(
+                        format!("@e{} is not an iframe (role: {}, selector: {})", input.ref_id, iframe_el.role, iframe_el.selector), None));
+                }
+
+                // Get the iframe src via eval_js (attribute lookup by ref_id)
+                let src_js = format!(
+                    r#"(() => {{
+                        var el = __wraith_get_by_ref({ref_id});
+                        if (!el) return '';
+                        return (el.attrs && el.attrs.src) || el.src || '';
+                    }})()"#,
+                    ref_id = input.ref_id,
+                );
+                let src_url = engine.eval_js(&src_js).await.unwrap_or_default();
+
+                if src_url.is_empty() {
+                    // Fallback: try href attribute from snapshot
+                    let src_url_fallback = iframe_el.href.clone().unwrap_or_default();
+                    if src_url_fallback.is_empty() {
+                        return Err(ErrorData::internal_error(
+                            format!("Could not determine iframe src for @e{}", input.ref_id), None));
+                    }
+                    // Navigate to the iframe URL
+                    engine.navigate(&src_url_fallback).await
+                        .map_err(|e| ErrorData::internal_error(format!("Failed to navigate to iframe: {e}"), None))?;
+                } else {
+                    // Navigate to the iframe URL
+                    engine.navigate(&src_url).await
+                        .map_err(|e| ErrorData::internal_error(format!("Failed to navigate to iframe: {e}"), None))?;
+                }
+
+                // Return snapshot of iframe contents
+                let iframe_snapshot = engine.snapshot().await
+                    .map_err(|e| ErrorData::internal_error(format!("Iframe snapshot failed: {e}"), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(iframe_snapshot.to_agent_text())]))
+            }
+
+            "browse_login" => {
+                let input: LoginInput = parse_args(args)?;
+                info!(url = %input.url, "Login flow starting");
+
+                let mut engine = self.engine.lock().await;
+
+                // Step 1: Navigate to the login page
+                engine.navigate(&input.url).await
+                    .map_err(|e| ErrorData::internal_error(format!("Navigate to login page failed: {e}"), None))?;
+
+                // Step 2: Fill username
+                let fill_user = engine.execute_action(BrowserAction::Fill {
+                    ref_id: input.username_ref_id,
+                    text: input.username.clone(),
+                    force: None,
+                }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Fill username failed: {e}"), None))?;
+                debug!(result = ?fill_user, "Username filled");
+
+                // Step 3: Fill password
+                let fill_pass = engine.execute_action(BrowserAction::Fill {
+                    ref_id: input.password_ref_id,
+                    text: input.password.clone(),
+                    force: None,
+                }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Fill password failed: {e}"), None))?;
+                debug!(result = ?fill_pass, "Password filled");
+
+                // Step 4: Click submit — this triggers the auth/redirect chain.
+                // The underlying engine's http_fetch now captures Set-Cookie headers
+                // from every redirect hop and stores them, so OAuth redirect chains
+                // (302 -> 302 -> 302 -> 200) have their cookies preserved automatically.
+                let click_result = engine.execute_action(BrowserAction::Click {
+                    ref_id: input.submit_ref_id,
+                    force: None,
+                }).await
+                    .map_err(|e| ErrorData::internal_error(format!("Click submit failed: {e}"), None))?;
+                debug!(result = ?click_result, "Submit clicked");
+
+                // Step 5: If the click triggered a form POST that returned a redirect URL,
+                // follow it via a regular navigate (which uses http_fetch with cookie capture).
+                match &click_result {
+                    ActionResult::Navigated { url, .. } => {
+                        info!(url = %url, "Login submit navigated — following redirect chain");
+                        // Re-navigate to ensure the full redirect chain is followed
+                        // with cookie capture at each hop
+                        let _ = engine.navigate(url).await;
+                    }
+                    _ => {
+                        // Form may have submitted via JS/XHR — check if the page changed
+                        debug!("Login submit did not trigger navigation — checking page state");
+                    }
+                }
+
+                // Step 6: Take final snapshot
+                let snapshot = engine.snapshot().await
+                    .map_err(|e| ErrorData::internal_error(format!("Post-login snapshot failed: {e}"), None))?;
+
+                // Build response with final URL info
+                let final_url = engine.current_url().await.unwrap_or_default();
+                let domain = url::Url::parse(&final_url).ok()
+                    .and_then(|u| u.host_str().map(|h| h.to_string()))
+                    .unwrap_or_default();
+
+                let response = format!(
+                    "{}\n\n--- Login Flow Complete ---\nFinal URL: {}\nDomain: {}\nCookies were captured at every redirect hop during the auth flow.",
+                    snapshot.to_agent_text(),
+                    final_url,
+                    domain,
+                );
+
+                Ok(CallToolResult::success(vec![Content::text(response)]))
             }
 
             _ => {

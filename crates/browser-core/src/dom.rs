@@ -51,10 +51,25 @@ impl DomSnapshot {
     /// Render the snapshot as a compact text representation for LLM context.
     /// This is the primary output format — optimized for token efficiency.
     pub fn to_agent_text(&self) -> String {
-        let mut out = format!(
+        let mut out = String::new();
+
+        // Prepend overlay warnings so the agent sees them first
+        for (ref_id, overlay_type, title) in &self.meta.overlays {
+            let title_display = if title.is_empty() {
+                String::new()
+            } else {
+                format!(" \"{}\"", title)
+            };
+            out.push_str(&format!(
+                "\u{26a0} OVERLAY DETECTED: [{}]{} @{} \u{2014} interact with this first\n",
+                overlay_type, title_display, ref_id
+            ));
+        }
+
+        out.push_str(&format!(
             "Page: \"{}\" ({})\n\n",
             self.title, self.url
-        );
+        ));
 
         for el in &self.elements {
             let ref_str = format!("@e{}", el.ref_id);
@@ -80,9 +95,12 @@ impl DomSnapshot {
                 }
             }
 
+            // Mark disabled elements so the agent knows not to interact
+            let disabled_tag = if !el.enabled { " [DISABLED]" } else { "" };
+
             out.push_str(&format!(
-                "{:<6} {:<12} \"{}\"{}\n",
-                ref_str, role_str, display_text, attrs
+                "{:<6} {:<12} \"{}\"{}{}\n",
+                ref_str, role_str, display_text, attrs, disabled_tag
             ));
         }
 
@@ -160,4 +178,8 @@ pub struct PageMeta {
 
     /// Total interactive element count
     pub interactive_element_count: usize,
+
+    /// Detected overlays/modals blocking interaction (ref_id, type, title)
+    #[serde(default)]
+    pub overlays: Vec<(String, String, String)>,
 }
