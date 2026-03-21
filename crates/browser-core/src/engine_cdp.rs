@@ -43,6 +43,15 @@ const CDP_TIMEOUT: Duration = Duration::from_secs(30);
 /// Post-navigation hydration wait (2 seconds for React/SPA hydration).
 const HYDRATION_WAIT: Duration = Duration::from_secs(2);
 
+/// Time to wait after a click for potential navigation to begin.
+const POST_CLICK_NAV_WAIT: Duration = Duration::from_millis(500);
+
+/// Maximum time to poll for a new page target after navigation destroys the old one.
+const RECONNECT_POLL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Interval between polls for the new page target.
+const RECONNECT_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
 /// Maximum time to wait for Chrome to start and expose its DevTools endpoint.
 const CHROME_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -75,7 +84,13 @@ pub struct CdpEngine {
     temp_dir: Option<PathBuf>,
 
     /// The URL we last navigated to (tracked locally for current_url fallback).
-    last_url: Option<String>,
+    /// Wrapped in `Arc<Mutex<>>` so the background reader can update it on
+    /// `Page.frameNavigated` events.
+    last_url: Arc<Mutex<Option<String>>>,
+
+    /// The Chrome remote-debugging port — needed to reconnect after navigation
+    /// destroys the old page target.
+    port: u16,
 }
 
 impl CdpEngine {
@@ -155,12 +170,15 @@ impl CdpEngine {
             Arc::new(Mutex::new(HashMap::new()));
         let next_id = Arc::new(AtomicU64::new(1));
 
+        let last_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
         // Spawn background reader
         let reader_handle = {
             let pending = Arc::clone(&pending);
             let event_waiters = Arc::clone(&event_waiters);
+            let last_url = Arc::clone(&last_url);
             tokio::spawn(async move {
-                cdp_reader_loop(ws_rx, pending, event_waiters).await;
+                cdp_reader_loop(ws_rx, pending, event_waiters, last_url).await;
             })
         };
 
@@ -172,7 +190,8 @@ impl CdpEngine {
             next_id,
             chrome_process: Some(child),
             temp_dir: Some(temp_dir),
-            last_url: None,
+            last_url,
+            port,
         };
 
         // Enable required CDP domains
@@ -291,6 +310,119 @@ impl CdpEngine {
             Some(other) => Ok(other.to_string()),
         }
     }
+
+    /// Reconnect to the new page target after navigation destroyed the old one.
+    ///
+    /// When a CDP click causes a full-page navigation (e.g. clicking an `<a>` link),
+    /// Chrome destroys the old page target and creates a new one. The WebSocket
+    /// connection to the old target dies, so we must:
+    /// 1. Close the old WebSocket
+    /// 2. Poll `/json` for the new page target
+    /// 3. Connect a new WebSocket
+    /// 4. Re-enable CDP domains (Page, Runtime, DOM)
+    /// 5. Wait for the page to finish loading
+    async fn reconnect_to_new_target(&mut self) -> BrowserResult<()> {
+        info!(port = self.port, "Reconnecting to new page target after navigation");
+
+        // 1. Close old WebSocket gracefully
+        {
+            let mut ws = self.ws_tx.lock().await;
+            let _ = ws.close().await;
+        }
+
+        // 2. Poll /json for the new page target
+        let targets_url = format!("http://127.0.0.1:{}/json", self.port);
+        let start = std::time::Instant::now();
+        let ws_url = loop {
+            if start.elapsed() > RECONNECT_POLL_TIMEOUT {
+                return Err(BrowserError::EngineError(
+                    "Timed out waiting for new page target after navigation".into(),
+                ));
+            }
+
+            match reqwest::get(&targets_url).await {
+                Ok(resp) if resp.status().is_success() => {
+                    let targets: Vec<Value> = resp.json().await.map_err(|e| {
+                        BrowserError::EngineError(format!("parse /json targets: {e}"))
+                    })?;
+
+                    // Find a page-type target with a webSocketDebuggerUrl
+                    let page_target = targets.iter().find(|t| {
+                        t.get("type").and_then(|v| v.as_str()) == Some("page")
+                            && t.get("webSocketDebuggerUrl").is_some()
+                    });
+
+                    if let Some(target) = page_target {
+                        let url = target
+                            .get("webSocketDebuggerUrl")
+                            .and_then(|v| v.as_str())
+                            .unwrap()
+                            .to_string();
+                        debug!(ws_url = %url, "Found new page target");
+                        break url;
+                    }
+                }
+                _ => {}
+            }
+
+            tokio::time::sleep(RECONNECT_POLL_INTERVAL).await;
+        };
+
+        // 3. Connect new WebSocket
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .map_err(|e| BrowserError::EngineError(format!("Reconnect WebSocket: {e}")))?;
+
+        let (ws_tx, ws_rx) = futures::StreamExt::split(ws_stream);
+        self.ws_tx = Arc::new(Mutex::new(ws_tx));
+
+        // Reset pending requests — old ones are invalid after reconnect
+        {
+            let mut pending = self.pending.lock().await;
+            pending.clear();
+        }
+
+        // Reset event waiters
+        {
+            let mut waiters = self.event_waiters.lock().await;
+            waiters.clear();
+        }
+
+        // Reset message ID counter
+        self.next_id = Arc::new(AtomicU64::new(1));
+
+        // Spawn new background reader
+        let pending_clone = Arc::clone(&self.pending);
+        let event_waiters_clone = Arc::clone(&self.event_waiters);
+        let last_url_clone = Arc::clone(&self.last_url);
+        self._reader_handle = tokio::spawn(async move {
+            cdp_reader_loop(ws_rx, pending_clone, event_waiters_clone, last_url_clone).await;
+        });
+
+        // 4. Re-enable required CDP domains
+        self.send_cdp_command("Page.enable", json!({})).await?;
+        self.send_cdp_command("Runtime.enable", json!({})).await?;
+        self.send_cdp_command("DOM.enable", json!({})).await?;
+
+        // 5. Wait for the page to finish loading (best-effort — page may already be loaded)
+        let load_result = self
+            .wait_for_event("Page.loadEventFired", Duration::from_secs(10))
+            .await;
+        if load_result.is_err() {
+            debug!("Page.loadEventFired not received — page may already be loaded");
+        }
+
+        // Wait for hydration
+        tokio::time::sleep(HYDRATION_WAIT).await;
+
+        // 6. Update last_url from the new page
+        if let Ok(url) = self.runtime_evaluate("window.location.href").await {
+            info!(url = %url, "Reconnected — new page URL");
+            *self.last_url.lock().await = Some(url);
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +461,7 @@ impl BrowserEngine for CdpEngine {
         // Wait for React/SPA hydration
         tokio::time::sleep(HYDRATION_WAIT).await;
 
-        self.last_url = Some(url.to_string());
+        *self.last_url.lock().await = Some(url.to_string());
         Ok(())
     }
 
@@ -479,6 +611,12 @@ impl BrowserEngine for CdpEngine {
             }
 
             BrowserAction::Click { ref_id, force: _ } => {
+                // Capture URL before click to detect navigation
+                let url_before = self
+                    .runtime_evaluate("window.location.href")
+                    .await
+                    .unwrap_or_default();
+
                 let js = format!(
                     r#"(() => {{
                         const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
@@ -490,7 +628,49 @@ impl BrowserEngine for CdpEngine {
                 );
                 let result = self.runtime_evaluate(&js).await?;
                 if result.contains("not found") {
-                    Ok(ActionResult::Failed { error: result })
+                    return Ok(ActionResult::Failed { error: result });
+                }
+
+                // Wait briefly for potential navigation to start
+                tokio::time::sleep(POST_CLICK_NAV_WAIT).await;
+
+                // Check if the click caused navigation (target may be destroyed)
+                let needs_reconnect =
+                    match self.runtime_evaluate("window.location.href").await {
+                        Ok(url_after) => {
+                            // Evaluate succeeded — check if URL actually changed
+                            if url_after != url_before {
+                                debug!(
+                                    before = %url_before,
+                                    after = %url_after,
+                                    "Click caused same-target navigation"
+                                );
+                                *self.last_url.lock().await = Some(url_after);
+                                false // same target, just URL changed (SPA navigation)
+                            } else {
+                                false // no navigation at all
+                            }
+                        }
+                        Err(e) => {
+                            // Evaluate failed — target was likely destroyed by navigation
+                            debug!(
+                                error = %e,
+                                "Click destroyed page target — need reconnect"
+                            );
+                            true
+                        }
+                    };
+
+                if needs_reconnect {
+                    self.reconnect_to_new_target().await?;
+                    let new_url = self.last_url.lock().await.clone().unwrap_or_default();
+                    Ok(ActionResult::Navigated {
+                        url: new_url,
+                        title: self
+                            .runtime_evaluate("document.title")
+                            .await
+                            .unwrap_or_default(),
+                    })
                 } else {
                     Ok(ActionResult::Success {
                         message: format!("Clicked @e{ref_id}"),
@@ -1028,6 +1208,7 @@ async fn cdp_reader_loop(
     mut ws_rx: SplitStream<WsStream>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     event_waiters: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<Value>>>>>,
+    last_url: Arc<Mutex<Option<String>>>,
 ) {
     while let Some(msg) = ws_rx.next().await {
         let text = match msg {
@@ -1057,6 +1238,20 @@ async fn cdp_reader_loop(
         // Event (has "method" field)
         if let Some(method) = parsed.get("method").and_then(|v| v.as_str()) {
             let params = parsed.get("params").cloned().unwrap_or(json!({}));
+
+            // Track Page.frameNavigated — update last_url when navigation happens
+            if method == "Page.frameNavigated" {
+                if let Some(frame) = params.get("frame") {
+                    // Only update for the top-level frame (no parentId)
+                    if frame.get("parentId").is_none() {
+                        if let Some(url) = frame.get("url").and_then(|v| v.as_str()) {
+                            debug!(url = %url, "Page.frameNavigated — updating last_url");
+                            *last_url.lock().await = Some(url.to_string());
+                        }
+                    }
+                }
+            }
+
             let mut waiters = event_waiters.lock().await;
             if let Some(senders) = waiters.remove(method) {
                 for tx in senders {

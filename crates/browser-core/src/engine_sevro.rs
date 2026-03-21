@@ -890,7 +890,36 @@ impl BrowserEngine for SevroEngineBackend {
                     ref_id = ref_id,
                 );
                 match self.engine.eval_js(&js).await {
-                    Ok(result) => Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) }),
+                    Ok(result) => {
+                        // If the click hit a link, actually navigate to it
+                        if result.starts_with("CLICKED_LINK:") {
+                            let link_url = result.trim_start_matches("CLICKED_LINK:").trim();
+                            // Resolve relative URLs
+                            let full_url = if link_url.starts_with("http") {
+                                link_url.to_string()
+                            } else if let Some(current) = self.engine.current_url() {
+                                url::Url::parse(current)
+                                    .and_then(|base| base.join(link_url))
+                                    .map(|u| u.to_string())
+                                    .unwrap_or(link_url.to_string())
+                            } else {
+                                link_url.to_string()
+                            };
+
+                            // Actually navigate to the link
+                            self.engine.navigate(&full_url).await
+                                .map_err(|e| BrowserError::NavigationFailed { url: full_url.clone(), reason: e })?;
+
+                            // Return navigation result instead of just the click message
+                            let snapshot = self.engine.dom_snapshot_with_layout();
+                            let title = snapshot.iter()
+                                .find(|n| n.tag_name == "title")
+                                .map(|n| n.text_content.clone())
+                                .unwrap_or_default();
+                            return Ok(ActionResult::Navigated { url: full_url, title });
+                        }
+                        Ok(ActionResult::Success { message: format!("@e{}: {}", ref_id, result) })
+                    }
                     Err(_) => {
                         self.engine.click_element(ref_id as u64);
                         Ok(ActionResult::Success { message: format!("Clicked @e{} (basic)", ref_id) })

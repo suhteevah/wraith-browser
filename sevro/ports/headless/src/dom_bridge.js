@@ -1167,6 +1167,7 @@ function __wraith_detect_overlays() {
     var overlays = [];
     var seen = {};
     var modalClassPatterns = ['modal', 'overlay', 'popup', 'dialog', 'backdrop', 'lightbox', 'drawer'];
+    var dropdownClassPatterns = ['dropdown', 'menu', 'filter', 'select', 'listbox'];
     var viewportW = window.innerWidth || 1920;
     var viewportH = window.innerHeight || 1080;
     var viewportArea = viewportW * viewportH;
@@ -1176,19 +1177,58 @@ function __wraith_detect_overlays() {
         if (!n || n.isVisible === false) continue;
         if (seen[n.__ref_id]) continue;
 
+        // Skip elements with display:none or visibility:hidden (inactive dropdowns)
+        if (n.style) {
+            var display = n.style.display || '';
+            var visibility = n.style.visibility || '';
+            if (display === 'none' || visibility === 'hidden') continue;
+        }
+
+        var role = n.attrs ? (n.attrs.role || '') : '';
+        var cls = (n.className || '').toLowerCase();
+
+        // Skip elements that are likely dropdown/filter menus, not real modals
+        var isDropdown = false;
+        if (role === 'listbox' || role === 'menu' || role === 'combobox') {
+            isDropdown = true;
+        }
+        if (!isDropdown) {
+            for (var d = 0; d < dropdownClassPatterns.length; d++) {
+                if (cls.indexOf(dropdownClassPatterns[d]) >= 0) {
+                    isDropdown = true;
+                    break;
+                }
+            }
+        }
+        // Check if element is a child of <select> or [role="combobox"]
+        if (!isDropdown && n.parentElement) {
+            var parentTag = (n.parentElement.tag || n.parentElement.tagName || '').toLowerCase();
+            var parentRole = n.parentElement.attrs ? (n.parentElement.attrs.role || '') : '';
+            if (parentTag === 'select' || parentRole === 'combobox') {
+                isDropdown = true;
+            }
+        }
+        // Small elements (width < 400 AND height < 500) are likely dropdowns, not modals
+        if (!isDropdown) {
+            var dropRect = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+            if (dropRect && dropRect.width < 400 && dropRect.height < 500) {
+                isDropdown = true;
+            }
+        }
+
         var detected = false;
         var overlayType = '';
 
-        // Check role="dialog" or role="alertdialog"
-        var role = n.attrs ? (n.attrs.role || '') : '';
+        // Check role="dialog" or role="alertdialog" — always real modals
         if (role === 'dialog' || role === 'alertdialog') {
             detected = true;
             overlayType = role;
+            // dialog/alertdialog overrides dropdown heuristic
+            isDropdown = false;
         }
 
         // Check class names for modal/overlay patterns
         if (!detected) {
-            var cls = (n.className || '').toLowerCase();
             for (var p = 0; p < modalClassPatterns.length; p++) {
                 if (cls.indexOf(modalClassPatterns[p]) >= 0) {
                     detected = true;
@@ -1202,6 +1242,8 @@ function __wraith_detect_overlays() {
         if (!detected && n.attrs && n.attrs['aria-modal'] === 'true') {
             detected = true;
             overlayType = 'dialog';
+            // aria-modal="true" is a real modal, override dropdown heuristic
+            isDropdown = false;
         }
 
         // Check for fixed/absolute positioning covering most of the viewport with high z-index
@@ -1217,6 +1259,21 @@ function __wraith_detect_overlays() {
                         overlayType = 'overlay';
                     }
                 }
+            }
+        }
+
+        // If detected but looks like a dropdown, apply viewport coverage check
+        // Only flag if it covers a significant portion of the viewport
+        if (detected && isDropdown) {
+            var sizeRect = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+            if (sizeRect) {
+                var coversViewport = (sizeRect.width > viewportW * 0.5 && sizeRect.height > viewportH * 0.3);
+                if (!coversViewport) {
+                    detected = false;
+                }
+            } else {
+                // No rect available, skip dropdown-like elements
+                detected = false;
             }
         }
 
