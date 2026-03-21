@@ -909,6 +909,16 @@ pub struct SolveCaptchaInput {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// ENGINE STATUS
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: check which browser engine is currently active.
+/// Returns "native (Sevro)" or "CDP (Chrome)" depending on whether
+/// browse_navigate_cdp was used for the last navigation.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct EngineStatusInput {}
+
+// ═══════════════════════════════════════════════════════════════════
 // TLS VERIFICATION
 // ═══════════════════════════════════════════════════════════════════
 

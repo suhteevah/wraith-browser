@@ -125,6 +125,10 @@ pub struct WraithHandler {
     /// Whether to auto-fallback to CDP when native rendering detects a SPA
     #[cfg(feature = "cdp")]
     cdp_auto: bool,
+    /// Active CDP session — when Some, all browse_* commands route to this engine
+    /// instead of self.engine. Set by browse_navigate_cdp, cleared by browse_navigate.
+    #[cfg(feature = "cdp")]
+    active_cdp_session: Arc<Mutex<Option<Arc<Mutex<dyn BrowserEngine>>>>>,
 }
 
 impl Default for WraithHandler {
@@ -391,12 +395,15 @@ impl WraithHandler {
             make_tool("browse_login",
                 "Perform a full login flow: navigate to a login page, fill username + password, click submit, and follow the entire OAuth/auth redirect chain (302 -> 302 -> 200). Captures all Set-Cookie headers at every redirect hop. Returns the final page snapshot and all cookies set during the flow. Use this instead of separate navigate/fill/click when you need reliable auth with cookie persistence across redirects.",
                 &schema_for!(LoginInput), rw_open),
+            make_tool("browse_engine_status",
+                "Check which browser engine is currently active: 'native (Sevro)' or 'CDP (Chrome)'. After browse_navigate_cdp, all browse_* commands automatically route to the CDP engine. After browse_navigate (native), they route back to the native engine.",
+                &schema_for!(EngineStatusInput), ro_closed),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
 
         #[cfg(feature = "cdp")]
-        { return Self { tools, engine, cdp_engine: None, cdp_auto: false }; }
+        { return Self { tools, engine, cdp_engine: None, cdp_auto: false, active_cdp_session: Arc::new(Mutex::new(None)) }; }
 
         #[cfg(not(feature = "cdp"))]
         Self { tools, engine }
@@ -481,7 +488,7 @@ impl WraithHandler {
             cdp_auto_fallback = cdp_auto,
             "Wraith MCP handler initialized (CDP-enabled)"
         );
-        Self { tools, engine, cdp_engine, cdp_auto }
+        Self { tools, engine, cdp_engine, cdp_auto, active_cdp_session: Arc::new(Mutex::new(None)) }
     }
 
     /// Build the default engine: Sevro → NativeEngine fallback.
@@ -555,6 +562,34 @@ impl WraithHandler {
         (None, cdp_auto)
     }
 
+    /// Get the currently active browser engine. If a CDP session is active
+    /// (from browse_navigate_cdp), returns that; otherwise returns the native engine.
+    fn active_engine(&self) -> Arc<Mutex<dyn BrowserEngine>> {
+        #[cfg(feature = "cdp")]
+        {
+            // Try to check without blocking — if we can't get the lock, fall back to native
+            // Note: this is called from async context, the actual lock is cheap (no contention)
+            if let Ok(guard) = self.active_cdp_session.try_lock() {
+                if let Some(ref cdp) = *guard {
+                    return cdp.clone();
+                }
+            }
+        }
+        self.engine.clone()
+    }
+
+    /// Async version of active_engine — waits for the lock.
+    async fn active_engine_async(&self) -> Arc<Mutex<dyn BrowserEngine>> {
+        #[cfg(feature = "cdp")]
+        {
+            let guard = self.active_cdp_session.lock().await;
+            if let Some(ref cdp) = *guard {
+                return cdp.clone();
+            }
+        }
+        self.engine.clone()
+    }
+
     /// Dispatch a tool call to the real browser.
     async fn dispatch_tool(
         &self,
@@ -567,6 +602,16 @@ impl WraithHandler {
             "browse_navigate" => {
                 let input: NavigateInput = parse_args(args)?;
                 info!(url = %input.url, "Navigating");
+
+                // Clear active CDP session — switch back to native engine
+                #[cfg(feature = "cdp")]
+                {
+                    let mut cdp_session = self.active_cdp_session.lock().await;
+                    if cdp_session.is_some() {
+                        info!("Switching from CDP to native engine");
+                        *cdp_session = None;
+                    }
+                }
 
                 let mut engine = self.engine.lock().await;
                 engine.navigate(&input.url).await
@@ -622,31 +667,49 @@ impl WraithHandler {
 
                 // Lazily create CDP engine on first use
                 use openclaw_browser_core::engine_cdp::CdpEngine;
-                let mut cdp_engine = CdpEngine::new().await
+                let cdp_engine = CdpEngine::new().await
                     .map_err(|e| ErrorData::internal_error(
                         format!("CDP engine launch failed: {e}. Ensure Chrome is installed."), None
                     ))?;
 
-                cdp_engine.navigate(&input.url).await
-                    .map_err(|e| ErrorData::internal_error(
-                        format!("CDP navigation failed: {e}"), None
-                    ))?;
+                let cdp_arc: Arc<Mutex<dyn BrowserEngine>> = Arc::new(Mutex::new(cdp_engine));
 
-                let snapshot = cdp_engine.snapshot().await
-                    .map_err(|e| ErrorData::internal_error(
-                        format!("CDP snapshot failed: {e}"), None
-                    ))?;
+                {
+                    let mut eng = cdp_arc.lock().await;
+                    eng.navigate(&input.url).await
+                        .map_err(|e| ErrorData::internal_error(
+                            format!("CDP navigation failed: {e}"), None
+                        ))?;
+                }
 
-                let _ = cdp_engine.shutdown().await;
+                let snapshot = {
+                    let eng = cdp_arc.lock().await;
+                    eng.snapshot().await
+                        .map_err(|e| ErrorData::internal_error(
+                            format!("CDP snapshot failed: {e}"), None
+                        ))?
+                };
+
+                // Store the CDP engine as the active session — subsequent browse_*
+                // commands will route to it instead of the native engine.
+                {
+                    let mut cdp_session = self.active_cdp_session.lock().await;
+                    *cdp_session = Some(cdp_arc);
+                }
+                info!("CDP engine stored as active session — subsequent browse_* commands route to CDP");
+
                 let response = snapshot.to_agent_text();
-                Ok(CallToolResult::success(vec![Content::text(response)]))
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("[CDP engine active — all browse_* commands now use Chrome]\n\n{}", response)
+                )]))
             }
 
             "browse_click" => {
                 let input: ClickInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, "Clicking element");
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id, force: input.force }).await
                     .map_err(|e| ErrorData::internal_error(format!("Click failed: {e}"), None))?;
 
@@ -667,7 +730,8 @@ impl WraithHandler {
                 let input: FillInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, text_len = input.text.len(), "Filling field");
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::Fill {
                     ref_id: input.ref_id,
                     text: input.text,
@@ -680,7 +744,8 @@ impl WraithHandler {
 
             "browse_snapshot" => {
                 debug!("Taking DOM snapshot");
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let snapshot = engine.snapshot().await
                     .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?;
 
@@ -691,7 +756,8 @@ impl WraithHandler {
                 let input: ExtractInput = parse_args(args)?;
                 info!(max_tokens = ?input.max_tokens, "Extracting content");
 
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let html = engine.page_source().await
                     .map_err(|e| ErrorData::internal_error(format!("No page loaded: {e}"), None))?;
                 let url = engine.current_url().await.unwrap_or_default();
@@ -722,7 +788,8 @@ impl WraithHandler {
             }
 
             "browse_screenshot" => {
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 match engine.screenshot().await {
                     Ok(png_bytes) => {
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
@@ -774,7 +841,8 @@ impl WraithHandler {
                 let input: EvalJsInput = parse_args(args)?;
                 info!(script_len = input.code.len(), "Evaluating JavaScript");
 
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 match engine.eval_js(&input.code).await {
                     Ok(result) => {
                         Ok(CallToolResult::success(vec![Content::text(
@@ -790,7 +858,8 @@ impl WraithHandler {
             }
 
             "browse_tabs" => {
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let url = engine.current_url().await.unwrap_or_else(|| "(no page loaded)".to_string());
                 let title = engine.snapshot().await
                     .map(|s| s.title.clone())
@@ -807,7 +876,8 @@ impl WraithHandler {
             }
 
             "browse_back" => {
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::GoBack).await
                     .map_err(|e| ErrorData::internal_error(format!("Back failed: {e}"), None))?;
 
@@ -825,7 +895,8 @@ impl WraithHandler {
                 let input: KeyPressInput = parse_args(args)?;
                 // In native mode, Enter on a form triggers submit
                 if input.key.eq_ignore_ascii_case("enter") {
-                    let mut engine = self.engine.lock().await;
+                    let engine_arc = self.active_engine_async().await;
+                    let mut engine = engine_arc.lock().await;
                     // Get the current snapshot and find a submit button or regular button
                     if let Ok(snapshot) = engine.snapshot().await {
                         let submit_el = snapshot.elements.iter().find(|el| {
@@ -859,7 +930,8 @@ impl WraithHandler {
                 };
                 let amount = input.amount.unwrap_or(500);
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::Scroll { direction, amount }).await
                     .map_err(|e| ErrorData::internal_error(format!("Scroll failed: {e}"), None))?;
 
@@ -868,7 +940,8 @@ impl WraithHandler {
 
             "browse_scroll_to" => {
                 let input: ScrollToInput = parse_args(args)?;
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::ScrollTo { ref_id: input.ref_id }).await
                     .map_err(|e| ErrorData::internal_error(format!("ScrollTo failed: {e}"), None))?;
 
@@ -1023,7 +1096,8 @@ impl WraithHandler {
 
             "browse_select" => {
                 let input: SelectInput = parse_args(args)?;
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::Select { ref_id: input.ref_id, value: input.value, force: input.force }).await
                     .map_err(|e| ErrorData::internal_error(format!("Select failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
@@ -1031,7 +1105,8 @@ impl WraithHandler {
 
             "browse_type" => {
                 let input: TypeTextInput = parse_args(args)?;
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::TypeText {
                     ref_id: input.ref_id,
                     text: input.text,
@@ -1044,7 +1119,8 @@ impl WraithHandler {
 
             "browse_hover" => {
                 let input: HoverInput = parse_args(args)?;
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::Hover { ref_id: input.ref_id }).await
                     .map_err(|e| ErrorData::internal_error(format!("Hover failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
@@ -1052,7 +1128,8 @@ impl WraithHandler {
 
             "browse_wait" => {
                 let input: WaitInput = parse_args(args)?;
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 if let Some(selector) = input.selector {
                     let result = engine.execute_action(BrowserAction::WaitForSelector {
                         selector,
@@ -1069,14 +1146,16 @@ impl WraithHandler {
             }
 
             "browse_forward" => {
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::GoForward).await
                     .map_err(|e| ErrorData::internal_error(format!("Forward failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
 
             "browse_reload" => {
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::Reload).await
                     .map_err(|e| ErrorData::internal_error(format!("Reload failed: {e}"), None))?;
                 Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
@@ -1107,7 +1186,8 @@ impl WraithHandler {
                     context: None,
                 };
 
-                let mut agent = openclaw_agent_loop::Agent::new(config, self.engine.clone(), backend);
+                let active_engine = self.active_engine_async().await;
+                let mut agent = openclaw_agent_loop::Agent::new(config, active_engine, backend);
                 match agent.run(task).await {
                     Ok(output) => Ok(CallToolResult::success(vec![Content::text(output)])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Task failed: {e}"))]))
@@ -1181,7 +1261,8 @@ impl WraithHandler {
             // === Config ===
 
             "browse_config" => {
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let caps = engine.capabilities();
                 let has_flaresolverr = std::env::var("WRAITH_FLARESOLVERR").is_ok();
                 let has_proxy = std::env::var("WRAITH_PROXY").is_ok();
@@ -1197,7 +1278,8 @@ impl WraithHandler {
 
             "cookie_get" => {
                 let input: CookieGetInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 // Use eval_js to read cookies from the JS environment
                 match engine.eval_js("__wraith_get_cookies()").await {
                     Ok(cookies_json) => {
@@ -1216,7 +1298,8 @@ impl WraithHandler {
             "cookie_set" => {
                 let input: CookieSetInput = parse_args(args)?;
                 let path = input.path.unwrap_or_else(|| "/".to_string());
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
 
                 // Store in the engine's cookie jar (used by http_fetch)
                 engine.set_cookie_values(&input.domain, &input.name, &input.value, &path).await;
@@ -1339,7 +1422,8 @@ impl WraithHandler {
 
             "site_fingerprint" => {
                 let _input: SiteFingerprintInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let html = engine.page_source().await.unwrap_or_default();
                 let url = engine.current_url().await.unwrap_or_default();
                 let domain = url::Url::parse(&url)
@@ -1365,7 +1449,8 @@ impl WraithHandler {
 
             "page_diff" => {
                 let _input: PageDiffInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let url = engine.current_url().await.unwrap_or_default();
                 let current_html = engine.page_source().await.unwrap_or_default();
 
@@ -1395,7 +1480,8 @@ impl WraithHandler {
 
             "browse_wait_navigation" => {
                 let input: WaitForNavigationInput = parse_args(args)?;
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::WaitForNavigation {
                     timeout_ms: input.timeout_ms.unwrap_or(5000),
                 }).await
@@ -1448,7 +1534,8 @@ impl WraithHandler {
             "cookie_save" => {
                 let input: CookieSaveInput = parse_args(args)?;
                 let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".openclaw").join("cookies.json").to_string_lossy().to_string());
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 match engine.eval_js("__wraith_get_cookies()").await {
                     Ok(json) => match std::fs::write(&path, &json) {
                         Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Cookies saved to {path}"))])),
@@ -1462,7 +1549,8 @@ impl WraithHandler {
                 let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".openclaw").join("cookies.json").to_string_lossy().to_string());
                 match std::fs::read_to_string(&path) {
                     Ok(json) => {
-                        let engine = self.engine.lock().await;
+                        let engine_arc = self.active_engine_async().await;
+                        let engine = engine_arc.lock().await;
                         match engine.eval_js(&format!("Object.assign(__wraith_cookies, {})", json)).await {
                             Ok(_) => Ok(CallToolResult::success(vec![Content::text(format!("Cookies loaded from {path}"))])),
                             Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Inject failed: {e}"))]))
@@ -1552,7 +1640,8 @@ impl WraithHandler {
             }
             "dom_query_selector" => {
                 let input: DomQuerySelectorInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 match engine.eval_js(&format!("document.querySelectorAll({}).length", serde_json::to_string(&input.selector).unwrap_or_default())).await {
                     Ok(n) => Ok(CallToolResult::success(vec![Content::text(format!("'{}' matched {} elements", input.selector, n))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Query failed: {e}"))]))
@@ -1560,7 +1649,8 @@ impl WraithHandler {
             }
             "dom_get_attribute" => {
                 let input: DomGetAttributeInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let js = format!(r#"(()=>{{var els=document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]');var v=Array.from(els).filter(e=>{{var r=e.getBoundingClientRect();return r.width>0&&r.height>0}});var el=v[{}-1];return el?el.getAttribute('{}'):null}})()"#, input.ref_id, input.name);
                 match engine.eval_js(&js).await {
                     Ok(val) => Ok(CallToolResult::success(vec![Content::text(format!("@e{}.{} = {}", input.ref_id, input.name, val))])),
@@ -1569,7 +1659,8 @@ impl WraithHandler {
             }
             "dom_set_attribute" => {
                 let input: DomSetAttributeInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let js = format!(r#"(()=>{{var els=document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]');var v=Array.from(els).filter(e=>{{var r=e.getBoundingClientRect();return r.width>0&&r.height>0}});var el=v[{}-1];if(el){{el.setAttribute('{}','{}');return'OK'}}return'NOT_FOUND'}})()"#, input.ref_id, input.name, input.value);
                 match engine.eval_js(&js).await {
                     Ok(r) => Ok(CallToolResult::success(vec![Content::text(format!("Set @e{}.{}='{}': {}", input.ref_id, input.name, input.value, r))])),
@@ -1578,7 +1669,8 @@ impl WraithHandler {
             }
             "dom_focus" => {
                 let input: DomFocusInput = parse_args(args)?;
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let js = format!(r#"(()=>{{var els=document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"]');var v=Array.from(els).filter(e=>{{var r=e.getBoundingClientRect();return r.width>0&&r.height>0}});var el=v[{}-1];if(el){{el.focus();return'focused'}}return'not found'}})()"#, input.ref_id);
                 match engine.eval_js(&js).await {
                     Ok(r) => Ok(CallToolResult::success(vec![Content::text(format!("@e{}: {}", input.ref_id, r))])),
@@ -1602,7 +1694,8 @@ impl WraithHandler {
                 }
             }
             "extract_article" => {
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let html = engine.page_source().await.unwrap_or_default();
                 let url = engine.current_url().await.unwrap_or_default();
                 match openclaw_content_extract::readability::extract_article(&html, &url) {
@@ -1612,7 +1705,7 @@ impl WraithHandler {
             }
             "extract_markdown" => {
                 let input: ExtractMarkdownInput = parse_args(args)?;
-                let html = if let Some(h) = input.html { h } else { let e = self.engine.lock().await; e.page_source().await.unwrap_or_default() };
+                let html = if let Some(h) = input.html { h } else { let ea = self.active_engine_async().await; let e = ea.lock().await; e.page_source().await.unwrap_or_default() };
                 match openclaw_content_extract::markdown::html_to_markdown(&html) {
                     Ok(md) => Ok(CallToolResult::success(vec![Content::text(md)])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Markdown failed: {e}"))]))
@@ -1620,7 +1713,7 @@ impl WraithHandler {
             }
             "extract_plain_text" => {
                 let input: ExtractPlainTextInput = parse_args(args)?;
-                let html = if let Some(h) = input.html { h } else { let e = self.engine.lock().await; e.page_source().await.unwrap_or_default() };
+                let html = if let Some(h) = input.html { h } else { let ea = self.active_engine_async().await; let e = ea.lock().await; e.page_source().await.unwrap_or_default() };
                 match openclaw_content_extract::markdown::html_to_plain_text(&html) {
                     Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Plain text failed: {e}"))]))
@@ -1631,7 +1724,8 @@ impl WraithHandler {
                 Ok(CallToolResult::success(vec![Content::text(format!("OCR: {} regions, language: {}", result.regions.len(), result.language))]))
             }
             "auth_detect" => {
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let html = engine.page_source().await.unwrap_or_default();
                 let url = engine.current_url().await.unwrap_or_default();
                 let mut flows = Vec::new();
@@ -1786,7 +1880,8 @@ impl WraithHandler {
             "prefetch_predict" => {
                 let input: PrefetchPredictInput = parse_args(args)?;
                 let predictor = openclaw_agent_loop::prefetch::PrefetchPredictor::new(openclaw_agent_loop::prefetch::PrefetchConfig::default());
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let snapshot = engine.snapshot().await.ok();
                 let preds = predictor.predict(&input.task_description, "", "", &[], &[]);
                 if preds.is_empty() { Ok(CallToolResult::success(vec![Content::text("No predictions. Navigate first.")])) }
@@ -1795,7 +1890,8 @@ impl WraithHandler {
             "swarm_fan_out" => {
                 let input: SwarmFanOutInput = parse_args(args)?;
                 let mut results = Vec::new();
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 for url in &input.urls {
                     match engine.navigate(url).await {
                         Ok(()) => { let t = engine.snapshot().await.map(|s| s.title.clone()).unwrap_or_default(); results.push(format!("  {} — {}", url, t)); }
@@ -1888,7 +1984,8 @@ impl WraithHandler {
 
                 info!(file = %file_name, size = file_bytes.len(), mime = %mime_type, ref_id, "Uploading file");
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::UploadFile {
                     ref_id,
                     file_name: file_name.to_string(),
@@ -1903,7 +2000,8 @@ impl WraithHandler {
             "browse_submit_form" => {
                 let input: SubmitFormInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, "Submitting form");
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
                 let result = engine.execute_action(BrowserAction::SubmitForm { ref_id: input.ref_id }).await
                     .map_err(|e| ErrorData::internal_error(format!("Submit failed: {e}"), None))?;
                 // Wait a moment for the submission to process
@@ -1920,7 +2018,8 @@ impl WraithHandler {
             "browse_custom_dropdown" => {
                 let input: CustomDropdownInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, value = %input.value, "Custom dropdown interaction");
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
 
                 // Step 1: Click to open the dropdown
                 let _ = engine.execute_action(BrowserAction::Click { ref_id: input.ref_id, force: None }).await;
@@ -2080,7 +2179,8 @@ impl WraithHandler {
 
                 match cookies_result {
                     Ok(rows) => {
-                        let mut engine = self.engine.lock().await;
+                        let engine_arc = self.active_engine_async().await;
+                        let mut engine = engine_arc.lock().await;
                         let mut injected = 0;
                         let mut decrypt_errors = 0u32;
                         for (host, name, encrypted_value) in &rows {
@@ -2135,7 +2235,8 @@ impl WraithHandler {
                 let _input: FetchScriptsInput = parse_args(args)?;
                 info!("Fetching external scripts for current page");
 
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let html = engine.page_source().await.unwrap_or_default();
                 let url = engine.current_url().await.unwrap_or_default();
                 drop(engine); // Release lock before async HTTP calls
@@ -2208,7 +2309,8 @@ impl WraithHandler {
                 if scripts.is_empty() && inline_scripts.is_empty() {
                     Ok(CallToolResult::success(vec![Content::text("No scripts found (external or inline).")]))
                 } else {
-                    let engine = self.engine.lock().await;
+                    let engine_arc2 = self.active_engine_async().await;
+                    let engine = engine_arc2.lock().await;
                     let mut executed = 0;
                     let mut failed = 0;
                     let mut dynamic_urls: Vec<String> = Vec::new();
@@ -2295,7 +2397,8 @@ impl WraithHandler {
                 let input: DismissOverlayInput = parse_args(args)?;
                 info!(ref_id = ?input.ref_id, "Dismissing overlay");
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
 
                 // Find the close button via JS
                 let find_js = if let Some(ref_id) = input.ref_id {
@@ -2352,7 +2455,8 @@ impl WraithHandler {
                 let page_url = if let Some(u) = input.url {
                     u
                 } else {
-                    let engine = self.engine.lock().await;
+                    let engine_arc = self.active_engine_async().await;
+                    let engine = engine_arc.lock().await;
                     engine.current_url().await.unwrap_or_default()
                 };
 
@@ -2360,7 +2464,8 @@ impl WraithHandler {
                 let site_key = if let Some(sk) = input.site_key {
                     sk
                 } else {
-                    let engine = self.engine.lock().await;
+                    let engine_arc = self.active_engine_async().await;
+                    let engine = engine_arc.lock().await;
                     let detect_js = r#"(() => {
                         var el = document.querySelector('[data-sitekey]');
                         if (el) return el.dataset.sitekey || el.getAttribute('data-sitekey');
@@ -2530,7 +2635,8 @@ impl WraithHandler {
                     ),
                 };
 
-                let engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
                 let _ = engine.eval_js(&inject_js).await;
 
                 Ok(CallToolResult::success(vec![Content::text(
@@ -2697,7 +2803,8 @@ impl WraithHandler {
                 let input: EnterIframeInput = parse_args(args)?;
                 info!(ref_id = input.ref_id, "Entering iframe context");
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
 
                 // Get the current snapshot to find the iframe element's src URL
                 let snapshot = engine.snapshot().await
@@ -2753,7 +2860,8 @@ impl WraithHandler {
                 let input: LoginInput = parse_args(args)?;
                 info!(url = %input.url, "Login flow starting");
 
-                let mut engine = self.engine.lock().await;
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
 
                 // Step 1: Navigate to the login page
                 engine.navigate(&input.url).await
@@ -2821,6 +2929,28 @@ impl WraithHandler {
                 );
 
                 Ok(CallToolResult::success(vec![Content::text(response)]))
+            }
+
+            "browse_engine_status" => {
+                #[cfg(feature = "cdp")]
+                {
+                    let guard = self.active_cdp_session.lock().await;
+                    if guard.is_some() {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            "Active engine: CDP (Chrome)\n\nAll browse_* commands are routed to the Chrome DevTools Protocol engine.\nCall browse_navigate to switch back to the native (Sevro) engine."
+                        )]))
+                    } else {
+                        Ok(CallToolResult::success(vec![Content::text(
+                            "Active engine: native (Sevro)\n\nAll browse_* commands use the native Sevro engine.\nCall browse_navigate_cdp to switch to Chrome CDP for JS-heavy pages."
+                        )]))
+                    }
+                }
+                #[cfg(not(feature = "cdp"))]
+                {
+                    Ok(CallToolResult::success(vec![Content::text(
+                        "Active engine: native (Sevro)\n\nCDP support not compiled in. Build with --features cdp to enable Chrome."
+                    )]))
+                }
             }
 
             _ => {
