@@ -1139,7 +1139,8 @@ fn find_chrome_binary() -> Option<String> {
 
 /// Poll the Chrome DevTools HTTP endpoint until it responds with the WebSocket URL.
 async fn wait_for_devtools(port: u16) -> BrowserResult<String> {
-    let url = format!("http://127.0.0.1:{port}/json/version");
+    let targets_url = format!("http://127.0.0.1:{port}/json");
+    let version_url = format!("http://127.0.0.1:{port}/json/version");
     let start = std::time::Instant::now();
 
     loop {
@@ -1150,21 +1151,43 @@ async fn wait_for_devtools(port: u16) -> BrowserResult<String> {
             )));
         }
 
-        match reqwest::get(&url).await {
+        // First check if Chrome is ready via /json/version
+        let version_ok = reqwest::get(&version_url).await.map(|r| r.status().is_success()).unwrap_or(false);
+        if !version_ok {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+
+        // Get page targets from /json (NOT /json/version which is browser-level)
+        // Page.enable only works on page targets, not browser targets
+        match reqwest::get(&targets_url).await {
             Ok(resp) if resp.status().is_success() => {
-                let body: Value = resp.json().await.map_err(|e| {
-                    BrowserError::LaunchFailed(format!("parse /json/version: {e}"))
+                let targets: Vec<Value> = resp.json().await.map_err(|e| {
+                    BrowserError::LaunchFailed(format!("parse /json targets: {e}"))
                 })?;
-                let ws_url = body
-                    .get("webSocketDebuggerUrl")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        BrowserError::LaunchFailed(
-                            "No webSocketDebuggerUrl in /json/version".into(),
-                        )
-                    })?
-                    .to_string();
-                return Ok(ws_url);
+
+                // Find a page-type target
+                let page_target = targets.iter().find(|t| {
+                    t.get("type").and_then(|v| v.as_str()) == Some("page")
+                });
+
+                if let Some(target) = page_target {
+                    let ws_url = target
+                        .get("webSocketDebuggerUrl")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            BrowserError::LaunchFailed(
+                                "Page target has no webSocketDebuggerUrl".into(),
+                            )
+                        })?
+                        .to_string();
+                    debug!(ws_url = %ws_url, targets = targets.len(), "Connected to page target");
+                    return Ok(ws_url);
+                }
+
+                // No page target yet — Chrome may still be initializing
+                debug!(targets = targets.len(), "No page target yet, waiting...");
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
             _ => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
