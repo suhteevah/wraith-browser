@@ -48,10 +48,10 @@ pub struct SevroConfig {
     pub enable_javascript: bool,
     /// HTTP/HTTPS/SOCKS5 proxy URL (e.g., "http://user:pass@proxy:8080" or "socks5://127.0.0.1:1080")
     pub proxy_url: Option<String>,
-    /// FlareSolverr URL for Cloudflare Turnstile bypass (e.g., "http://localhost:8191")
+    /// External challenge solver URL for protected page access (e.g., "http://localhost:8191")
     /// Only used as fallback when QuickJS can't solve the challenge.
     pub flaresolverr_url: Option<String>,
-    /// Fallback proxy URL used only when an IP ban is detected.
+    /// Fallback proxy URL used only when an access restriction is detected.
     /// Separate from proxy_url so the primary path stays direct.
     pub fallback_proxy_url: Option<String>,
 }
@@ -236,10 +236,10 @@ impl SevroEngine {
     ///
     /// ## Fallback chain (each tier only fires if the previous fails):
     ///
-    /// 1. **Direct fetch** — stealth TLS + Chrome headers (fastest, ~50ms)
-    /// 2. **QuickJS challenge solver** — if Cloudflare "Just a moment..." detected
-    /// 3. **FlareSolverr** — if QuickJS can't solve (obfuscated Turnstile)
-    /// 4. **Fallback proxy** — if hard IP ban detected ("you have been blocked")
+    /// 1. **Direct fetch** — compatible TLS + Chrome headers (fastest, ~50ms)
+    /// 2. **QuickJS challenge solver** — if challenge page "Just a moment..." detected
+    /// 3. **External solver** — if QuickJS can't solve (obfuscated challenge)
+    /// 4. **Fallback proxy** — if access restriction detected ("you have been blocked")
     #[instrument(skip(self), fields(url = %url))]
     pub async fn navigate(&mut self, url: &str) -> Result<PageEvent, String> {
         info!(url = %url, "Navigating");
@@ -287,29 +287,29 @@ impl SevroEngine {
 
         // === Tier 2: QuickJS challenge solver (for "Just a moment..." pages) ===
         if Self::is_cloudflare_challenge(&html, status) && !Self::is_ip_blocked(&html) {
-            info!(url = %url, status, "Cloudflare challenge detected — Tier 2: QuickJS solver");
+            info!(url = %url, status, "Challenge page detected — Tier 2: QuickJS solver");
 
             if let Some(cookies) = self.try_quickjs_solve(url).await {
                 let retry = self.http_fetch_with_cookies(url, &cookies).await;
                 if let Ok((rs, rh, ru)) = retry {
                     if !Self::is_cloudflare_challenge(&rh, rs) && !Self::is_ip_blocked(&rh) {
-                        info!(status = rs, "Tier 2 bypass successful — QuickJS solved challenge");
+                        info!(status = rs, "Tier 2 resolved — QuickJS solved challenge");
                         self.load_page(&rh, &ru);
                         return Ok(PageEvent::DomContentLoaded);
                     }
                 }
             }
 
-            // === Tier 3: FlareSolverr (for obfuscated Turnstile) ===
-            // Strategy: use FlareSolverr's full page response directly.
+            // === Tier 3: External solver (for obfuscated challenges) ===
+            // Strategy: use the external solver's full page response directly.
             // Cookie replay usually fails because cookies are tied to
-            // FlareSolverr's browser fingerprint, not ours.
+            // the solver's browser profile, not ours.
             if self.config.flaresolverr_url.is_some() {
-                info!(url = %url, "Tier 3: Escalating to FlareSolverr");
+                info!(url = %url, "Tier 3: Escalating to external solver");
 
                 if let Some(page_html) = self.try_flaresolverr_full_page(url).await {
                     if !Self::is_ip_blocked(&page_html) {
-                        info!(html_len = page_html.len(), "Tier 3 bypass successful — FlareSolverr returned real page");
+                        info!(html_len = page_html.len(), "Tier 3 resolved — external solver returned real page");
                         self.load_page(&page_html, url);
                         return Ok(PageEvent::DomContentLoaded);
                     }
@@ -317,27 +317,27 @@ impl SevroEngine {
             }
         }
 
-        // === Tier 3.5: FlareSolverr for IP blocks too ===
-        // FlareSolverr has its own browser + IP — it can bypass both
-        // CF challenges AND IP bans since it runs on a different machine.
+        // === Tier 3.5: External solver for access restrictions too ===
+        // The external solver has its own browser + IP — it can resolve both
+        // challenges AND access restrictions since it runs on a different machine.
         if Self::is_ip_blocked(&html) && self.config.flaresolverr_url.is_some() {
-            info!(url = %url, "Tier 3: IP blocked — FlareSolverr has its own browser+IP, trying it");
+            info!(url = %url, "Tier 3: Access restricted — external solver has its own browser+IP, trying it");
 
             if let Some(cookies) = self.try_flaresolverr(url).await {
                 let retry = self.http_fetch_with_cookies(url, &cookies).await;
                 if let Ok((rs, rh, ru)) = retry {
                     if !Self::is_ip_blocked(&rh) && !Self::is_cloudflare_challenge(&rh, rs) {
-                        info!(status = rs, "FlareSolverr bypass successful — solved IP block + challenge");
+                        info!(status = rs, "External solver resolved access restriction + challenge");
                         self.load_page(&rh, &ru);
                         return Ok(PageEvent::DomContentLoaded);
                     }
                 }
 
-                // Even if our IP can't use the cookies, FlareSolverr may have
+                // Even if our IP can't use the cookies, the external solver may have
                 // returned the actual page content in its response
                 if let Some(page_html) = self.try_flaresolverr_full_page(url).await {
                     if !Self::is_ip_blocked(&page_html) && !Self::is_cloudflare_challenge(&page_html, 200) {
-                        info!("FlareSolverr returned full page content directly");
+                        info!("External solver returned full page content directly");
                         self.load_page(&page_html, url);
                         return Ok(PageEvent::DomContentLoaded);
                     }
@@ -345,20 +345,20 @@ impl SevroEngine {
             }
         }
 
-        // === Tier 4: Fallback proxy (for hard IP bans when no FlareSolverr) ===
+        // === Tier 4: Fallback proxy (for access restrictions when no external solver) ===
         if Self::is_ip_blocked(&html) {
             if let Some(ref fallback_proxy) = self.config.fallback_proxy_url.clone() {
-                info!(url = %url, proxy = %fallback_proxy, "Tier 4: IP banned — retrying via fallback proxy");
+                info!(url = %url, proxy = %fallback_proxy, "Tier 4: Access restricted — retrying via fallback proxy");
 
                 if let Ok((ps, ph, pu)) = self.http_fetch_via_proxy(url, fallback_proxy).await {
                     if !Self::is_ip_blocked(&ph) {
-                        info!(status = ps, "Tier 4 bypass successful — proxy circumvented IP ban");
+                        info!(status = ps, "Tier 4 resolved — proxy resolved access restriction");
                         self.load_page(&ph, &pu);
                         return Ok(PageEvent::DomContentLoaded);
                     }
                 }
             } else if self.config.flaresolverr_url.is_none() {
-                warn!(url = %url, "IP blocked — configure --flaresolverr or --fallback-proxy to bypass");
+                warn!(url = %url, "Access restricted — configure --flaresolverr or --fallback-proxy to resolve");
             }
         }
 
@@ -366,7 +366,7 @@ impl SevroEngine {
     }
 
     /// Ashby API-native hydration: fetch form definition via GraphQL and build synthetic DOM.
-    /// This bypasses the SPA entirely — no React, no ES modules, just direct API access.
+    /// This accesses the API directly — no React, no ES modules, just direct API access.
     async fn try_ashby_api_hydration(&mut self, page_url: &str) {
         // Extract company name and job ID from URL
         // Format: https://jobs.ashbyhq.com/{company}/{job_id}/application
@@ -619,7 +619,7 @@ impl SevroEngine {
     }
 
     /// SPA hydration: after initial page load, check if inline scripts created dynamic
-    /// script elements (Ashby pattern) and fetch+execute them.
+    /// script elements (SPA pattern) and fetch+execute them.
     async fn try_spa_hydration(&mut self, base_url: &str) {
         let js = match self.js.as_ref() {
             Some(js) => js,
@@ -743,7 +743,7 @@ impl SevroEngine {
         }
     }
 
-    /// Detect hard IP bans (different from solvable challenges).
+    /// Detect hard access restrictions (different from solvable challenges).
     fn is_ip_blocked(html: &str) -> bool {
         html.contains("Sorry, you have been blocked")
             || html.contains("Access to this page has been denied")
@@ -784,13 +784,13 @@ impl SevroEngine {
         None
     }
 
-    /// Tier 3: Call FlareSolverr to solve Cloudflare challenge via real browser.
-    /// FlareSolverr must be running (e.g., `docker run -p 8191:8191 flaresolverr/flaresolverr`).
+    /// Tier 3: Call external challenge solver to resolve protected page via real browser.
+    /// The solver must be running (e.g., `docker run -p 8191:8191 flaresolverr/flaresolverr`).
     async fn try_flaresolverr(&self, url: &str) -> Option<String> {
         let solver_url = self.config.flaresolverr_url.as_ref()?;
         let endpoint = format!("{}/v1", solver_url);
 
-        info!(url = %url, solver = %solver_url, "Calling FlareSolverr");
+        info!(url = %url, solver = %solver_url, "Calling external challenge solver");
 
         let mut payload = serde_json::json!({
             "cmd": "request.get",
@@ -798,10 +798,10 @@ impl SevroEngine {
             "maxTimeout": 60000
         });
 
-        // If we have a fallback proxy, tell FlareSolverr to use it too
+        // If we have a fallback proxy, tell the solver to use it too
         if let Some(ref proxy) = self.config.fallback_proxy_url {
             payload["proxy"] = serde_json::json!({"url": proxy});
-            info!(proxy = %proxy, "FlareSolverr using proxy");
+            info!(proxy = %proxy, "External solver using proxy");
         }
 
         let response = self.client.post(&endpoint)
@@ -809,14 +809,14 @@ impl SevroEngine {
             .send()
             .await
             .map_err(|e| {
-                warn!(error = %e, "FlareSolverr request failed");
+                warn!(error = %e, "External solver request failed");
                 e
             })
             .ok()?;
 
         let body: serde_json::Value = response.json().await.ok()?;
 
-        // Extract cookies from FlareSolverr response
+        // Extract cookies from solver response
         let cookies = body["solution"]["cookies"].as_array()?;
         let cookie_header: String = cookies.iter()
             .filter_map(|c| {
@@ -828,28 +828,28 @@ impl SevroEngine {
             .join("; ");
 
         if cookie_header.is_empty() {
-            warn!("FlareSolverr returned no cookies");
+            warn!("External solver returned no cookies");
             return None;
         }
 
-        // Also check if FlareSolverr returned the actual page content
+        // Also check if the solver returned the actual page content
         if let Some(solution_html) = body["solution"]["response"].as_str() {
             if !solution_html.is_empty() && !Self::is_cloudflare_challenge(solution_html, 200) {
-                info!(cookie_count = cookies.len(), "FlareSolverr solved challenge — cookies captured");
+                info!(cookie_count = cookies.len(), "External solver resolved challenge — cookies captured");
             }
         }
 
         Some(cookie_header)
     }
 
-    /// Tier 3 variant: get the full page HTML from FlareSolverr's response.
-    /// FlareSolverr returns the rendered page content — we can use it directly
-    /// without needing to replay cookies (which may be IP-locked anyway).
+    /// Tier 3 variant: get the full page HTML from the external solver's response.
+    /// The solver returns the rendered page content — we can use it directly
+    /// without needing to replay cookies (which may be restricted anyway).
     async fn try_flaresolverr_full_page(&self, url: &str) -> Option<String> {
         let solver_url = self.config.flaresolverr_url.as_ref()?;
         let endpoint = format!("{}/v1", solver_url);
 
-        info!(url = %url, "FlareSolverr: requesting full page content");
+        info!(url = %url, "External solver: requesting full page content");
 
         let mut payload = serde_json::json!({
             "cmd": "request.get",
@@ -866,7 +866,7 @@ impl SevroEngine {
             .send()
             .await
             .map_err(|e| {
-                warn!(error = %e, "FlareSolverr request failed");
+                warn!(error = %e, "External solver request failed");
                 e
             })
             .ok()?;
@@ -876,7 +876,7 @@ impl SevroEngine {
         // Check status
         let status = body["solution"]["status"].as_i64().unwrap_or(0);
         if status != 200 {
-            warn!(status, "FlareSolverr returned non-200 status");
+            warn!(status, "External solver returned non-200 status");
         }
 
         // Extract the full rendered HTML
@@ -888,13 +888,13 @@ impl SevroEngine {
         info!(
             html_len = html.len(),
             status,
-            "FlareSolverr returned page content"
+            "External solver returned page content"
         );
 
         Some(html.to_string())
     }
 
-    /// Fetch via a specific proxy (for Tier 4 IP ban fallback).
+    /// Fetch via a specific proxy (for Tier 4 access restriction fallback).
     async fn http_fetch_via_proxy(&self, url: &str, proxy_url: &str) -> Result<(u16, String, String), String> {
         debug!(url = %url, proxy = %proxy_url, "Fetching via fallback proxy");
 
@@ -994,8 +994,8 @@ impl SevroEngine {
         }
     }
 
-    /// Detect if an HTTP response is a Cloudflare challenge page (not a solved page).
-    /// A page with real content that also has CF remnants is NOT a challenge.
+    /// Detect if an HTTP response is a challenge page (not a solved page).
+    /// A page with real content that also has challenge remnants is NOT a challenge.
     fn is_cloudflare_challenge(html: &str, _status: u16) -> bool {
         // If the page has substantial content (>50KB), it's probably real content
         // with leftover CF scripts/tags — not an unsolved challenge.
@@ -1004,7 +1004,7 @@ impl SevroEngine {
             return false;
         }
 
-        // Cloudflare challenge signatures
+        // Challenge page signatures
         html.contains("cf-browser-verification")
             || html.contains("Checking if the site connection is secure")
             || html.contains("Attention Required! | Cloudflare")
@@ -1015,9 +1015,9 @@ impl SevroEngine {
             || (html.contains("cloudflare") && html.contains("challenge"))
     }
 
-    /// Fetch with explicit cookie header (for CF bypass retry).
+    /// Fetch with explicit cookie header (for challenge resolution retry).
     async fn http_fetch_with_cookies(&self, url: &str, cookies: &str) -> Result<(u16, String, String), String> {
-        debug!(url = %url, "Retrying with Cloudflare cookies");
+        debug!(url = %url, "Retrying with challenge cookies");
 
         #[cfg(feature = "stealth-tls")]
         {
@@ -1594,7 +1594,7 @@ impl SevroEngine {
         }
     }
 
-    /// Fetch a URL using stealth TLS (rquest/BoringSSL) if available,
+    /// Fetch a URL using compatible TLS (rquest/BoringSSL) if available,
     /// falling back to reqwest (rustls) otherwise.
     /// Returns (status, body, final_url, set_cookie_headers).
     /// Redirect policy follows up to 10 hops; cookie_store preserves cookies
@@ -1602,7 +1602,7 @@ impl SevroEngine {
     async fn http_fetch(&self, url: &str) -> Result<(u16, String, String, Vec<String>), String> {
         #[cfg(feature = "stealth-tls")]
         {
-            debug!(url = %url, "Fetching with stealth TLS (rquest + BoringSSL)");
+            debug!(url = %url, "Fetching with compatible TLS (rquest + BoringSSL)");
 
             let client = rquest::Client::builder()
                 .emulation(Emulation::Chrome136)
@@ -1615,7 +1615,7 @@ impl SevroEngine {
 
             // Attach stored cookies (including any injected via cookie_set)
             if let Some(cookie_header) = self.cookie_header_for_url(url) {
-                debug!(cookies = %cookie_header, "Attaching stored cookies to stealth request");
+                debug!(cookies = %cookie_header, "Attaching stored cookies to enhanced request");
                 req = req.header("Cookie", cookie_header);
             }
 
@@ -1630,7 +1630,7 @@ impl SevroEngine {
                 .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
                 .collect();
             if !set_cookies.is_empty() {
-                debug!(count = set_cookies.len(), "Captured Set-Cookie headers from stealth response");
+                debug!(count = set_cookies.len(), "Captured Set-Cookie headers from enhanced response");
             }
             let body = response.text().await
                 .map_err(|e| format!("rquest body failed: {e}"))?;
@@ -1640,7 +1640,7 @@ impl SevroEngine {
 
         #[cfg(not(feature = "stealth-tls"))]
         {
-            debug!(url = %url, "Fetching with reqwest (rustls — TLS fingerprint may differ from Chrome)");
+            debug!(url = %url, "Fetching with reqwest (rustls — TLS profile may differ from Chrome)");
 
             let mut req = self.client.get(url)
                 .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
@@ -1682,7 +1682,7 @@ impl SevroEngine {
         }
     }
 
-    /// Check if stealth TLS is available.
+    /// Check if compatible TLS is available.
     pub fn has_stealth_tls() -> bool {
         cfg!(feature = "stealth-tls")
     }

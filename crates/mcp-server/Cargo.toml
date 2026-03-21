@@ -39,3 +39,5 @@ chrono.workspace = true
 rusqlite.workspace = true
 scraper.workspace = true
 aes-gcm.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true

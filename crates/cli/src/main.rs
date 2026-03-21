@@ -27,11 +27,11 @@ struct Cli {
     #[arg(long, global = true)]
     proxy: Option<String>,
 
-    /// FlareSolverr URL for Cloudflare bypass fallback (e.g., "http://localhost:8191")
+    /// External challenge-solving proxy URL (e.g., "http://localhost:8191")
     #[arg(long, global = true)]
     flaresolverr: Option<String>,
 
-    /// Fallback proxy for IP ban bypass (only used when blocked, not for normal requests)
+    /// Fallback proxy for access-restricted sites
     #[arg(long, global = true)]
     fallback_proxy: Option<String>,
 }

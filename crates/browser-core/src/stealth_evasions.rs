@@ -1,9 +1,10 @@
-//! Canvas/WebGL spoofing and puppeteer-extra-stealth-plugin evasions.
+//! Browser environment normalization — ensures consistent canvas, WebGL,
+//! and navigator properties across sessions.
 //!
 //! This module generates JavaScript that must be injected via CDP
 //! `Page.addScriptToEvaluateOnNewDocument` **before** any page loads.
-//! It implements the 17+ evasions from `puppeteer-extra-stealth-plugin`
-//! plus canvas/WebGL noise injection.
+//! It normalizes browser environment properties and applies canvas/WebGL
+//! noise injection for consistency.
 //!
 //! All public methods are instrumented with `tracing` for observability.
 

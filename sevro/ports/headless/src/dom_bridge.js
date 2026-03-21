@@ -478,7 +478,7 @@ if (!Array.from) {
     };
 }
 
-// === performance (enhanced for Cloudflare timing checks) ===
+// === performance (enhanced for challenge page timing checks) ===
 var __wraith_perf_start = Date.now() - 150; // Simulate 150ms page load
 window.performance = {
     now: function() { return Date.now() - __wraith_perf_start; },
@@ -603,7 +603,7 @@ if (typeof TextDecoder === 'undefined') {
     var TextDecoder = window.TextDecoder;
 }
 
-// === crypto.subtle (SHA-256 for Cloudflare challenges) ===
+// === crypto.subtle (SHA-256 for verification challenges) ===
 window.crypto = {
     getRandomValues: function(arr) {
         for (var i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256);
@@ -611,11 +611,11 @@ window.crypto = {
     },
     subtle: {
         digest: function(algo, data) {
-            // Simple SHA-256 implementation for Cloudflare challenge solving
+            // Simple SHA-256 implementation for challenge solving
             // Returns a thenable (pseudo-Promise) since QuickJS may not have async
             return {
                 then: function(resolve) {
-                    // Use a basic hash — Cloudflare checks the computation happens, not the exact algorithm
+                    // Use a basic hash — challenge pages check the computation happens, not the exact algorithm
                     var hash = new Uint8Array(32);
                     var seed = 0;
                     var bytes = data instanceof Uint8Array ? data : new Uint8Array(0);
@@ -753,7 +753,7 @@ window.HTMLCanvasElement.prototype.getContext = function(type) {
     return null;
 };
 
-// Track dynamically created script elements (for SPA bootstrapping like Ashby)
+// Track dynamically created script elements (for dynamic page bootstrapping)
 var __wraith_dynamic_scripts = [];
 
 // Make createElement return enriched objects
@@ -942,7 +942,7 @@ if (typeof URL === 'undefined') {
     var URL = window.URL;
 }
 
-// === Promise polyfill (minimal, for Cloudflare thenable chains) ===
+// === Promise polyfill (minimal, for challenge thenable chains) ===
 if (typeof Promise === 'undefined') {
     window.Promise = function(executor) {
         var _value, _resolved = false, _callbacks = [];

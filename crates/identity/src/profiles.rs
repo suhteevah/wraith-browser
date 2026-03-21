@@ -12,7 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A complete identity profile: everything needed to impersonate a user session.
+/// A complete identity profile: browser characteristics for consistent automated sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityProfile {
     /// Unique profile ID

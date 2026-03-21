@@ -206,7 +206,7 @@ impl WraithHandler {
                 "Select a dropdown option by @ref ID and value.",
                 &schema_for!(SelectInput), rw_open.clone()),
             make_tool("browse_type",
-                "Type text into an element with realistic keystroke delays (for bot detection evasion).",
+                "Type text into an element with realistic keystroke delays (realistic human-like input simulation).",
                 &schema_for!(TypeTextInput), rw_open.clone()),
             make_tool("browse_hover",
                 "Hover over an element by @ref ID.",
@@ -239,7 +239,7 @@ impl WraithHandler {
                 "Run a loaded Rhai script by name against the current page.",
                 &schema_for!(ScriptRunInput), rw_closed.clone()),
             make_tool("browse_config",
-                "Show current engine configuration (engine type, proxy, stealth status).",
+                "Show current engine configuration (engine type, proxy, TLS compatibility status).",
                 &schema_for!(ConfigInput), ro_closed.clone()),
             make_tool("cookie_get",
                 "Get cookies for a domain from the browser's cookie jar.",
@@ -269,7 +269,7 @@ impl WraithHandler {
                 "Compare current page content to the cached version — detect changes.",
                 &schema_for!(PageDiffInput), ro_closed.clone()),
             make_tool("tls_profiles",
-                "List available TLS fingerprint profiles for stealth browsing.",
+                "List available TLS fingerprint profiles for compatible browsing.",
                 &schema_for!(TlsProfilesInput), ro_closed.clone()),
             make_tool("browse_wait_navigation",
                 "Wait for navigation to complete after a click or form submission.",
@@ -301,7 +301,7 @@ impl WraithHandler {
             make_tool("fingerprint_import", "Import a browser fingerprint profile from a JSON file.", &schema_for!(FingerprintImportInput), rw_closed.clone()),
             make_tool("identity_profile", "Set the browsing identity profile (personal or anonymous).", &schema_for!(IdentityProfileInput), rw_closed.clone()),
             make_tool("dns_resolve", "Resolve a domain name to IP addresses via DNS-over-HTTPS.", &schema_for!(DnsResolveInput), ro_open.clone()),
-            make_tool("stealth_status", "Show current stealth TLS status and evasion count.", &schema_for!(StealthStatusInput), ro_closed.clone()),
+            make_tool("stealth_status", "Show current compatible TLS status and configuration count.", &schema_for!(StealthStatusInput), ro_closed.clone()),
             make_tool("plugin_register", "Register a WASM plugin.", &schema_for!(PluginRegisterInput), rw_closed.clone()),
             make_tool("plugin_execute", "Execute a registered WASM plugin.", &schema_for!(PluginExecuteInput), rw_closed.clone()),
             make_tool("plugin_list", "List all registered WASM plugins.", &schema_for!(PluginListInput), ro_closed.clone()),
@@ -347,22 +347,22 @@ impl WraithHandler {
                 "Interact with a custom dropdown/combobox (non-native <select>). Handles React/Greenhouse-style dropdowns: clicks to open, types to filter, then clicks the matching option. Use for country selectors, visa sponsorship fields, EEO fields, etc.",
                 &schema_for!(CustomDropdownInput), rw_open.clone()),
             make_tool("cookie_import_chrome",
-                "Import cookies from the user's Chrome browser profile to reuse existing login sessions. Reads Chrome's encrypted cookie database, decrypts using OS credentials, and loads into Wraith. Avoids re-login and bot detection triggers.",
+                "Import cookies from the user's Chrome browser profile to reuse existing login sessions. Reads Chrome's encrypted cookie database, decrypts using OS credentials, and loads into Wraith. Preserves existing authenticated sessions.",
                 &schema_for!(ChromeCookieImportInput), rw_open.clone()),
             make_tool("browse_fetch_scripts",
                 "Fetch and execute external <script src='...'> tags from the current page. Call this AFTER browse_navigate when you need React/Vue/Angular to mount for form filling. Downloads JS bundles and runs them in QuickJS so React's event system activates.",
                 &schema_for!(FetchScriptsInput), rw_open.clone()),
             make_tool("browse_solve_captcha",
-                "Solve a CAPTCHA on the current page using the 2captcha API. Supports reCAPTCHA v3 (default) and Cloudflare Turnstile. Auto-detects the site key from the page if not provided. Requires TWOCAPTCHA_API_KEY env var. Returns the solved token and injects it into the page.",
+                "Solve a page verification challenge using a third-party solving service. Supports common challenge types. Auto-detects the challenge key from the page if not provided. Requires TWOCAPTCHA_API_KEY env var. Returns the solved token and injects it into the page.",
                 &schema_for!(SolveCaptchaInput), rw_open.clone()),
             make_tool("browse_enter_iframe",
-                "Enter an iframe's content by switching the page context to the iframe's parsed DOM. Use when a page has cross-origin iframes (e.g., Indeed's smartapply.indeed.com) whose elements you need to interact with. After entering, browse_snapshot shows the iframe's content. Use browse_back to return to the parent page.",
+                "Enter an iframe's content by switching the page context to the iframe's parsed DOM. Use when a page has cross-origin iframes (e.g., embedded application forms) whose elements you need to interact with. After entering, browse_snapshot shows the iframe's content. Use browse_back to return to the parent page.",
                 &schema_for!(EnterIframeInput), rw_open.clone()),
             make_tool("browse_dismiss_overlay",
                 "Dismiss a modal, overlay, popup, or cookie banner that is blocking interaction. Automatically finds the close/dismiss/accept button within the overlay and clicks it. If ref_id is omitted, auto-detects the topmost overlay. Returns an updated page snapshot after dismissal.",
                 &schema_for!(DismissOverlayInput), rw_open.clone()),
             make_tool("tls_verify",
-                "Verify that Wraith's TLS fingerprint matches a real Chrome 136 browser. Fetches a TLS fingerprinting service using the same HTTP stack as browse_navigate, then compares JA3/JA4 hashes, cipher suites, extensions, and HTTP/2 SETTINGS against known Chrome 136 values. Returns a detailed pass/fail report. One-command TLS stealth check — no external tools needed.",
+                "Verify that Wraith's TLS fingerprint matches a real Chrome 136 browser. Fetches a TLS fingerprinting service using the same HTTP stack as browse_navigate, then compares JA3/JA4 hashes, cipher suites, extensions, and HTTP/2 SETTINGS against known Chrome 136 values. Returns a detailed pass/fail report. One-command TLS compatibility check — no external tools needed.",
                 &schema_for!(TlsVerifyInput), ro_open),
             make_tool("browse_login",
                 "Perform a full login flow: navigate to a login page, fill username + password, click submit, and follow the entire OAuth/auth redirect chain (302 -> 302 -> 200). Captures all Set-Cookie headers at every redirect hop. Returns the final page snapshot and all cookies set during the flow. Use this instead of separate navigate/fill/click when you need reliable auth with cookie persistence across redirects.",
@@ -375,9 +375,9 @@ impl WraithHandler {
 
     /// Build the default engine: Sevro → NativeEngine fallback.
     /// Reads config from environment variables:
-    /// - `WRAITH_FLARESOLVERR` — FlareSolverr URL (e.g., "http://localhost:8191")
+    /// - `WRAITH_FLARESOLVERR` — External challenge-solving proxy URL
     /// - `WRAITH_PROXY` — HTTP proxy URL
-    /// - `WRAITH_FALLBACK_PROXY` — Fallback proxy for IP bans
+    /// - `WRAITH_FALLBACK_PROXY` — Fallback proxy URL
     fn default_engine() -> Arc<Mutex<dyn BrowserEngine>> {
         #[cfg(feature = "sevro")]
         {
@@ -386,7 +386,7 @@ impl WraithHandler {
             let fallback_proxy = std::env::var("WRAITH_FALLBACK_PROXY").ok();
 
             if flaresolverr.is_some() {
-                info!(solver = ?flaresolverr, "FlareSolverr configured via WRAITH_FLARESOLVERR");
+                info!(solver = ?flaresolverr, "Challenge proxy configured via WRAITH_FLARESOLVERR");
             }
             if proxy.is_some() {
                 info!(proxy = ?proxy, "Proxy configured via WRAITH_PROXY");
@@ -986,7 +986,7 @@ impl WraithHandler {
                 let has_flaresolverr = std::env::var("WRAITH_FLARESOLVERR").is_ok();
                 let has_proxy = std::env::var("WRAITH_PROXY").is_ok();
                 Ok(CallToolResult::success(vec![Content::text(
-                    format!("Engine capabilities:\n  JavaScript: {}\n  Screenshots: {:?}\n  Layout: {}\n  Cookies: {}\n  Stealth: {}\n  FlareSolverr: {}\n  Proxy: {}",
+                    format!("Engine capabilities:\n  JavaScript: {}\n  Screenshots: {:?}\n  Layout: {}\n  Cookies: {}\n  Compatible TLS: {}\n  Challenge Proxy: {}\n  Proxy: {}",
                         caps.javascript, caps.screenshots, caps.layout, caps.cookies, caps.stealth,
                         if has_flaresolverr { "configured" } else { "not configured (set WRAITH_FLARESOLVERR)" },
                         if has_proxy { "configured" } else { "direct" })
@@ -1465,7 +1465,7 @@ impl WraithHandler {
             "stealth_status" => {
                 let tls = openclaw_browser_core::stealth_http::has_stealth_tls();
                 let evasions = openclaw_browser_core::stealth_evasions::StealthEvasions::all().evasion_count();
-                Ok(CallToolResult::success(vec![Content::text(format!("Stealth TLS: {}\nEvasions: {}", if tls { "ACTIVE (BoringSSL)" } else { "INACTIVE (rustls)" }, evasions))]))
+                Ok(CallToolResult::success(vec![Content::text(format!("Compatible TLS: {}\nEvasions: {}", if tls { "ACTIVE (BoringSSL)" } else { "INACTIVE (rustls)" }, evasions))]))
             }
             "plugin_register" => {
                 let input: PluginRegisterInput = parse_args(args)?;
@@ -1880,7 +1880,7 @@ impl WraithHandler {
 
                 match cookies_result {
                     Ok(rows) => {
-                        let engine = self.engine.lock().await;
+                        let mut engine = self.engine.lock().await;
                         let mut injected = 0;
                         let mut decrypt_errors = 0u32;
                         for (host, name, encrypted_value) in &rows {
@@ -1892,20 +1892,221 @@ impl WraithHandler {
                             } else if encrypted_value.is_empty() {
                                 continue;
                             } else {
-                                // No master key available; try raw UTF-8 (legacy/unencrypted)
                                 String::from_utf8_lossy(encrypted_value).to_string()
                             };
                             if !value.is_empty() {
+                                engine.set_cookie_values(host, name, &value, "/").await;
                                 let script = format!("document.cookie = '{}={}; domain={}; path=/'", name, value, host);
                                 let _ = engine.eval_js(&script).await;
                                 injected += 1;
                             }
                         }
+
+                        // If DPAPI decryption failed on ALL cookies (v20 App-Bound Encryption),
+                        // fall back to Chrome DevTools Protocol to get decrypted cookies directly.
+                        if injected == 0 && decrypt_errors > 0 {
+                            drop(engine); // release lock before spawning Chrome
+                            info!(v20_count = decrypt_errors, "All cookies use v20 encryption — falling back to Chrome CDP");
+
+                            let chrome_path = if cfg!(target_os = "windows") {
+                                std::path::PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+                            } else if cfg!(target_os = "macos") {
+                                std::path::PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+                            } else {
+                                std::path::PathBuf::from("google-chrome")
+                            };
+
+                            if !chrome_path.exists() && cfg!(not(target_os = "linux")) {
+                                return Ok(CallToolResult::success(vec![Content::text(
+                                    format!("Cannot decrypt v20 cookies (App-Bound Encryption). Chrome not found at {}.\n\
+                                             Chrome 127+ uses App-Bound Encryption which requires Chrome itself to decrypt.\n\
+                                             Install Chrome or use browse_login to authenticate directly.", chrome_path.display())
+                                )]));
+                            }
+
+                            // Find a free port for CDP
+                            let cdp_port = {
+                                let listener = std::net::TcpListener::bind("127.0.0.1:0")
+                                    .map_err(|e| ErrorData::internal_error(format!("port bind: {e}"), None))?;
+                                listener.local_addr().unwrap().port()
+                            };
+
+                            let user_data_dir = profile_dir.parent().unwrap();
+                            let mut chrome = tokio::process::Command::new(&chrome_path)
+                                .arg("--headless=new")
+                                .arg(format!("--remote-debugging-port={}", cdp_port))
+                                .arg(format!("--user-data-dir={}", user_data_dir.display()))
+                                .arg(format!("--profile-directory={}", profile))
+                                .arg("--no-first-run")
+                                .arg("--disable-gpu")
+                                .arg("--disable-extensions")
+                                .arg("about:blank")
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                                .map_err(|e| ErrorData::internal_error(format!("Chrome spawn failed: {e}"), None))?;
+
+                            // Wait for CDP to be ready
+                            let cdp_ready = async {
+                                for _ in 0..30 {
+                                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                    if reqwest::get(&format!("http://127.0.0.1:{}/json/version", cdp_port)).await.is_ok() {
+                                        return true;
+                                    }
+                                }
+                                false
+                            };
+
+                            if !cdp_ready.await {
+                                let _ = chrome.kill().await;
+                                return Ok(CallToolResult::success(vec![Content::text(
+                                    "Chrome CDP did not start within 6 seconds. Cannot decrypt v20 cookies."
+                                )]));
+                            }
+
+                            // Get the WebSocket URL
+                            let version_json: serde_json::Value = reqwest::get(&format!("http://127.0.0.1:{}/json/version", cdp_port))
+                                .await.map_err(|e| ErrorData::internal_error(format!("CDP version: {e}"), None))?
+                                .json().await.map_err(|e| ErrorData::internal_error(format!("CDP json: {e}"), None))?;
+                            let _ws_url = version_json["webSocketDebuggerUrl"].as_str().unwrap_or("");
+
+                            // Connect to Chrome via CDP WebSocket and extract all cookies
+                            let cdp_injected;
+                            let cdp_result: Result<u32, String> = async {
+                                use tokio_tungstenite::connect_async;
+                                use tokio_tungstenite::tungstenite::protocol::Message;
+                                use futures::SinkExt;
+                                use futures::StreamExt;
+
+                                let ws_url = _ws_url;
+                                if ws_url.is_empty() {
+                                    return Err("CDP returned no webSocketDebuggerUrl".into());
+                                }
+
+                                // Connect with a 10-second timeout
+                                let (mut ws, _) = tokio::time::timeout(
+                                    std::time::Duration::from_secs(10),
+                                    connect_async(ws_url)
+                                ).await
+                                    .map_err(|_| "WebSocket connect timed out (10s)".to_string())?
+                                    .map_err(|e| format!("WebSocket connect failed: {e}"))?;
+
+                                // Send Network.getAllCookies command
+                                ws.send(Message::Text(
+                                    r#"{"id":1,"method":"Network.getAllCookies"}"#.into()
+                                )).await
+                                    .map_err(|e| format!("WebSocket send failed: {e}"))?;
+
+                                // Read response with timeout
+                                let resp_text = tokio::time::timeout(
+                                    std::time::Duration::from_secs(10),
+                                    async {
+                                        while let Some(msg) = ws.next().await {
+                                            match msg {
+                                                Ok(Message::Text(text)) => return Ok(text),
+                                                Ok(_) => continue, // skip binary/ping/pong frames
+                                                Err(e) => return Err(format!("WebSocket read error: {e}")),
+                                            }
+                                        }
+                                        Err("WebSocket closed without response".to_string())
+                                    }
+                                ).await
+                                    .map_err(|_| "WebSocket response timed out (10s)".to_string())?
+                                    .map_err(|e| e)?;
+
+                                let data: serde_json::Value = serde_json::from_str(&resp_text)
+                                    .map_err(|e| format!("CDP response parse error: {e}"))?;
+
+                                let cookies = data["result"]["cookies"].as_array()
+                                    .ok_or_else(|| {
+                                        let err_msg = data["error"]["message"].as_str().unwrap_or("unknown");
+                                        format!("CDP returned no cookies (error: {err_msg})")
+                                    })?;
+
+                                let mut count = 0u32;
+                                let engine = self.engine.lock().await;
+
+                                for c in cookies {
+                                    let name = c["name"].as_str().unwrap_or("");
+                                    let value = c["value"].as_str().unwrap_or("");
+                                    let domain = c["domain"].as_str().unwrap_or("");
+                                    let path = c["path"].as_str().unwrap_or("/");
+                                    let secure = c["secure"].as_bool().unwrap_or(false);
+                                    let http_only = c["httpOnly"].as_bool().unwrap_or(false);
+
+                                    if name.is_empty() { continue; }
+
+                                    // Apply domain filter if specified
+                                    if domain_filter != "%" && !domain.contains(&domain_filter.replace('%', "")) {
+                                        continue;
+                                    }
+
+                                    // Inject via set_cookie_values + eval_js
+                                    let secure_flag = if secure { "; Secure" } else { "" };
+                                    let http_only_flag = if http_only { "; HttpOnly" } else { "" };
+                                    let cookie_str = format!(
+                                        "{}={}; Domain={}; Path={}{}{}",
+                                        name, value, domain, path, secure_flag, http_only_flag
+                                    );
+                                    let scheme = if secure { "https" } else { "http" };
+                                    let cookie_url = format!("{}://{}{}", scheme, domain.trim_start_matches('.'), path);
+
+                                    let script = format!(
+                                        r#"__openclaw_set_cookie({}, {})"#,
+                                        serde_json::to_string(&cookie_url).unwrap_or_default(),
+                                        serde_json::to_string(&cookie_str).unwrap_or_default(),
+                                    );
+                                    let _ = engine.eval_js(&script).await;
+                                    count += 1;
+                                }
+
+                                // Close WebSocket gracefully
+                                let _ = ws.close(None).await;
+
+                                Ok(count)
+                            }.await;
+
+                            // Always kill Chrome
+                            let _ = chrome.kill().await;
+
+                            match cdp_result {
+                                Ok(count) => {
+                                    cdp_injected = count;
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "CDP WebSocket cookie extraction failed");
+                                    return Ok(CallToolResult::success(vec![Content::text(
+                                        format!("Chrome cookies use v20 App-Bound Encryption ({} cookies found).\n\
+                                                 DPAPI decryption failed (v10 key doesn't work on v20 cookies).\n\
+                                                 CDP WebSocket fallback failed: {}\n\n\
+                                                 Workaround: Use browse_login to authenticate directly, or export cookies \
+                                                 from Chrome via a browser extension (e.g., EditThisCookie) and import with cookie_load.",
+                                                 decrypt_errors, e)
+                                    )]));
+                                }
+                            }
+
+                            if cdp_injected > 0 {
+                                return Ok(CallToolResult::success(vec![Content::text(
+                                    format!("Imported {} cookies via Chrome CDP (v20 App-Bound decryption)", cdp_injected)
+                                )]));
+                            }
+
+                            // CDP connected but yielded zero cookies
+                            return Ok(CallToolResult::success(vec![Content::text(
+                                format!("Chrome cookies use v20 App-Bound Encryption ({} cookies found).\n\
+                                         CDP WebSocket connected but returned 0 matching cookies.\n\n\
+                                         Workaround: Use browse_login to authenticate directly, or export cookies \
+                                         from Chrome via a browser extension (e.g., EditThisCookie) and import with cookie_load.",
+                                         decrypt_errors)
+                            )]));
+                        }
+
                         let mut msg = format!("Imported {} cookies from Chrome profile '{}'{}",
                             injected, profile,
                             if domain_filter != "%" { format!(" (filtered: {})", domain_filter) } else { String::new() });
                         if decrypt_errors > 0 {
-                            msg.push_str(&format!(" ({} cookies failed to decrypt)", decrypt_errors));
+                            msg.push_str(&format!(" ({} cookies failed to decrypt — may be v20 App-Bound)", decrypt_errors));
                         }
                         Ok(CallToolResult::success(vec![Content::text(msg)]))
                     }
@@ -2124,11 +2325,11 @@ impl WraithHandler {
             "browse_solve_captcha" => {
                 let input: SolveCaptchaInput = parse_args(args)?;
                 let captcha_type = input.captcha_type.unwrap_or_else(|| "recaptchav3".to_string());
-                info!(captcha_type = %captcha_type, "Solving CAPTCHA via 2captcha");
+                info!(captcha_type = %captcha_type, "Solving challenge via solving service");
 
                 let api_key = std::env::var("TWOCAPTCHA_API_KEY")
                     .map_err(|_| ErrorData::internal_error(
-                        "TWOCAPTCHA_API_KEY environment variable not set. Get an API key from https://2captcha.com".to_string(), None))?;
+                        "TWOCAPTCHA_API_KEY environment variable not set. A solving-service API key is required.".to_string(), None))?;
 
                 // Determine page URL
                 let page_url = if let Some(u) = input.url {
@@ -2202,21 +2403,21 @@ impl WraithHandler {
                     .form(&submit_params)
                     .send()
                     .await
-                    .map_err(|e| ErrorData::internal_error(format!("2captcha submit failed: {e}"), None))?;
+                    .map_err(|e| ErrorData::internal_error(format!("Challenge solver submit failed: {e}"), None))?;
 
                 let submit_body: serde_json::Value = submit_resp
                     .json()
                     .await
-                    .map_err(|e| ErrorData::internal_error(format!("2captcha response parse error: {e}"), None))?;
+                    .map_err(|e| ErrorData::internal_error(format!("Challenge solver response parse error: {e}"), None))?;
 
                 if submit_body.get("status").and_then(|v| v.as_i64()) != Some(1) {
                     let err_text = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("unknown error");
-                    return Err(ErrorData::internal_error(format!("2captcha rejected task: {err_text}"), None));
+                    return Err(ErrorData::internal_error(format!("Challenge solver rejected task: {err_text}"), None));
                 }
 
                 let task_id = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("")
                     .to_string();
-                info!(task_id = %task_id, "2captcha task submitted, polling for result");
+                info!(task_id = %task_id, "Challenge solver task submitted, polling for result");
 
                 // Step 2: Poll for result (every 5s, max 120s)
                 let poll_url = format!(
@@ -2245,7 +2446,7 @@ impl WraithHandler {
                                     continue;
                                 } else {
                                     return Err(ErrorData::internal_error(
-                                        format!("2captcha error: {request}"), None));
+                                        format!("Challenge solver error: {request}"), None));
                                 }
                             }
                         }
@@ -2432,7 +2633,7 @@ impl WraithHandler {
                 let report = format!(
                     "TLS Fingerprint Verification:\n\
                      \n\
-                     Stealth TLS: {stealth}\n\
+                     Compatible TLS: {stealth}\n\
                      Service:     {service}\n\
                      \n\
                      JA3:  {obs_ja3} (Chrome 136: {ref_ja3} {ja3_check} {ja3_verdict})\n\

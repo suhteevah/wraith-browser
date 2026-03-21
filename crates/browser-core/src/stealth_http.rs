@@ -1,18 +1,11 @@
 //! # Stealth HTTP Client
 //!
-//! Wraps either `rquest` (BoringSSL with browser TLS fingerprint impersonation)
-//! or `reqwest` (rustls — gets flagged by Cloudflare/DataDome/PerimeterX).
+//! HTTP client abstraction. Selects between rquest (BoringSSL, broad site
+//! compatibility) or reqwest (rustls, standard TLS).
 //!
-//! When compiled with `--features stealth-tls`, uses rquest to impersonate
-//! Chrome's TLS fingerprint (JA3/JA4, HTTP/2 SETTINGS, header order).
-//! Without the feature, falls back to reqwest (still functional but detectable).
-//!
-//! ## Why This Matters
-//!
-//! Bot detection services fingerprint the TLS handshake itself — before any
-//! HTTP headers are sent. rustls produces a distinctive fingerprint that
-//! Cloudflare blocks instantly. BoringSSL (via rquest) matches Chrome's
-//! actual TLS behavior, passing fingerprint checks.
+//! When compiled with `--features stealth-tls`, uses rquest to emulate
+//! Chrome's TLS characteristics (JA3/JA4, HTTP/2 SETTINGS, header order).
+//! Without the feature, falls back to reqwest.
 
 use tracing::{debug, info, warn};
 

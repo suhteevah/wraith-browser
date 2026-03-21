@@ -86,11 +86,14 @@ totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 dirs = "6"
 async-trait = "0.1"
 
-# TLS fingerprint-matching HTTP client (BoringSSL, browser impersonation)
+# HTTP client with broad TLS compatibility (BoringSSL)
 rquest = { version = "5.1", features = ["cookies", "gzip", "brotli"] }
 
 # Fast compression (replaces gzip/flate2)
 zstd = "0.13"
+
+# WebSocket (for Chrome CDP cookie extraction)
+tokio-tungstenite = "0.24"
 
 # Embeddable JS engine (QuickJS via Rust FFI)
 rquickjs = { version = "0.11", features = ["classes", "properties", "futures", "macro"] }

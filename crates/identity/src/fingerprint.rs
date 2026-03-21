@@ -1,22 +1,8 @@
 //! # Browser Fingerprint Manager
 //!
-//! Captures the real user's browser fingerprint and replays it on every
-//! page load so the AI browser appears identical to the user's real browser.
-//!
-//! ## What Gets Captured
-//!
-//! Modern bot detection (Cloudflare, DataDome, PerimeterX, etc.) checks:
-//! - User-Agent string + Client Hints (Sec-CH-UA-*)
-//! - Screen resolution, color depth, device pixel ratio
-//! - Timezone, language, platform
-//! - WebGL renderer/vendor hash
-//! - Canvas fingerprint hash
-//! - AudioContext fingerprint
-//! - Installed fonts (via CSS measurement)
-//! - Navigator properties (hardwareConcurrency, deviceMemory, maxTouchPoints)
-//! - HTTP/2 settings fingerprint (SETTINGS frame order)
-//! - TLS fingerprint (JA3/JA4)
-//! - Accept-Language header order
+//! Browser identity profiles for consistent presentation across sessions.
+//! Ensures consistent browser characteristics (user agent, screen dimensions,
+//! language, etc.) for reliable automation.
 //!
 //! ## Capture Flow
 //!
