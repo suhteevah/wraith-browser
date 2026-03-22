@@ -536,6 +536,158 @@ impl BrowserEngine for CdpEngine {
             })
             .unwrap_or_default();
 
+        // --- FR-3: Extract iframe contents via Page.getFrameTree ---
+        let mut elements = elements; // make mutable for iframe merging
+        let next_ref = elements.iter().map(|e| e.ref_id).max().unwrap_or(0) + 1;
+        let mut iframe_ref = next_ref;
+
+        if let Ok(frame_tree_result) = self.send_cdp_command("Page.getFrameTree", json!({})).await {
+            if let Some(child_frames) = frame_tree_result
+                .get("frameTree")
+                .and_then(|ft| ft.get("childFrames"))
+                .and_then(|cf| cf.as_array())
+            {
+                for child in child_frames {
+                    let frame_id = child
+                        .get("frame")
+                        .and_then(|f| f.get("id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let frame_url = child
+                        .get("frame")
+                        .and_then(|f| f.get("url"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    if frame_id.is_empty()
+                        || frame_url.is_empty()
+                        || frame_url == "about:blank"
+                        || frame_url.starts_with("about:")
+                    {
+                        continue;
+                    }
+
+                    // Extract domain for the [iframe: domain] prefix
+                    let iframe_domain = url::Url::parse(frame_url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(|h| h.to_string()))
+                        .unwrap_or_else(|| frame_url.to_string());
+
+                    // Create an isolated world in the child frame to run our snapshot JS
+                    let world_result = self
+                        .send_cdp_command(
+                            "Page.createIsolatedWorld",
+                            json!({
+                                "frameId": frame_id,
+                                "worldName": "wraith-snapshot"
+                            }),
+                        )
+                        .await;
+
+                    let context_id = match world_result {
+                        Ok(ref wr) => wr
+                            .get("executionContextId")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                        Err(e) => {
+                            debug!(frame_id, error = %e, "Failed to create isolated world for iframe");
+                            0
+                        }
+                    };
+
+                    if context_id == 0 {
+                        continue;
+                    }
+
+                    // Run the snapshot JS in the iframe's execution context
+                    let iframe_eval = self
+                        .send_cdp_command(
+                            "Runtime.evaluate",
+                            json!({
+                                "expression": SNAPSHOT_JS,
+                                "contextId": context_id,
+                                "returnByValue": true,
+                                "awaitPromise": true,
+                            }),
+                        )
+                        .await;
+
+                    let iframe_json_str = match iframe_eval {
+                        Ok(ref result) => {
+                            if result.get("exceptionDetails").is_some() {
+                                debug!(frame_id, "Snapshot JS threw in iframe context");
+                                continue;
+                            }
+                            let empty = json!({});
+                            let remote_obj = result.get("result").unwrap_or(&empty);
+                            match remote_obj.get("value") {
+                                Some(Value::String(s)) => s.clone(),
+                                Some(other) => other.to_string(),
+                                None => continue,
+                            }
+                        }
+                        Err(e) => {
+                            debug!(frame_id, error = %e, "Failed to evaluate snapshot in iframe");
+                            continue;
+                        }
+                    };
+
+                    let iframe_raw: Value = match serde_json::from_str(&iframe_json_str) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+
+                    if let Some(iframe_elements) = iframe_raw
+                        .get("elements")
+                        .and_then(|v| v.as_array())
+                    {
+                        for el in iframe_elements {
+                            let base_role = el
+                                .get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("text");
+                            let role = format!("[iframe: {iframe_domain}] {base_role}");
+
+                            elements.push(DomElement {
+                                ref_id: iframe_ref,
+                                role,
+                                text: el.get("text").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                href: el.get("href").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                placeholder: el
+                                    .get("placeholder")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                value: el
+                                    .get("value")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                enabled: el.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                                visible: el.get("visible").and_then(|v| v.as_bool()).unwrap_or(true),
+                                aria_label: el
+                                    .get("aria_label")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                selector: el
+                                    .get("selector")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                bounds: el.get("bounds").and_then(|v| {
+                                    let x = v.get("x")?.as_f64()?;
+                                    let y = v.get("y")?.as_f64()?;
+                                    let w = v.get("width")?.as_f64()?;
+                                    let h = v.get("height")?.as_f64()?;
+                                    Some((x, y, w, h))
+                                }),
+                            });
+                            iframe_ref += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // --- End FR-3 ---
+
         let meta_raw = raw.get("meta").cloned().unwrap_or(json!({}));
         let meta = PageMeta {
             page_type: meta_raw

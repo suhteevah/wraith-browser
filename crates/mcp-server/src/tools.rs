@@ -909,6 +909,40 @@ pub struct SolveCaptchaInput {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// SESSIONS (named parallel sessions)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: create a new named browser session with either the native (Sevro) or CDP (Chrome) engine.
+/// Multiple sessions can be active simultaneously, allowing you to browse different sites
+/// in parallel without losing state.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionCreateInput {
+    /// A unique name for this session (e.g., "indeed", "linkedin", "github").
+    pub name: String,
+    /// Engine type: "native" (Sevro, fast, no JS) or "cdp" (Chrome, full JS).
+    pub engine_type: String,
+}
+
+/// Tool: switch the active session. All subsequent browse_* commands will use this session's engine.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionSwitchInput {
+    /// Name of the session to switch to.
+    pub name: String,
+}
+
+/// Tool: list all open sessions with their engine type and current URL.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionListInput {}
+
+/// Tool: close a named session and shut down its engine. If closing the active session,
+/// automatically switches to the "native" session.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionCloseInput {
+    /// Name of the session to close.
+    pub name: String,
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ENGINE STATUS
 // ═══════════════════════════════════════════════════════════════════
 

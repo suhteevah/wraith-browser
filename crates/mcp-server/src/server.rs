@@ -1,6 +1,8 @@
 //! MCP server handler — implements the rmcp ServerHandler trait.
 //! Wired to a real NativeClient for Chrome-free browsing.
 
+#[cfg(feature = "cdp")]
+use std::collections::HashMap;
 use std::sync::Arc;
 use base64::Engine as _;
 
@@ -129,6 +131,13 @@ pub struct WraithHandler {
     /// instead of self.engine. Set by browse_navigate_cdp, cleared by browse_navigate.
     #[cfg(feature = "cdp")]
     active_cdp_session: Arc<Mutex<Option<Arc<Mutex<dyn BrowserEngine>>>>>,
+    /// Named parallel sessions — maps session name to engine instance.
+    /// The "native" session is always present (initialized from self.engine).
+    #[cfg(feature = "cdp")]
+    sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<Mutex<dyn BrowserEngine>>>>>,
+    /// Name of the currently active session (default: "native").
+    #[cfg(feature = "cdp")]
+    active_session_name: Arc<tokio::sync::Mutex<String>>,
 }
 
 impl Default for WraithHandler {
@@ -397,13 +406,25 @@ impl WraithHandler {
                 &schema_for!(LoginInput), rw_open),
             make_tool("browse_engine_status",
                 "Check which browser engine is currently active: 'native (Sevro)' or 'CDP (Chrome)'. After browse_navigate_cdp, all browse_* commands automatically route to the CDP engine. After browse_navigate (native), they route back to the native engine.",
-                &schema_for!(EngineStatusInput), ro_closed),
+                &schema_for!(EngineStatusInput), ro_closed.clone()),
+            make_tool("browse_session_list",
+                "List all open browser sessions with their engine type and current URL.",
+                &schema_for!(SessionListInput), ro_closed),
         ];
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
 
         #[cfg(feature = "cdp")]
-        { return Self { tools, engine, cdp_engine: None, cdp_auto: false, active_cdp_session: Arc::new(Mutex::new(None)) }; }
+        {
+            let mut sessions_map = HashMap::new();
+            sessions_map.insert("native".to_string(), engine.clone());
+            return Self {
+                tools, engine, cdp_engine: None, cdp_auto: false,
+                active_cdp_session: Arc::new(Mutex::new(None)),
+                sessions: Arc::new(tokio::sync::Mutex::new(sessions_map)),
+                active_session_name: Arc::new(tokio::sync::Mutex::new("native".to_string())),
+            };
+        }
 
         #[cfg(not(feature = "cdp"))]
         Self { tools, engine }
@@ -473,14 +494,36 @@ impl WraithHandler {
         for tool in &non_cdp.tools {
             let name: &str = &tool.name;
             // Skip tools already registered above to avoid duplicates
+            // Also skip browse_session_list — we register the full set of session tools below
             if !matches!(name, "browse_navigate" | "browse_click" | "browse_fill"
                 | "browse_snapshot" | "browse_extract" | "browse_screenshot"
                 | "browse_search" | "browse_eval_js" | "browse_tabs" | "browse_back"
-                | "browse_key_press" | "browse_scroll" | "browse_scroll_to")
+                | "browse_key_press" | "browse_scroll" | "browse_scroll_to"
+                | "browse_session_list")
             {
                 tools.push(tool.clone());
             }
         }
+
+        // Session management tools (CDP-enabled builds get all 4)
+        let rw_session = ToolAnnotations::new().read_only(false).destructive(false).open_world(false);
+        let ro_session = ToolAnnotations::new().read_only(true).open_world(false);
+        let rw_destructive_session = ToolAnnotations::new().read_only(false).destructive(true).open_world(false);
+        tools.push(make_tool("browse_session_create",
+            "Create a new named browser session. Use engine_type 'native' for fast Sevro engine or 'cdp' for Chrome with full JS. Multiple sessions can be active simultaneously.",
+            &schema_for!(SessionCreateInput), rw_session.clone()));
+        tools.push(make_tool("browse_session_switch",
+            "Switch the active session. All subsequent browse_* commands will route to the switched session's engine.",
+            &schema_for!(SessionSwitchInput), rw_session));
+        tools.push(make_tool("browse_session_list",
+            "List all open browser sessions with their engine type and current URL.",
+            &schema_for!(SessionListInput), ro_session));
+        tools.push(make_tool("browse_session_close",
+            "Close a named session and shut down its engine. Cannot close the 'native' session. If closing the active session, switches to 'native'.",
+            &schema_for!(SessionCloseInput), rw_destructive_session));
+
+        let mut sessions_map = HashMap::new();
+        sessions_map.insert("native".to_string(), engine.clone());
 
         info!(
             tool_count = tools.len(),
@@ -488,7 +531,12 @@ impl WraithHandler {
             cdp_auto_fallback = cdp_auto,
             "Wraith MCP handler initialized (CDP-enabled)"
         );
-        Self { tools, engine, cdp_engine, cdp_auto, active_cdp_session: Arc::new(Mutex::new(None)) }
+        Self {
+            tools, engine, cdp_engine, cdp_auto,
+            active_cdp_session: Arc::new(Mutex::new(None)),
+            sessions: Arc::new(tokio::sync::Mutex::new(sessions_map)),
+            active_session_name: Arc::new(tokio::sync::Mutex::new("native".to_string())),
+        }
     }
 
     /// Build the default engine: Sevro → NativeEngine fallback.
@@ -579,9 +627,18 @@ impl WraithHandler {
     }
 
     /// Async version of active_engine — waits for the lock.
+    /// With cdp feature: looks up the active session name in the sessions map.
+    /// Falls back to self.engine if the session is not found.
     async fn active_engine_async(&self) -> Arc<Mutex<dyn BrowserEngine>> {
         #[cfg(feature = "cdp")]
         {
+            let session_name = self.active_session_name.lock().await.clone();
+            let sessions = self.sessions.lock().await;
+            if let Some(engine) = sessions.get(&session_name) {
+                return engine.clone();
+            }
+            // Fallback: check legacy active_cdp_session
+            drop(sessions);
             let guard = self.active_cdp_session.lock().await;
             if let Some(ref cdp) = *guard {
                 return cdp.clone();
@@ -611,6 +668,8 @@ impl WraithHandler {
                         info!("Switching from CDP to native engine");
                         *cdp_session = None;
                     }
+                    let mut active = self.active_session_name.lock().await;
+                    *active = "native".to_string();
                 }
 
                 let mut engine = self.engine.lock().await;
@@ -694,9 +753,16 @@ impl WraithHandler {
                 // commands will route to it instead of the native engine.
                 {
                     let mut cdp_session = self.active_cdp_session.lock().await;
-                    *cdp_session = Some(cdp_arc);
+                    *cdp_session = Some(cdp_arc.clone());
                 }
-                info!("CDP engine stored as active session — subsequent browse_* commands route to CDP");
+                // Also store in sessions map as "cdp" for named session support
+                {
+                    let mut sessions = self.sessions.lock().await;
+                    sessions.insert("cdp".to_string(), cdp_arc);
+                    let mut active = self.active_session_name.lock().await;
+                    *active = "cdp".to_string();
+                }
+                info!("CDP engine stored as active session 'cdp' — subsequent browse_* commands route to CDP");
 
                 let response = snapshot.to_agent_text();
                 Ok(CallToolResult::success(vec![Content::text(
@@ -2950,6 +3016,179 @@ impl WraithHandler {
                     Ok(CallToolResult::success(vec![Content::text(
                         "Active engine: native (Sevro)\n\nCDP support not compiled in. Build with --features cdp to enable Chrome."
                     )]))
+                }
+            }
+
+            // ── Session management ──────────────────────────────────────
+            #[cfg(feature = "cdp")]
+            "browse_session_create" => {
+                let input: SessionCreateInput = parse_args(args)?;
+                let session_name = input.name.trim().to_string();
+                if session_name.is_empty() {
+                    return Err(ErrorData::invalid_params("Session name cannot be empty", None));
+                }
+
+                // Check if session already exists
+                {
+                    let sessions = self.sessions.lock().await;
+                    if sessions.contains_key(&session_name) {
+                        return Err(ErrorData::invalid_params(
+                            format!("Session '{}' already exists. Use browse_session_switch to activate it.", session_name), None
+                        ));
+                    }
+                }
+
+                let engine_type = input.engine_type.to_lowercase();
+                let new_engine: Arc<Mutex<dyn BrowserEngine>> = match engine_type.as_str() {
+                    "native" | "sevro" => {
+                        // Create a fresh native engine
+                        Self::default_engine()
+                    }
+                    "cdp" | "chrome" => {
+                        use openclaw_browser_core::engine_cdp::CdpEngine;
+                        let cdp_engine = CdpEngine::new().await
+                            .map_err(|e| ErrorData::internal_error(
+                                format!("CDP engine launch failed: {e}. Ensure Chrome is installed."), None
+                            ))?;
+                        Arc::new(Mutex::new(cdp_engine))
+                    }
+                    _ => {
+                        return Err(ErrorData::invalid_params(
+                            format!("Unknown engine_type '{}'. Use 'native' or 'cdp'.", engine_type), None
+                        ));
+                    }
+                };
+
+                {
+                    let mut sessions = self.sessions.lock().await;
+                    sessions.insert(session_name.clone(), new_engine);
+                }
+
+                info!(session = %session_name, engine = %engine_type, "Session created");
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Session '{}' created with {} engine.\nUse browse_session_switch to activate it.", session_name, engine_type)
+                )]))
+            }
+
+            #[cfg(feature = "cdp")]
+            "browse_session_switch" => {
+                let input: SessionSwitchInput = parse_args(args)?;
+                let session_name = input.name.trim().to_string();
+
+                {
+                    let sessions = self.sessions.lock().await;
+                    if !sessions.contains_key(&session_name) {
+                        let available: Vec<String> = sessions.keys().cloned().collect();
+                        return Err(ErrorData::invalid_params(
+                            format!("Session '{}' not found. Available sessions: {:?}", session_name, available), None
+                        ));
+                    }
+                }
+
+                // Update active session name
+                {
+                    let mut active = self.active_session_name.lock().await;
+                    *active = session_name.clone();
+                }
+
+                // Also sync the legacy active_cdp_session field
+                {
+                    let sessions = self.sessions.lock().await;
+                    let mut cdp_session = self.active_cdp_session.lock().await;
+                    if session_name == "native" {
+                        *cdp_session = None;
+                    } else if let Some(eng) = sessions.get(&session_name) {
+                        *cdp_session = Some(eng.clone());
+                    }
+                }
+
+                info!(session = %session_name, "Switched active session");
+                Ok(CallToolResult::success(vec![Content::text(
+                    format!("Active session switched to '{}'.\nAll browse_* commands now route to this session.", session_name)
+                )]))
+            }
+
+            "browse_session_list" => {
+                #[cfg(feature = "cdp")]
+                {
+                    let sessions = self.sessions.lock().await;
+                    let active = self.active_session_name.lock().await.clone();
+                    let mut lines = Vec::new();
+                    lines.push("Sessions:".to_string());
+                    for (name, engine_arc) in sessions.iter() {
+                        let eng = engine_arc.lock().await;
+                        let url = eng.current_url().await.unwrap_or_else(|| "about:blank".to_string());
+                        let engine_type = if name == "native" || name.starts_with("native") {
+                            "native (Sevro)"
+                        } else {
+                            "CDP (Chrome)"
+                        };
+                        let marker = if *name == active { " [active]" } else { "" };
+                        lines.push(format!("  - {}{}: {} — {}", name, marker, engine_type, url));
+                    }
+                    Ok(CallToolResult::success(vec![Content::text(lines.join("\n"))]))
+                }
+                #[cfg(not(feature = "cdp"))]
+                {
+                    let eng = self.engine.lock().await;
+                    let url = eng.current_url().await.unwrap_or_else(|| "about:blank".to_string());
+                    Ok(CallToolResult::success(vec![Content::text(
+                        format!("Sessions:\n  - native [active]: native (Sevro) — {}", url)
+                    )]))
+                }
+            }
+
+            #[cfg(feature = "cdp")]
+            "browse_session_close" => {
+                let input: SessionCloseInput = parse_args(args)?;
+                let session_name = input.name.trim().to_string();
+
+                if session_name == "native" {
+                    return Err(ErrorData::invalid_params(
+                        "Cannot close the 'native' session — it is always available.", None
+                    ));
+                }
+
+                let removed = {
+                    let mut sessions = self.sessions.lock().await;
+                    sessions.remove(&session_name)
+                };
+
+                match removed {
+                    Some(engine_arc) => {
+                        // Shut down the engine
+                        let mut eng = engine_arc.lock().await;
+                        let _ = eng.shutdown().await;
+                        drop(eng);
+
+                        // If we closed the active session, switch to "native"
+                        let was_active = {
+                            let active = self.active_session_name.lock().await;
+                            *active == session_name
+                        };
+                        if was_active {
+                            let mut active = self.active_session_name.lock().await;
+                            *active = "native".to_string();
+                            let mut cdp_session = self.active_cdp_session.lock().await;
+                            *cdp_session = None;
+                            info!(closed = %session_name, "Closed active session, switched to 'native'");
+                            Ok(CallToolResult::success(vec![Content::text(
+                                format!("Session '{}' closed. Active session switched to 'native'.", session_name)
+                            )]))
+                        } else {
+                            info!(closed = %session_name, "Session closed");
+                            Ok(CallToolResult::success(vec![Content::text(
+                                format!("Session '{}' closed.", session_name)
+                            )]))
+                        }
+                    }
+                    None => {
+                        let sessions = self.sessions.lock().await;
+                        let available: Vec<String> = sessions.keys().cloned().collect();
+                        Err(ErrorData::invalid_params(
+                            format!("Session '{}' not found. Available sessions: {:?}", session_name, available), None
+                        ))
+                    }
                 }
             }
 
