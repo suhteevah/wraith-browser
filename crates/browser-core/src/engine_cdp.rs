@@ -877,20 +877,113 @@ impl BrowserEngine for CdpEngine {
                 let js = format!(
                     r#"(() => {{
                         const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
-                        if (!el) return 'Element @e{ref_id} not found';
-                        el.value = '{escaped}';
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        return 'selected';
+                        if (!el) return JSON.stringify({{error: 'Element @e{ref_id} not found'}});
+                        const tag = el.tagName.toLowerCase();
+
+                        // --- Native <select> ---
+                        if (tag === 'select') {{
+                            el.value = '{escaped}';
+                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            const chosen = el.options[el.selectedIndex];
+                            return JSON.stringify({{ok: true, display: chosen ? chosen.textContent.trim() : '{escaped}'}});
+                        }}
+
+                        // --- React / custom dropdown (role="combobox" or similar) ---
+                        // Step 1: Click the trigger to open the dropdown
+                        el.click();
+                        el.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                        el.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true}}));
+
+                        // Step 2: Look for the dropdown listbox / option list that appeared
+                        // Common patterns: [role="listbox"], [role="option"], ul[class*="menu"], etc.
+                        function findOption(val) {{
+                            const selectors = [
+                                '[role="option"]',
+                                '[role="listbox"] li',
+                                '[class*="option"]',
+                                '[class*="menu"] li',
+                                '[class*="dropdown"] li',
+                                '[class*="select"] li',
+                                'ul[class*="list"] li',
+                            ];
+                            const valueLower = val.toLowerCase();
+                            for (const sel of selectors) {{
+                                for (const opt of document.querySelectorAll(sel)) {{
+                                    const text = (opt.innerText || opt.textContent || '').trim();
+                                    if (text.toLowerCase() === valueLower || text.toLowerCase().includes(valueLower)) {{
+                                        return opt;
+                                    }}
+                                    // Also check data-value attribute
+                                    const dv = opt.getAttribute('data-value') || '';
+                                    if (dv.toLowerCase() === valueLower) return opt;
+                                }}
+                            }}
+                            return null;
+                        }}
+
+                        const option = findOption('{escaped}');
+                        if (option) {{
+                            option.click();
+                            option.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                            option.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true}}));
+
+                            // Also try to set any hidden input associated with the combobox
+                            const hiddenInput = el.querySelector('input[type="hidden"]') || el.querySelector('input');
+                            if (hiddenInput) {{
+                                const nativeSetter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype, 'value'
+                                ).set;
+                                nativeSetter.call(hiddenInput, '{escaped}');
+                                hiddenInput.dispatchEvent(new Event('input', {{bubbles: true}}));
+                                hiddenInput.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            }}
+                            return JSON.stringify({{ok: true, display: (option.innerText || option.textContent || '').trim()}});
+                        }}
+
+                        // Step 3: Fallback — just try setting .value if the element supports it
+                        if ('value' in el) {{
+                            el.value = '{escaped}';
+                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                        }}
+                        return JSON.stringify({{ok: true, display: '{escaped}', fallback: true}});
                     }})()"#
                 );
                 let result = self.runtime_evaluate(&js).await?;
-                if result.contains("not found") {
-                    Ok(ActionResult::Failed { error: result })
-                } else {
-                    Ok(ActionResult::Success {
-                        message: format!("Selected '{value}' on @e{ref_id}"),
-                    })
+                if result.contains("\"error\"") {
+                    let msg = result
+                        .replace("{\"error\":\"", "")
+                        .replace("\"}", "");
+                    return Ok(ActionResult::Failed { error: msg });
                 }
+
+                // Wait for React re-render after clicking the option
+                tokio::time::sleep(Duration::from_millis(200)).await;
+
+                // Read back the displayed text from the combobox trigger to confirm
+                let readback_js = format!(
+                    r#"(() => {{
+                        const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                        if (!el) return '';
+                        // For native select
+                        if (el.tagName === 'SELECT') {{
+                            const opt = el.options[el.selectedIndex];
+                            return opt ? opt.textContent.trim() : el.value;
+                        }}
+                        // For custom combobox: check aria-label, textContent, child spans
+                        return (
+                            el.getAttribute('aria-valuenow') ||
+                            el.getAttribute('aria-label') ||
+                            (el.querySelector('span, [class*="value"], [class*="single"]') || {{}}).textContent ||
+                            el.textContent ||
+                            ''
+                        ).trim();
+                    }})()"#
+                );
+                let displayed = self.runtime_evaluate(&readback_js).await.unwrap_or_default();
+
+                Ok(ActionResult::Success {
+                    message: format!("SELECTED: {} on @e{}", if displayed.is_empty() { value.clone() } else { displayed }, ref_id),
+                })
             }
 
             BrowserAction::KeyPress { key } => {
@@ -1627,6 +1720,45 @@ const SNAPSHOT_JS: &str = r#"(() => {
         return text.length > 200 ? text.substring(0, 200) + '...' : text;
     }
 
+    // Helper: get combobox display value for custom dropdowns (React, etc.)
+    // Native selects use .value; custom dropdowns render text as child nodes.
+    function getComboboxValue(el) {
+        // 1. Native select / input — .value works
+        if (el.tagName === 'SELECT') {
+            const opt = el.options[el.selectedIndex];
+            return opt ? opt.textContent.trim() : (el.value || '');
+        }
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+            return el.value || '';
+        }
+        // 2. Check .value if the element has one (some custom components set it)
+        if (typeof el.value === 'string' && el.value !== '') {
+            return el.value;
+        }
+        // 3. ARIA attributes that carry the current value
+        const ariaVal = el.getAttribute('aria-valuenow')
+            || el.getAttribute('aria-valuetext')
+            || el.getAttribute('data-value');
+        if (ariaVal) return ariaVal;
+        // 4. Child span / div with value-like class (React Select, Radix, MUI, etc.)
+        const valueChild = el.querySelector(
+            '[class*="singleValue"], [class*="value"], [class*="selected"], '
+            + '[class*="placeholder"]:not([class*="hidden"]), '
+            + 'span:first-child, [class*="trigger"] > span'
+        );
+        if (valueChild) {
+            const t = (valueChild.innerText || valueChild.textContent || '').trim();
+            if (t) return t;
+        }
+        // 5. Direct textContent of the trigger element
+        const directText = (el.innerText || el.textContent || '').trim();
+        if (directText) return directText;
+        // 6. Check for a hidden input inside / associated with the combobox
+        const hidden = el.querySelector('input[type="hidden"]') || el.querySelector('input');
+        if (hidden && hidden.value) return hidden.value;
+        return '';
+    }
+
     // Helper: map tag to role (same as Sevro engine)
     function getRole(el) {
         // Check explicit ARIA role first
@@ -1669,13 +1801,24 @@ const SNAPSHOT_JS: &str = r#"(() => {
             el.getAttribute('aria-disabled') === 'true' ||
             el.hasAttribute('readonly');
 
+        const role = getRole(el);
+        // For combobox-role elements, use smart value detection that handles
+        // both native <select> and React/custom dropdowns
+        const isCombobox = role === 'combobox'
+            || el.getAttribute('role') === 'combobox'
+            || el.getAttribute('role') === 'listbox'
+            || (el.className && typeof el.className === 'string' && /select|dropdown|combobox/i.test(el.className));
+        const rawValue = isCombobox
+            ? (getComboboxValue(el) || null)
+            : ((el.value !== undefined && el.value !== '') ? el.value : null);
+
         const entry = {
             ref_id: refId,
-            role: getRole(el),
+            role: role,
             text: getTextContent(el) || null,
             href: el.getAttribute('href') || null,
             placeholder: el.getAttribute('placeholder') || null,
-            value: (el.value !== undefined && el.value !== '') ? el.value : null,
+            value: rawValue,
             enabled: !isDisabled,
             visible: true,
             aria_label: el.getAttribute('aria-label') || null,
