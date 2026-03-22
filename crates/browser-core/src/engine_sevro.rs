@@ -741,7 +741,28 @@ impl BrowserEngine for SevroEngineBackend {
                     enabled: !is_disabled,
                     visible: node.is_visible,
                     aria_label: node.attributes.get("aria-label").cloned(),
-                    selector: format!("{}", node.tag_name),
+                    selector: {
+                        let tag = &node.tag_name;
+                        let mut sel = tag.clone();
+                        if let Some(id) = node.attributes.get("id") {
+                            sel = format!("{}#{}", tag, id);
+                        } else {
+                            if let Some(name) = node.attributes.get("name") {
+                                sel.push_str(&format!("[name=\"{}\"]", name));
+                            }
+                            if tag == "input" {
+                                if let Some(t) = node.attributes.get("type") {
+                                    if t != "text" {
+                                        sel.push_str(&format!("[type=\"{}\"]", t));
+                                    }
+                                }
+                            }
+                            if let Some(df) = node.attributes.get("data-field") {
+                                sel.push_str(&format!("[data-field=\"{}\"]", df));
+                            }
+                        }
+                        sel
+                    },
                     bounds: node.bounding_box.map(|b| (b.x, b.y, b.width, b.height)),
                 }
             })

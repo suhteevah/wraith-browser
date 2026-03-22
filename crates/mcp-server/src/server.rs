@@ -3363,9 +3363,57 @@ impl WraithHandler {
                         format!("Failed to parse playbook YAML: {e}"), None
                     ))?;
 
+                // ── 3b. Detect engine preference from playbook header ─────
+                // Look for top-level "engine" field if the YAML was a full playbook
+                #[allow(unused_variables)]
+                let wants_cdp = {
+                    // Try parsing as a Playbook struct to check engine field
+                    let maybe_pb: Result<openclaw_browser_core::playbook::Playbook, _> =
+                        serde_yaml::from_str(&resolved);
+                    match maybe_pb {
+                        Ok(pb) => pb.engine.eq_ignore_ascii_case("cdp"),
+                        Err(_) => {
+                            // Raw steps YAML — check if the playbook name implies CDP
+                            matches!(input.playbook_yaml.as_str(),
+                                "greenhouse-apply" | "ashby-apply")
+                        }
+                    }
+                };
+
+                // ── 3c. Auto-switch to CDP if needed ──────────────────────
+                #[cfg(feature = "cdp")]
+                let engine_arc = if wants_cdp {
+                    info!("Playbook requests CDP engine — auto-switching");
+                    use openclaw_browser_core::engine_cdp::CdpEngine;
+                    match CdpEngine::new().await {
+                        Ok(cdp_eng) => {
+                            let cdp_arc: Arc<Mutex<dyn BrowserEngine>> = Arc::new(Mutex::new(cdp_eng));
+                            // Store as active session so all browse_* route here
+                            {
+                                let mut cdp_session = self.active_cdp_session.lock().await;
+                                *cdp_session = Some(cdp_arc.clone());
+                            }
+                            {
+                                let mut sessions = self.sessions.lock().await;
+                                sessions.insert("cdp".to_string(), cdp_arc.clone());
+                                let mut active = self.active_session_name.lock().await;
+                                *active = "cdp".to_string();
+                            }
+                            cdp_arc
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "CDP launch failed, falling back to native");
+                            self.active_engine_async().await
+                        }
+                    }
+                } else {
+                    self.active_engine_async().await
+                };
+                #[cfg(not(feature = "cdp"))]
+                let engine_arc = self.active_engine_async().await;
+
                 let total_steps = steps.len();
                 let mut results: Vec<serde_json::Value> = Vec::with_capacity(total_steps);
-                let engine_arc = self.active_engine_async().await;
 
                 // ── 4. Execute each step sequentially ─────────────────────
                 for (idx, step) in steps.iter().enumerate() {
@@ -3381,13 +3429,21 @@ impl WraithHandler {
                     info!(step = idx + 1, total = total_steps, action = %action, name = %step_name, "Playbook step");
 
                     let step_result: serde_json::Value = match action.as_str() {
-                        "navigate" => {
+                        "navigate" | "navigate_cdp" => {
                             let url = step.get("url")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or(&input.job_url);
                             let mut eng = engine_arc.lock().await;
                             match eng.navigate(url).await {
                                 Ok(()) => {
+                                    // Wait for page load if wait_for selector specified
+                                    if let Some(wait_sel) = step.get("wait_for").and_then(|v| v.as_str()) {
+                                        let timeout = step.get("timeout").and_then(|v| v.as_u64()).unwrap_or(10000);
+                                        let _ = eng.execute_action(BrowserAction::WaitForSelector {
+                                            selector: wait_sel.to_string(),
+                                            timeout_ms: timeout,
+                                        }).await;
+                                    }
                                     let snap = eng.snapshot().await.ok();
                                     let elem_count = snap.as_ref()
                                         .map(|s| s.elements.len()).unwrap_or(0);
@@ -3418,7 +3474,6 @@ impl WraithHandler {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
 
-                            // Resolve @ref by CSS selector from the current snapshot
                             let mut eng = engine_arc.lock().await;
                             let ref_id = resolve_ref_by_selector(&*eng, selector).await;
                             match ref_id {
@@ -3458,15 +3513,157 @@ impl WraithHandler {
                             }
                         }
 
+                        "select" => {
+                            let selector = step.get("selector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let value = step.get("value")
+                                .or_else(|| step.get("text"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            let mut eng = engine_arc.lock().await;
+                            let ref_id = resolve_ref_by_selector(&*eng, selector).await;
+                            match ref_id {
+                                Some(rid) => {
+                                    match eng.execute_action(BrowserAction::Select {
+                                        ref_id: rid,
+                                        value: value.to_string(),
+                                        force: Some(true),
+                                    }).await {
+                                        Ok(r) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "select",
+                                            "status": "ok",
+                                            "selector": selector,
+                                            "ref_id": rid,
+                                            "value": value,
+                                            "result": format_action_result(&r)
+                                        }),
+                                        Err(e) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "select",
+                                            "status": "error",
+                                            "selector": selector,
+                                            "error": e.to_string()
+                                        }),
+                                    }
+                                }
+                                None => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "select",
+                                    "status": "error",
+                                    "selector": selector,
+                                    "error": format!("No select element found matching '{}'", selector)
+                                }),
+                            }
+                        }
+
+                        "custom_dropdown" => {
+                            let selector = step.get("selector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let value = step.get("value")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let optional = step.get("optional")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+
+                            let mut eng = engine_arc.lock().await;
+                            let ref_id = resolve_ref_by_selector(&*eng, selector).await;
+                            match ref_id {
+                                Some(rid) => {
+                                    // Click to open, type to filter, then click matching option
+                                    let _ = eng.execute_action(BrowserAction::Click {
+                                        ref_id: rid, force: Some(true),
+                                    }).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                    let _ = eng.execute_action(BrowserAction::TypeText {
+                                        ref_id: rid, text: value.to_string(),
+                                        delay_ms: 50, force: Some(true),
+                                    }).await;
+                                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                    // Re-snapshot and find the option
+                                    let snap = eng.snapshot().await.ok();
+                                    let option_ref = snap.as_ref().and_then(|s| {
+                                        s.elements.iter().find(|e| {
+                                            e.text.as_deref()
+                                                .map(|t| t.to_lowercase().contains(&value.to_lowercase()))
+                                                .unwrap_or(false)
+                                                && e.ref_id != rid
+                                                && e.role != "textbox" && e.role != "combobox"
+                                        }).map(|e| e.ref_id)
+                                    });
+                                    if let Some(opt_rid) = option_ref {
+                                        let _ = eng.execute_action(BrowserAction::Click {
+                                            ref_id: opt_rid, force: Some(true),
+                                        }).await;
+                                        json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "custom_dropdown",
+                                            "status": "ok",
+                                            "selector": selector,
+                                            "ref_id": rid,
+                                            "option_ref_id": opt_rid,
+                                            "value": value
+                                        })
+                                    } else if optional {
+                                        json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "custom_dropdown",
+                                            "status": "skipped",
+                                            "selector": selector,
+                                            "message": format!("Optional dropdown — option '{}' not found", value)
+                                        })
+                                    } else {
+                                        json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "custom_dropdown",
+                                            "status": "error",
+                                            "selector": selector,
+                                            "error": format!("Dropdown option '{}' not found after filtering", value)
+                                        })
+                                    }
+                                }
+                                None => {
+                                    if optional {
+                                        json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "custom_dropdown",
+                                            "status": "skipped",
+                                            "message": format!("Optional dropdown '{}' not found on page", selector)
+                                        })
+                                    } else {
+                                        json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "custom_dropdown",
+                                            "status": "error",
+                                            "selector": selector,
+                                            "error": format!("No dropdown found matching '{}'", selector)
+                                        })
+                                    }
+                                }
+                            }
+                        }
+
                         "upload" | "upload_file" => {
                             let selector = step.get("selector")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
                             let file_path_str = step.get("file_path")
+                                .or_else(|| step.get("path"))
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("");
 
-                            // Read file from disk, base64-encode, and determine MIME type
                             let path = std::path::Path::new(file_path_str);
                             if !path.exists() {
                                 json!({
@@ -3556,14 +3753,23 @@ impl WraithHandler {
                                     match eng.execute_action(BrowserAction::SubmitForm {
                                         ref_id: rid,
                                     }).await {
-                                        Ok(r) => json!({
-                                            "step": idx + 1,
-                                            "name": step_name,
-                                            "action": "submit",
-                                            "status": "ok",
-                                            "ref_id": rid,
-                                            "result": format_action_result(&r)
-                                        }),
+                                        Ok(r) => {
+                                            // Wait for navigation after submit
+                                            if step.get("wait_for_navigation").and_then(|v| v.as_bool()).unwrap_or(true) {
+                                                let timeout = step.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5000);
+                                                let _ = eng.execute_action(BrowserAction::WaitForNavigation {
+                                                    timeout_ms: timeout,
+                                                }).await;
+                                            }
+                                            json!({
+                                                "step": idx + 1,
+                                                "name": step_name,
+                                                "action": "submit",
+                                                "status": "ok",
+                                                "ref_id": rid,
+                                                "result": format_action_result(&r)
+                                            })
+                                        }
                                         Err(e) => json!({
                                             "step": idx + 1,
                                             "name": step_name,
@@ -3623,9 +3829,135 @@ impl WraithHandler {
                             }
                         }
 
+                        "eval_js" => {
+                            let code = step.get("code")
+                                .or_else(|| step.get("script"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let eng = engine_arc.lock().await;
+                            match eng.eval_js(code).await {
+                                Ok(result) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "eval_js",
+                                    "status": "ok",
+                                    "result": result
+                                }),
+                                Err(e) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "eval_js",
+                                    "status": "error",
+                                    "error": e.to_string()
+                                }),
+                            }
+                        }
+
+                        "extract" => {
+                            let eng = engine_arc.lock().await;
+                            let html = eng.page_source().await.unwrap_or_default();
+                            let url = eng.current_url().await.unwrap_or_default();
+                            match openclaw_content_extract::extract(&html, &url) {
+                                Ok(content) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "extract",
+                                    "status": "ok",
+                                    "title": content.title,
+                                    "markdown_length": content.markdown.len(),
+                                    "links": content.links.len()
+                                }),
+                                Err(e) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "extract",
+                                    "status": "error",
+                                    "error": e.to_string()
+                                }),
+                            }
+                        }
+
+                        "screenshot" => {
+                            let eng = engine_arc.lock().await;
+                            match eng.screenshot().await {
+                                Ok(png) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "screenshot",
+                                    "status": "ok",
+                                    "size_bytes": png.len()
+                                }),
+                                Err(e) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "screenshot",
+                                    "status": "error",
+                                    "error": e.to_string()
+                                }),
+                            }
+                        }
+
+                        "conditional" => {
+                            let eng = engine_arc.lock().await;
+                            let snap = eng.snapshot().await.ok();
+                            let page_text = snap.as_ref()
+                                .map(|s| s.to_agent_text())
+                                .unwrap_or_default();
+                            let current_url = snap.as_ref()
+                                .map(|s| s.url.as_str())
+                                .unwrap_or("");
+
+                            let mut condition_met = false;
+
+                            // if_exists: check if a selector matches any element
+                            if let Some(if_exists) = step.get("if_exists").and_then(|v| v.as_str()) {
+                                drop(eng);
+                                let eng2 = engine_arc.lock().await;
+                                condition_met = resolve_ref_by_selector(&*eng2, if_exists).await.is_some();
+                            }
+                            // if_url_contains
+                            else if let Some(url_frag) = step.get("if_url_contains").and_then(|v| v.as_str()) {
+                                condition_met = current_url.contains(url_frag);
+                            }
+                            // if_visible: check if selector element is visible
+                            else if let Some(if_visible) = step.get("if_visible").and_then(|v| v.as_str()) {
+                                drop(eng);
+                                let eng2 = engine_arc.lock().await;
+                                condition_met = resolve_ref_by_selector(&*eng2, if_visible).await.is_some();
+                            }
+                            // if_variable: check if a runtime var is truthy
+                            else if let Some(_var_check) = step.get("if_variable").and_then(|v| v.as_str()) {
+                                // Variable checking would require the PlaybookRunner — simplified here
+                                condition_met = false;
+                            }
+
+                            json!({
+                                "step": idx + 1,
+                                "name": step_name,
+                                "action": "conditional",
+                                "status": "ok",
+                                "condition_met": condition_met,
+                                "message": if condition_met { "Condition true — then branch would execute" } else { "Condition false — else branch would execute" }
+                            })
+                        }
+
                         "verify" => {
+                            // Parse expect_url_contains from either direct field or check: url_contains("...")
+                            let url_check_from_check_field: Option<String> = step.get("check")
+                                .and_then(|v| v.as_str())
+                                .and_then(|s| {
+                                    if s.starts_with("url_contains(") {
+                                        Some(s.trim_start_matches("url_contains(\"")
+                                            .trim_start_matches("url_contains('")
+                                            .trim_end_matches("\")")
+                                            .trim_end_matches("')")
+                                            .to_string())
+                                    } else { None }
+                                });
                             let expect_url_contains = step.get("expect_url_contains")
-                                .and_then(|v| v.as_str());
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                                .or(url_check_from_check_field);
                             let expect_text = step.get("expect_text")
                                 .and_then(|v| v.as_str());
 
@@ -3641,8 +3973,8 @@ impl WraithHandler {
                             let mut passed = true;
                             let mut details = Vec::new();
 
-                            if let Some(fragment) = expect_url_contains {
-                                if current_url.contains(fragment) {
+                            if let Some(ref fragment) = expect_url_contains {
+                                if current_url.contains(fragment.as_str()) {
                                     details.push(format!("URL contains '{}': PASS", fragment));
                                 } else {
                                     passed = false;
@@ -3671,7 +4003,19 @@ impl WraithHandler {
                             let ms = step.get("ms")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(1000);
-                            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                            let wait_selector = step.get("selector")
+                                .and_then(|v| v.as_str());
+
+                            if let Some(sel) = wait_selector {
+                                let timeout = step.get("timeout").and_then(|v| v.as_u64()).unwrap_or(5000);
+                                let mut eng = engine_arc.lock().await;
+                                let _ = eng.execute_action(BrowserAction::WaitForSelector {
+                                    selector: sel.to_string(),
+                                    timeout_ms: timeout,
+                                }).await;
+                            } else {
+                                tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                            }
                             json!({
                                 "step": idx + 1,
                                 "name": step_name,
@@ -3682,6 +4026,7 @@ impl WraithHandler {
                         }
 
                         other => {
+                            warn!(action = %other, "Unknown playbook action — skipping");
                             json!({
                                 "step": idx + 1,
                                 "name": step_name,
@@ -4168,8 +4513,156 @@ const PLAYBOOK_INDEED: &str = r#"
   expect_text: "jobs"
 "#;
 
+/// Parse CSS attribute selectors like `[name="first_name"]` or `[type=submit]`
+/// into (attr_name, attr_value) pairs for matching.
+fn parse_css_attr_selectors(selector: &str) -> Vec<(String, String)> {
+    let mut attrs = Vec::new();
+    let mut rest = selector;
+    while let Some(start) = rest.find('[') {
+        if let Some(end) = rest[start..].find(']') {
+            let inner = &rest[start + 1..start + end];
+            if let Some(eq_pos) = inner.find('=') {
+                let attr_name = inner[..eq_pos].trim().to_lowercase();
+                let attr_val = inner[eq_pos + 1..].trim()
+                    .trim_matches('"').trim_matches('\'').to_string();
+                attrs.push((attr_name, attr_val));
+            }
+            rest = &rest[start + end + 1..];
+        } else {
+            break;
+        }
+    }
+    attrs
+}
+
+/// Extract the tag name from a CSS selector (e.g., "input[name=q]" -> "input",
+/// "button.btn-primary" -> "button", "#my-id" -> "").
+fn parse_css_tag(selector: &str) -> &str {
+    let s = selector;
+    // Find the first [, ., or # which ends the tag name
+    let end = s.find(|c: char| c == '[' || c == '.' || c == '#').unwrap_or(s.len());
+    &s[..end]
+}
+
+/// Check if a DomElement matches a CSS selector by comparing:
+/// - Tag name (from selector like "input..." or "button...")
+/// - Attribute selectors like [name=...], [type=...], [data-field=...]
+/// - ID selectors like #my-id
+/// - Class selectors like .my-class
+/// - Stored selector path (exact + substring match)
+/// - Role name match for bare tag selectors
+fn element_matches_selector(
+    elem: &openclaw_browser_core::dom::DomElement,
+    selector: &str,
+) -> bool {
+    // Parse the tag from the selector
+    let query_tag = parse_css_tag(selector).to_lowercase();
+
+    // Check tag match first (if the query specifies a tag)
+    if !query_tag.is_empty() {
+        // The stored selector starts with the tag (e.g., "input[name=\"first_name\"]")
+        let stored_tag = parse_css_tag(&elem.selector).to_lowercase();
+        // Also check the role — Sevro stores tag_name as role for some elements
+        let role_lower = elem.role.to_lowercase();
+        // Map common roles back to tags for matching
+        let role_is_tag = match role_lower.as_str() {
+            "textbox" | "text" | "email" | "tel" | "number" | "password"
+            | "url" | "search" | "date" | "time" | "datetime-local" | "hidden"
+            | "file" | "checkbox" | "radio" | "submit" | "reset" => query_tag == "input",
+            "combobox" => query_tag == "select" || query_tag == "input",
+            "link" => query_tag == "a",
+            "button" => query_tag == "button",
+            _ => role_lower == query_tag,
+        };
+        if stored_tag != query_tag && !role_is_tag {
+            return false;
+        }
+    }
+
+    // Parse attribute selectors from the query
+    let attrs = parse_css_attr_selectors(selector);
+    if !attrs.is_empty() {
+        for (attr_name, attr_val) in &attrs {
+            let matched = match attr_name.as_str() {
+                "name" => {
+                    // Check against the stored selector which now includes [name="..."]
+                    let pattern = format!("[name=\"{}\"]", attr_val);
+                    elem.selector.contains(&pattern)
+                }
+                "type" => {
+                    // type= matches either the role or stored selector
+                    elem.role.eq_ignore_ascii_case(attr_val)
+                        || elem.selector.contains(&format!("[type=\"{}\"]", attr_val))
+                }
+                "data-field" => {
+                    elem.selector.contains(&format!("[data-field=\"{}\"]", attr_val))
+                }
+                "placeholder" => {
+                    elem.placeholder.as_deref()
+                        .map(|p| p.eq_ignore_ascii_case(attr_val))
+                        .unwrap_or(false)
+                }
+                "aria-label" => {
+                    elem.aria_label.as_deref()
+                        .map(|a| a.eq_ignore_ascii_case(attr_val))
+                        .unwrap_or(false)
+                }
+                "href" => {
+                    elem.href.as_deref()
+                        .map(|h| h.contains(attr_val.as_str()))
+                        .unwrap_or(false)
+                }
+                // Generic: check if stored selector contains [attr="val"]
+                _ => {
+                    let pattern = format!("[{}=\"{}\"]", attr_name, attr_val);
+                    elem.selector.contains(&pattern)
+                }
+            };
+            if !matched {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ID selector: #my-id
+    if selector.contains('#') {
+        if let Some(id_part) = selector.split('#').nth(1) {
+            let id = id_part.split(|c: char| c == '.' || c == '[' || c == ' ').next().unwrap_or(id_part);
+            return elem.selector.contains(&format!("#{}", id));
+        }
+    }
+
+    // Class selector: .my-class or tag.my-class
+    if selector.contains('.') && !selector.contains('[') {
+        if let Some(dot_pos) = selector.find('.') {
+            let class_part = &selector[dot_pos..];
+            let first_class = class_part.split(|c: char| c == ' ' || c == '[').next().unwrap_or(class_part);
+            return elem.selector.contains(first_class);
+        }
+    }
+
+    // Bare tag match: "button" matches role "button" or "submit"
+    if !query_tag.is_empty() && !selector.contains('[') && !selector.contains('.') && !selector.contains('#') {
+        let role_lower = elem.role.to_lowercase();
+        if role_lower == query_tag { return true; }
+        // "button" should also match elements with role "submit"
+        if query_tag == "button" && (role_lower == "submit" || role_lower == "button") { return true; }
+    }
+
+    false
+}
+
 /// Resolve a CSS selector to a @ref ID by searching the current snapshot's elements.
-/// Uses the element's stored `selector` path and `role` for matching.
+///
+/// Matching strategy (in priority order):
+/// 1. Bare number → direct ref_id
+/// 2. Exact match against stored selector
+/// 3. Parsed CSS attribute/tag/class/id matching
+/// 4. Substring match against stored selector
+/// 5. Placeholder text match
+/// 6. Visible text content match (for buttons/links)
+///
 /// Returns the first matching element's ref_id, or None if no match.
 async fn resolve_ref_by_selector(
     engine: &dyn BrowserEngine,
@@ -4184,45 +4677,64 @@ async fn resolve_ref_by_selector(
         return Some(rid);
     }
 
-    // Get the snapshot and search through elements
     let snapshot = engine.snapshot().await.ok()?;
+
+    // Pass 1: exact stored selector match
     for elem in &snapshot.elements {
-        // 1. Exact match against the element's stored CSS selector path
         if elem.selector == selector {
             return Some(elem.ref_id);
         }
-        // 2. The element's selector *contains* the query (e.g., selector query
-        //    "input[name=first_name]" is a substring of "form > input[name=first_name]")
-        if elem.selector.contains(selector) {
-            return Some(elem.ref_id);
-        }
-        // 3. Match by role name alone (e.g., "button" matches role "button")
-        if !selector.contains('[') && !selector.contains('.') && !selector.contains('#') {
-            if elem.role.eq_ignore_ascii_case(selector) {
-                return Some(elem.ref_id);
-            }
-        }
-        // 4. Match "[type=file]" against role "file"
-        if selector.contains("[type=") {
-            let type_val = selector
-                .split("[type=").nth(1)
-                .and_then(|s| s.strip_suffix(']'))
-                .map(|s| s.trim_matches('"').trim_matches('\''));
-            if let Some(type_val) = type_val {
-                if elem.role.eq_ignore_ascii_case(type_val) {
-                    return Some(elem.ref_id);
-                }
-            }
-        }
-        // 5. Match by class: ".my-class" — check if stored selector contains it
-        if selector.starts_with('.') && elem.selector.contains(selector) {
-            return Some(elem.ref_id);
-        }
-        // 6. Match by id: "#my-id" — check if stored selector contains it
-        if selector.starts_with('#') && elem.selector.contains(selector) {
+    }
+
+    // Pass 2: parsed CSS selector matching (tag + attributes + class + id)
+    for elem in &snapshot.elements {
+        if element_matches_selector(elem, selector) {
             return Some(elem.ref_id);
         }
     }
+
+    // Pass 3: normalize the query (strip quotes around attr values) and try substring
+    let normalized = selector
+        .replace("'", "\"")
+        .replace("= ", "=")
+        .replace(" =", "=");
+    for elem in &snapshot.elements {
+        let stored_normalized = elem.selector
+            .replace("'", "\"")
+            .replace("= ", "=")
+            .replace(" =", "=");
+        if stored_normalized.contains(&normalized) || normalized.contains(&stored_normalized) {
+            return Some(elem.ref_id);
+        }
+    }
+
+    // Pass 4: match by placeholder text (e.g., selector "Search..." matches placeholder)
+    let sel_lower = selector.to_lowercase();
+    for elem in &snapshot.elements {
+        if let Some(ref ph) = elem.placeholder {
+            if ph.to_lowercase().contains(&sel_lower) || sel_lower.contains(&ph.to_lowercase()) {
+                return Some(elem.ref_id);
+            }
+        }
+    }
+
+    // Pass 5: for button/link/submit selectors, match by visible text
+    let query_tag = parse_css_tag(selector).to_lowercase();
+    if query_tag == "button" || query_tag == "a" || selector.contains("[type=submit]") || selector.contains("[type=\"submit\"]") {
+        for elem in &snapshot.elements {
+            if let Some(ref text) = elem.text {
+                if text.to_lowercase().contains(&sel_lower) {
+                    let is_clickable = matches!(elem.role.as_str(),
+                        "button" | "submit" | "link" | "a");
+                    if is_clickable {
+                        return Some(elem.ref_id);
+                    }
+                }
+            }
+        }
+    }
+
+    debug!(selector = %selector, "No element found matching selector");
     None
 }
 

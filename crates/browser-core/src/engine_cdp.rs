@@ -1778,10 +1778,17 @@ const SNAPSHOT_JS: &str = r#"(() => {
         }
     }
 
-    // Helper: build a simple CSS selector for the element
+    // Helper: build a CSS selector for the element (includes name/type for playbook matching)
     function buildSelector(el) {
         const tag = el.tagName.toLowerCase();
         if (el.id) return tag + '#' + CSS.escape(el.id);
+        // For form fields, include name and type attributes so playbook selectors match
+        const attrs = [];
+        if (el.getAttribute('name')) attrs.push('[name=\"' + el.getAttribute('name') + '\"]');
+        if (tag === 'input' && el.getAttribute('type') && el.getAttribute('type') !== 'text')
+            attrs.push('[type=\"' + el.getAttribute('type') + '\"]');
+        if (el.getAttribute('data-field')) attrs.push('[data-field=\"' + el.getAttribute('data-field') + '\"]');
+        if (attrs.length > 0) return tag + attrs.join('');
         const cls = Array.from(el.classList).slice(0, 2).map(c => '.' + CSS.escape(c)).join('');
         return tag + cls;
     }
