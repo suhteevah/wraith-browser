@@ -2152,30 +2152,73 @@ impl WraithHandler {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                 // Step 3: Find and click the matching option via JS
+                // Uses React-compatible event dispatch (mousedown + mouseup + click)
+                // plus native setter trick on associated input for React state update
                 let js = format!(
                     r#"(() => {{
-                        var val = '{}';
+                        var val = '{value}';
+                        var refId = {ref_id};
                         // Look for listbox options, menu items, or visible option-like elements
                         var options = document.querySelectorAll('[role="option"], [role="listbox"] li, [class*="option"], [class*="Option"], [class*="dropdown"] li, [class*="menu"] li, [data-value]');
+                        var matched = null;
                         for (var i = 0; i < options.length; i++) {{
                             var opt = options[i];
                             var text = (opt.textContent || '').trim().toLowerCase();
                             if (text === val.toLowerCase() || text.indexOf(val.toLowerCase()) >= 0) {{
-                                opt.click();
-                                return 'SELECTED: ' + opt.textContent.trim();
+                                matched = opt;
+                                break;
                             }}
                         }}
-                        // Fallback: press Enter to confirm typed value
-                        return 'TYPED_VALUE: ' + val + ' (no matching option found — Enter may confirm)';
+                        if (!matched) {{
+                            return 'TYPED_VALUE: ' + val + ' (no matching option found — Enter may confirm)';
+                        }}
+                        // Dispatch full event sequence for React compatibility
+                        matched.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
+                        matched.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true}}));
+                        matched.click();
+                        var selectedText = matched.textContent.trim();
+                        // Find the trigger element and its associated input
+                        var trigger = document.querySelector('[data-wraith-ref="' + refId + '"]');
+                        if (!trigger) {{
+                            // Try finding by ref index in the snapshot
+                            var allInteractive = document.querySelectorAll('a, button, input, select, textarea, [role]');
+                            if (refId > 0 && refId <= allInteractive.length) trigger = allInteractive[refId - 1];
+                        }}
+                        if (trigger) {{
+                            var input = trigger.querySelector('input[type="hidden"]') || trigger.querySelector('input') || trigger;
+                            try {{
+                                var nativeSetter = Object.getOwnPropertyDescriptor(
+                                    window.HTMLInputElement.prototype, 'value'
+                                );
+                                if (nativeSetter && nativeSetter.set) {{
+                                    nativeSetter.set.call(input, selectedText);
+                                }} else {{
+                                    input.value = selectedText;
+                                }}
+                            }} catch(e) {{
+                                input.value = selectedText;
+                            }}
+                            input.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            input.dispatchEvent(new Event('blur', {{bubbles: true}}));
+                        }}
+                        return 'SELECTED: ' + selectedText;
                     }})()"#,
-                    input.value.replace('\'', "\\'")
+                    value = input.value.replace('\'', "\\'"),
+                    ref_id = input.ref_id,
                 );
+
+                // Wait for React re-render after option click
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
                 match engine.eval_js(&js).await {
                     Ok(result) => {
                         if result.starts_with("TYPED_VALUE:") {
                             // Press Enter as fallback
                             let _ = engine.execute_action(BrowserAction::KeyPress { key: "Enter".to_string() }).await;
                         }
+                        // Wait for final React re-render
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         Ok(CallToolResult::success(vec![Content::text(result)]))
                     }
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Dropdown failed: {e}"))]))
