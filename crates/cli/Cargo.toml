@@ -10,8 +10,9 @@ name = "openclaw-browser"
 path = "src/main.rs"
 
 [features]
-default = ["sevro"]
+default = ["sevro", "cdp"]
 sevro = ["openclaw-browser-core/sevro", "openclaw-mcp-server/sevro"]
+cdp = ["openclaw-browser-core/cdp", "openclaw-mcp-server/cdp"]
 
 [dependencies]
 openclaw-browser-core = { path = "../browser-core", default-features = false }
