@@ -21,6 +21,8 @@ pub mod timetravel;
 pub mod task_dag;
 pub mod mcts;
 pub mod workflow;
+pub mod checkpoint;
+pub mod webhooks;
 
 pub use agent::Agent;
 pub use task::BrowsingTask;

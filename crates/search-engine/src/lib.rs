@@ -12,6 +12,7 @@
 pub mod web;
 pub mod local;
 pub mod error;
+pub mod scoring;
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, debug};

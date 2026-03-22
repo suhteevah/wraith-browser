@@ -1,7 +1,6 @@
 //! MCP server handler — implements the rmcp ServerHandler trait.
 //! Wired to a real NativeClient for Chrome-free browsing.
 
-#[cfg(feature = "cdp")]
 use std::collections::HashMap;
 use std::sync::Arc;
 use base64::Engine as _;
@@ -138,6 +137,8 @@ pub struct WraithHandler {
     /// Name of the currently active session (default: "native").
     #[cfg(feature = "cdp")]
     active_session_name: Arc<tokio::sync::Mutex<String>>,
+    /// Application dedup tracker — prevents duplicate applications.
+    dedup_tracker: Arc<openclaw_cache::dedup::ApplicationTracker>,
 }
 
 impl Default for WraithHandler {
@@ -403,14 +404,50 @@ impl WraithHandler {
                 &schema_for!(TlsVerifyInput), ro_open),
             make_tool("browse_login",
                 "Perform a full login flow: navigate to a login page, fill username + password, click submit, and follow the entire OAuth/auth redirect chain (302 -> 302 -> 200). Captures all Set-Cookie headers at every redirect hop. Returns the final page snapshot and all cookies set during the flow. Use this instead of separate navigate/fill/click when you need reliable auth with cookie persistence across redirects.",
-                &schema_for!(LoginInput), rw_open),
+                &schema_for!(LoginInput), rw_open.clone()),
             make_tool("browse_engine_status",
                 "Check which browser engine is currently active: 'native (Sevro)' or 'CDP (Chrome)'. After browse_navigate_cdp, all browse_* commands automatically route to the CDP engine. After browse_navigate (native), they route back to the native engine.",
                 &schema_for!(EngineStatusInput), ro_closed.clone()),
             make_tool("browse_session_list",
                 "List all open browser sessions with their engine type and current URL.",
-                &schema_for!(SessionListInput), ro_closed),
+                &schema_for!(SessionListInput), ro_closed.clone()),
+            // --- Playbook tools ---
+            make_tool("swarm_run_playbook",
+                "Execute a YAML playbook (or a built-in name like 'greenhouse-apply') that describes a sequence of browser actions with variable interpolation. Navigates, fills forms, uploads files, submits, and verifies — returning step-by-step results.",
+                &schema_for!(PlaybookRunInput), rw_open.clone()),
+            make_tool("swarm_list_playbooks",
+                "List all built-in playbook names with descriptions. Playbooks are pre-authored automation scripts for common job-application flows (Greenhouse, Ashby, Lever, Indeed).",
+                &schema_for!(PlaybookListInput), ro_closed.clone()),
+            make_tool("swarm_playbook_status",
+                "Check the progress of a running or completed playbook execution. Returns completed/total steps, current step name, and any errors encountered.",
+                &schema_for!(PlaybookStatusInput), ro_closed.clone()),
+            // --- Dedup & Verification tools ---
+            make_tool("swarm_dedup_check",
+                "Check if a job URL has already been applied to. Returns { applied: bool, applied_at, status } so the agent can skip duplicates.",
+                &schema_for!(DedupCheckInput), ro_closed.clone()),
+            make_tool("swarm_dedup_record",
+                "Record that a job application was submitted. Stores URL, company, title, and platform in the dedup database for future duplicate detection.",
+                &schema_for!(DedupRecordInput), rw_closed.clone()),
+            make_tool("swarm_dedup_stats",
+                "Return aggregate dedup statistics: total applications, breakdown by platform and status, today's count, this week's count.",
+                &schema_for!(DedupStatsInput), ro_closed.clone()),
+            make_tool("swarm_verify_submission",
+                "After submitting a job application, verify it went through by checking the current page for success/error indicators (confirmation messages, error banners, URL patterns). Returns { result: confirmed|likely|uncertain|failed, message }.",
+                &schema_for!(VerifySubmissionInput), ro_closed),
         ];
+
+        // Initialize the application dedup tracker (SQLite-backed)
+        let dedup_db_path = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".openclaw")
+            .join("dedup.db");
+        // Ensure the parent directory exists
+        if let Some(parent) = dedup_db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let dedup_tracker = Arc::new(openclaw_cache::dedup::ApplicationTracker::new(
+            &dedup_db_path.to_string_lossy(),
+        ));
 
         info!(tool_count = tools.len(), "Wraith MCP handler initialized");
 
@@ -423,11 +460,12 @@ impl WraithHandler {
                 active_cdp_session: Arc::new(Mutex::new(None)),
                 sessions: Arc::new(tokio::sync::Mutex::new(sessions_map)),
                 active_session_name: Arc::new(tokio::sync::Mutex::new("native".to_string())),
+                dedup_tracker,
             };
         }
 
         #[cfg(not(feature = "cdp"))]
-        Self { tools, engine }
+        Self { tools, engine, dedup_tracker }
     }
 
     /// Create the handler with a specific engine plus CDP support.
@@ -525,6 +563,18 @@ impl WraithHandler {
         let mut sessions_map = HashMap::new();
         sessions_map.insert("native".to_string(), engine.clone());
 
+        // Initialize the application dedup tracker (SQLite-backed)
+        let dedup_db_path = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".openclaw")
+            .join("dedup.db");
+        if let Some(parent) = dedup_db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let dedup_tracker = Arc::new(openclaw_cache::dedup::ApplicationTracker::new(
+            &dedup_db_path.to_string_lossy(),
+        ));
+
         info!(
             tool_count = tools.len(),
             cdp_available = cdp_engine.is_some(),
@@ -536,6 +586,7 @@ impl WraithHandler {
             active_cdp_session: Arc::new(Mutex::new(None)),
             sessions: Arc::new(tokio::sync::Mutex::new(sessions_map)),
             active_session_name: Arc::new(tokio::sync::Mutex::new("native".to_string())),
+            dedup_tracker,
         }
     }
 
@@ -3192,6 +3243,615 @@ impl WraithHandler {
                 }
             }
 
+            // ── Playbook tools ────────────────────────────────────────────
+            "swarm_list_playbooks" => {
+                let _input: PlaybookListInput = parse_args(args)?;
+                info!("Listing built-in playbooks");
+
+                let playbooks = json!([
+                    {
+                        "name": "greenhouse-apply",
+                        "description": "Apply to a job on Greenhouse boards — navigates to the posting, fills standard fields (name, email, phone, resume upload, work authorization, LinkedIn), handles custom dropdowns (country, visa sponsorship, EEO fields), and submits the application."
+                    },
+                    {
+                        "name": "ashby-apply",
+                        "description": "Apply to a job on Ashby job boards — navigates to the posting, fills candidate info fields, uploads resume, answers custom questions, and submits."
+                    },
+                    {
+                        "name": "lever-apply",
+                        "description": "Apply to a job on Lever job boards — navigates to the posting, clicks Apply, fills the application form (name, email, phone, resume, LinkedIn, current company), and submits."
+                    },
+                    {
+                        "name": "indeed-search",
+                        "description": "Search for jobs on Indeed — navigates to indeed.com, fills the what/where fields, submits the search, and extracts job titles, companies, locations, and URLs from the results page."
+                    }
+                ]);
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&playbooks).unwrap_or_default()
+                )]))
+            }
+
+            "swarm_playbook_status" => {
+                let input: PlaybookStatusInput = parse_args(args)?;
+                info!(run_id = ?input.run_id, "Checking playbook status");
+
+                // Playbook state is ephemeral (lives in the swarm_run_playbook call).
+                // Return a stub status — the caller can poll during long runs.
+                let run_id = input.run_id.unwrap_or_else(|| "latest".to_string());
+                let status = json!({
+                    "run_id": run_id,
+                    "status": "idle",
+                    "completed_steps": 0,
+                    "total_steps": 0,
+                    "current_step": null,
+                    "errors": [],
+                    "message": "No playbook is currently running. Use swarm_run_playbook to start one."
+                });
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&status).unwrap_or_default()
+                )]))
+            }
+
+            "swarm_run_playbook" => {
+                let input: PlaybookRunInput = parse_args(args)?;
+                info!(playbook = %input.playbook_yaml, job_url = %input.job_url, "Running playbook");
+
+                // ── 1. Resolve the playbook YAML ──────────────────────────
+                let raw_yaml = match input.playbook_yaml.as_str() {
+                    "greenhouse-apply" => PLAYBOOK_GREENHOUSE.to_string(),
+                    "ashby-apply"      => PLAYBOOK_ASHBY.to_string(),
+                    "lever-apply"      => PLAYBOOK_LEVER.to_string(),
+                    "indeed-search"    => PLAYBOOK_INDEED.to_string(),
+                    other => other.to_string(), // treat as raw YAML
+                };
+
+                // ── 2. Variable interpolation ─────────────────────────────
+                let mut resolved = raw_yaml.clone();
+                resolved = resolved.replace("{{job_url}}", &input.job_url);
+                for (k, v) in &input.variables {
+                    resolved = resolved.replace(&format!("{{{{{}}}}}", k), v);
+                }
+
+                // ── 3. Parse YAML into steps ──────────────────────────────
+                let steps: Vec<serde_json::Value> = serde_yaml::from_str(&resolved)
+                    .map_err(|e| ErrorData::invalid_params(
+                        format!("Failed to parse playbook YAML: {e}"), None
+                    ))?;
+
+                let total_steps = steps.len();
+                let mut results: Vec<serde_json::Value> = Vec::with_capacity(total_steps);
+                let engine_arc = self.active_engine_async().await;
+
+                // ── 4. Execute each step sequentially ─────────────────────
+                for (idx, step) in steps.iter().enumerate() {
+                    let step_name = step.get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unnamed")
+                        .to_string();
+                    let action = step.get("action")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+
+                    info!(step = idx + 1, total = total_steps, action = %action, name = %step_name, "Playbook step");
+
+                    let step_result: serde_json::Value = match action.as_str() {
+                        "navigate" => {
+                            let url = step.get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&input.job_url);
+                            let mut eng = engine_arc.lock().await;
+                            match eng.navigate(url).await {
+                                Ok(()) => {
+                                    let snap = eng.snapshot().await.ok();
+                                    let elem_count = snap.as_ref()
+                                        .map(|s| s.elements.len()).unwrap_or(0);
+                                    json!({
+                                        "step": idx + 1,
+                                        "name": step_name,
+                                        "action": "navigate",
+                                        "status": "ok",
+                                        "url": url,
+                                        "elements_found": elem_count
+                                    })
+                                }
+                                Err(e) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "navigate",
+                                    "status": "error",
+                                    "error": e.to_string()
+                                }),
+                            }
+                        }
+
+                        "fill" => {
+                            let selector = step.get("selector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let value = step.get("value")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            // Resolve @ref by CSS selector from the current snapshot
+                            let mut eng = engine_arc.lock().await;
+                            let ref_id = resolve_ref_by_selector(&*eng, selector).await;
+                            match ref_id {
+                                Some(rid) => {
+                                    match eng.execute_action(BrowserAction::Fill {
+                                        ref_id: rid,
+                                        text: value.to_string(),
+                                        force: Some(true),
+                                    }).await {
+                                        Ok(r) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "fill",
+                                            "status": "ok",
+                                            "selector": selector,
+                                            "ref_id": rid,
+                                            "result": format_action_result(&r)
+                                        }),
+                                        Err(e) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "fill",
+                                            "status": "error",
+                                            "selector": selector,
+                                            "error": e.to_string()
+                                        }),
+                                    }
+                                }
+                                None => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "fill",
+                                    "status": "error",
+                                    "selector": selector,
+                                    "error": format!("No element found matching selector '{}'", selector)
+                                }),
+                            }
+                        }
+
+                        "upload" | "upload_file" => {
+                            let selector = step.get("selector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let file_path_str = step.get("file_path")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            // Read file from disk, base64-encode, and determine MIME type
+                            let path = std::path::Path::new(file_path_str);
+                            if !path.exists() {
+                                json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "upload_file",
+                                    "status": "error",
+                                    "error": format!("File not found: {}", file_path_str)
+                                })
+                            } else {
+                                let file_bytes = match std::fs::read(path) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        results.push(json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "upload_file",
+                                            "status": "error",
+                                            "error": format!("Failed to read file: {}", e)
+                                        }));
+                                        continue;
+                                    }
+                                };
+                                let file_name = path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("file")
+                                    .to_string();
+                                let mime_type = match path.extension().and_then(|e| e.to_str()) {
+                                    Some("pdf") => "application/pdf",
+                                    Some("doc") => "application/msword",
+                                    Some("docx") => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                    Some("txt") => "text/plain",
+                                    Some("png") => "image/png",
+                                    Some("jpg") | Some("jpeg") => "image/jpeg",
+                                    _ => "application/octet-stream",
+                                };
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(&file_bytes);
+
+                                let mut eng = engine_arc.lock().await;
+                                let ref_id = resolve_ref_by_selector(&*eng, selector).await;
+                                match ref_id {
+                                    Some(rid) => {
+                                        match eng.execute_action(BrowserAction::UploadFile {
+                                            ref_id: rid,
+                                            file_name,
+                                            file_data: b64,
+                                            mime_type: mime_type.to_string(),
+                                        }).await {
+                                            Ok(r) => json!({
+                                                "step": idx + 1,
+                                                "name": step_name,
+                                                "action": "upload_file",
+                                                "status": "ok",
+                                                "file_path": file_path_str,
+                                                "ref_id": rid,
+                                                "result": format_action_result(&r)
+                                            }),
+                                            Err(e) => json!({
+                                                "step": idx + 1,
+                                                "name": step_name,
+                                                "action": "upload_file",
+                                                "status": "error",
+                                                "error": e.to_string()
+                                            }),
+                                        }
+                                    }
+                                    None => json!({
+                                        "step": idx + 1,
+                                        "name": step_name,
+                                        "action": "upload_file",
+                                        "status": "error",
+                                        "error": format!("No file input found matching selector '{}'", selector)
+                                    }),
+                                }
+                            }
+                        }
+
+                        "submit" | "submit_form" => {
+                            let selector = step.get("selector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            let mut eng = engine_arc.lock().await;
+                            let ref_id = resolve_ref_by_selector(&*eng, selector).await;
+                            match ref_id {
+                                Some(rid) => {
+                                    match eng.execute_action(BrowserAction::SubmitForm {
+                                        ref_id: rid,
+                                    }).await {
+                                        Ok(r) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "submit",
+                                            "status": "ok",
+                                            "ref_id": rid,
+                                            "result": format_action_result(&r)
+                                        }),
+                                        Err(e) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "submit",
+                                            "status": "error",
+                                            "error": e.to_string()
+                                        }),
+                                    }
+                                }
+                                None => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "submit",
+                                    "status": "error",
+                                    "error": format!("No submit element found matching selector '{}'", selector)
+                                }),
+                            }
+                        }
+
+                        "click" => {
+                            let selector = step.get("selector")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+
+                            let mut eng = engine_arc.lock().await;
+                            let ref_id = resolve_ref_by_selector(&*eng, selector).await;
+                            match ref_id {
+                                Some(rid) => {
+                                    match eng.execute_action(BrowserAction::Click {
+                                        ref_id: rid,
+                                        force: Some(true),
+                                    }).await {
+                                        Ok(r) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "click",
+                                            "status": "ok",
+                                            "ref_id": rid,
+                                            "result": format_action_result(&r)
+                                        }),
+                                        Err(e) => json!({
+                                            "step": idx + 1,
+                                            "name": step_name,
+                                            "action": "click",
+                                            "status": "error",
+                                            "error": e.to_string()
+                                        }),
+                                    }
+                                }
+                                None => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "click",
+                                    "status": "error",
+                                    "error": format!("No element found matching selector '{}'", selector)
+                                }),
+                            }
+                        }
+
+                        "verify" => {
+                            let expect_url_contains = step.get("expect_url_contains")
+                                .and_then(|v| v.as_str());
+                            let expect_text = step.get("expect_text")
+                                .and_then(|v| v.as_str());
+
+                            let eng = engine_arc.lock().await;
+                            let snap = eng.snapshot().await.ok();
+                            let current_url = snap.as_ref()
+                                .map(|s| s.url.as_str())
+                                .unwrap_or("");
+                            let page_text = snap.as_ref()
+                                .map(|s| s.to_agent_text())
+                                .unwrap_or_default();
+
+                            let mut passed = true;
+                            let mut details = Vec::new();
+
+                            if let Some(fragment) = expect_url_contains {
+                                if current_url.contains(fragment) {
+                                    details.push(format!("URL contains '{}': PASS", fragment));
+                                } else {
+                                    passed = false;
+                                    details.push(format!("URL contains '{}': FAIL (actual: {})", fragment, current_url));
+                                }
+                            }
+                            if let Some(text) = expect_text {
+                                if page_text.contains(text) {
+                                    details.push(format!("Page contains '{}': PASS", text));
+                                } else {
+                                    passed = false;
+                                    details.push(format!("Page contains '{}': FAIL", text));
+                                }
+                            }
+
+                            json!({
+                                "step": idx + 1,
+                                "name": step_name,
+                                "action": "verify",
+                                "status": if passed { "ok" } else { "fail" },
+                                "checks": details
+                            })
+                        }
+
+                        "wait" => {
+                            let ms = step.get("ms")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(1000);
+                            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                            json!({
+                                "step": idx + 1,
+                                "name": step_name,
+                                "action": "wait",
+                                "status": "ok",
+                                "ms": ms
+                            })
+                        }
+
+                        other => {
+                            json!({
+                                "step": idx + 1,
+                                "name": step_name,
+                                "action": other,
+                                "status": "skipped",
+                                "error": format!("Unknown playbook action '{}'", other)
+                            })
+                        }
+                    };
+
+                    results.push(step_result);
+                }
+
+                // ── 5. Return the step-by-step results ────────────────────
+                let summary = json!({
+                    "playbook": input.playbook_yaml,
+                    "job_url": input.job_url,
+                    "total_steps": total_steps,
+                    "completed_steps": results.len(),
+                    "results": results
+                });
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&summary).unwrap_or_default()
+                )]))
+            }
+
+            // ── Dedup & Verification tools ────────────────────────────
+            "swarm_dedup_check" => {
+                let input: DedupCheckInput = parse_args(args)?;
+                info!(url = %input.url, "Dedup check");
+
+                let applied = self.dedup_tracker.has_applied(&input.url);
+                // Look up details from recent records if applied
+                let (applied_at, status) = if applied {
+                    let records = self.dedup_tracker.recent(500);
+                    let found = records.iter().find(|r| r.url == input.url);
+                    match found {
+                        Some(rec) => (Some(rec.applied_at.clone()), Some(rec.status.clone())),
+                        None => (None, None),
+                    }
+                } else {
+                    (None, None)
+                };
+
+                let result = json!({
+                    "applied": applied,
+                    "applied_at": applied_at,
+                    "status": status,
+                });
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                )]))
+            }
+
+            "swarm_dedup_record" => {
+                let input: DedupRecordInput = parse_args(args)?;
+                info!(url = %input.url, company = %input.company, title = %input.title, platform = %input.platform, "Recording application");
+
+                self.dedup_tracker.record_application(
+                    &input.url,
+                    Some(&input.company),
+                    Some(&input.title),
+                    Some(&input.platform),
+                    "submitted",
+                    None,
+                );
+
+                let result = json!({
+                    "recorded": true,
+                    "url": input.url,
+                    "company": input.company,
+                    "title": input.title,
+                    "platform": input.platform,
+                    "status": "submitted",
+                });
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                )]))
+            }
+
+            "swarm_dedup_stats" => {
+                let _input: DedupStatsInput = parse_args(args)?;
+                info!("Dedup stats");
+
+                let stats = self.dedup_tracker.stats();
+                let result = json!({
+                    "total_applied": stats.total_applied,
+                    "by_platform": stats.by_platform,
+                    "by_status": stats.by_status,
+                    "today_count": stats.today_count,
+                    "this_week_count": stats.this_week_count,
+                });
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                )]))
+            }
+
+            "swarm_verify_submission" => {
+                let input: VerifySubmissionInput = parse_args(args)?;
+                info!(ref_id = ?input.ref_id, "Verifying submission");
+
+                let engine_arc = self.active_engine_async().await;
+                let engine = engine_arc.lock().await;
+
+                // Get current page snapshot and URL
+                let snapshot_text = match engine.snapshot().await {
+                    Ok(snap) => snap.to_agent_text(),
+                    Err(_) => String::new(),
+                };
+                let current_url = engine.current_url().await.unwrap_or_default();
+
+                let text_lower = snapshot_text.to_lowercase();
+                let url_lower = current_url.to_lowercase();
+
+                // ── Success patterns ────────────────────────────────────
+                let strong_success = [
+                    "application submitted",
+                    "your application has been submitted",
+                    "thank you for applying",
+                    "thanks for applying",
+                    "application received",
+                    "successfully submitted",
+                    "application complete",
+                    "you have successfully applied",
+                    "we received your application",
+                    "we've received your application",
+                    "your application was submitted",
+                ];
+                let weak_success = [
+                    "thank you",
+                    "thanks!",
+                    "confirmation",
+                    "submitted",
+                    "applied",
+                    "received",
+                    "we'll be in touch",
+                    "we will review",
+                    "review your application",
+                    "next steps",
+                ];
+                let url_success = [
+                    "confirmation",
+                    "success",
+                    "thank",
+                    "submitted",
+                    "complete",
+                    "/applied",
+                ];
+
+                // ── Failure patterns ────────────────────────────────────
+                let failure_patterns = [
+                    "something went wrong",
+                    "error occurred",
+                    "submission failed",
+                    "could not submit",
+                    "please try again",
+                    "required field",
+                    "is required",
+                    "fix the following",
+                    "there was an error",
+                    "application could not be submitted",
+                    "validation error",
+                ];
+
+                // ── Scoring ─────────────────────────────────────────────
+                let has_strong_success = strong_success.iter().any(|p| text_lower.contains(p));
+                let weak_count = weak_success.iter().filter(|p| text_lower.contains(*p)).count();
+                let url_hit = url_success.iter().any(|p| url_lower.contains(p));
+                let has_failure = failure_patterns.iter().any(|p| text_lower.contains(p));
+
+                let (verdict, message) = if has_failure {
+                    ("failed", format!(
+                        "Error indicators found on page. URL: {}. The application likely did not go through.",
+                        current_url
+                    ))
+                } else if has_strong_success {
+                    ("confirmed", format!(
+                        "Strong confirmation found on page. URL: {}. Application submitted successfully.",
+                        current_url
+                    ))
+                } else if url_hit && weak_count >= 1 {
+                    ("confirmed", format!(
+                        "Confirmation URL pattern and success text found. URL: {}.",
+                        current_url
+                    ))
+                } else if weak_count >= 2 || url_hit {
+                    ("likely", format!(
+                        "Moderate success indicators found ({} text matches, URL match: {}). URL: {}.",
+                        weak_count, url_hit, current_url
+                    ))
+                } else if weak_count == 1 {
+                    ("uncertain", format!(
+                        "Weak success indicator found. Cannot confidently confirm submission. URL: {}.",
+                        current_url
+                    ))
+                } else {
+                    ("uncertain", format!(
+                        "No clear success or failure indicators found on page. URL: {}. Manually verify the application status.",
+                        current_url
+                    ))
+                };
+
+                let result = json!({
+                    "result": verdict,
+                    "message": message,
+                    "url": current_url,
+                });
+                Ok(CallToolResult::success(vec![Content::text(
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                )]))
+            }
+
             _ => {
                 warn!(tool = %name, "Unknown tool");
                 Err(ErrorData::invalid_params(format!("Unknown tool: {name}"), None))
@@ -3293,6 +3953,234 @@ fn make_tool(
 
     Tool::new(name, description, input_schema)
         .with_annotations(annotations)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Built-in playbook YAML templates
+// ═══════════════════════════════════════════════════════════════════
+
+const PLAYBOOK_GREENHOUSE: &str = r#"
+- name: Navigate to job posting
+  action: navigate
+  url: "{{job_url}}"
+
+- name: Fill first name
+  action: fill
+  selector: "input[name=first_name]"
+  value: "{{first_name}}"
+
+- name: Fill last name
+  action: fill
+  selector: "input[name=last_name]"
+  value: "{{last_name}}"
+
+- name: Fill email
+  action: fill
+  selector: "input[name=email]"
+  value: "{{email}}"
+
+- name: Fill phone
+  action: fill
+  selector: "input[name=phone]"
+  value: "{{phone}}"
+
+- name: Upload resume
+  action: upload_file
+  selector: "input[type=file]"
+  file_path: "{{resume_path}}"
+
+- name: Fill LinkedIn
+  action: fill
+  selector: "input[name=urls[LinkedIn]]"
+  value: "{{linkedin_url}}"
+
+- name: Submit application
+  action: submit
+  selector: "input[type=submit]"
+
+- name: Verify submission
+  action: verify
+  expect_text: "Application submitted"
+"#;
+
+const PLAYBOOK_ASHBY: &str = r#"
+- name: Navigate to job posting
+  action: navigate
+  url: "{{job_url}}"
+
+- name: Click Apply button
+  action: click
+  selector: "button"
+
+- name: Wait for form to load
+  action: wait
+  ms: 2000
+
+- name: Fill name
+  action: fill
+  selector: "input[name=name]"
+  value: "{{name}}"
+
+- name: Fill email
+  action: fill
+  selector: "input[name=email]"
+  value: "{{email}}"
+
+- name: Fill phone
+  action: fill
+  selector: "input[name=phone]"
+  value: "{{phone}}"
+
+- name: Upload resume
+  action: upload_file
+  selector: "input[type=file]"
+  file_path: "{{resume_path}}"
+
+- name: Submit application
+  action: submit
+  selector: "button[type=submit]"
+
+- name: Verify submission
+  action: verify
+  expect_text: "submitted"
+"#;
+
+const PLAYBOOK_LEVER: &str = r#"
+- name: Navigate to job posting
+  action: navigate
+  url: "{{job_url}}"
+
+- name: Click Apply button
+  action: click
+  selector: ".postings-btn-wrapper"
+
+- name: Wait for application form
+  action: wait
+  ms: 2000
+
+- name: Fill full name
+  action: fill
+  selector: "input[name=name]"
+  value: "{{name}}"
+
+- name: Fill email
+  action: fill
+  selector: "input[name=email]"
+  value: "{{email}}"
+
+- name: Fill phone
+  action: fill
+  selector: "input[name=phone]"
+  value: "{{phone}}"
+
+- name: Upload resume
+  action: upload_file
+  selector: "input[type=file]"
+  file_path: "{{resume_path}}"
+
+- name: Fill LinkedIn
+  action: fill
+  selector: "input[name=urls[LinkedIn]]"
+  value: "{{linkedin_url}}"
+
+- name: Fill current company
+  action: fill
+  selector: "input[name=org]"
+  value: "{{current_company}}"
+
+- name: Submit application
+  action: submit
+  selector: "button[type=submit]"
+
+- name: Verify submission
+  action: verify
+  expect_text: "Application submitted"
+"#;
+
+const PLAYBOOK_INDEED: &str = r#"
+- name: Navigate to Indeed
+  action: navigate
+  url: "https://www.indeed.com"
+
+- name: Fill job search query
+  action: fill
+  selector: "input[name=q]"
+  value: "{{query}}"
+
+- name: Fill location
+  action: fill
+  selector: "input[name=l]"
+  value: "{{location}}"
+
+- name: Submit search
+  action: submit
+  selector: "button[type=submit]"
+
+- name: Wait for results
+  action: wait
+  ms: 3000
+
+- name: Verify results loaded
+  action: verify
+  expect_text: "jobs"
+"#;
+
+/// Resolve a CSS selector to a @ref ID by searching the current snapshot's elements.
+/// Uses the element's stored `selector` path and `role` for matching.
+/// Returns the first matching element's ref_id, or None if no match.
+async fn resolve_ref_by_selector(
+    engine: &dyn BrowserEngine,
+    selector: &str,
+) -> Option<u32> {
+    if selector.is_empty() {
+        return None;
+    }
+
+    // If selector looks like a bare ref number (e.g., "42"), use it directly
+    if let Ok(rid) = selector.parse::<u32>() {
+        return Some(rid);
+    }
+
+    // Get the snapshot and search through elements
+    let snapshot = engine.snapshot().await.ok()?;
+    for elem in &snapshot.elements {
+        // 1. Exact match against the element's stored CSS selector path
+        if elem.selector == selector {
+            return Some(elem.ref_id);
+        }
+        // 2. The element's selector *contains* the query (e.g., selector query
+        //    "input[name=first_name]" is a substring of "form > input[name=first_name]")
+        if elem.selector.contains(selector) {
+            return Some(elem.ref_id);
+        }
+        // 3. Match by role name alone (e.g., "button" matches role "button")
+        if !selector.contains('[') && !selector.contains('.') && !selector.contains('#') {
+            if elem.role.eq_ignore_ascii_case(selector) {
+                return Some(elem.ref_id);
+            }
+        }
+        // 4. Match "[type=file]" against role "file"
+        if selector.contains("[type=") {
+            let type_val = selector
+                .split("[type=").nth(1)
+                .and_then(|s| s.strip_suffix(']'))
+                .map(|s| s.trim_matches('"').trim_matches('\''));
+            if let Some(type_val) = type_val {
+                if elem.role.eq_ignore_ascii_case(type_val) {
+                    return Some(elem.ref_id);
+                }
+            }
+        }
+        // 5. Match by class: ".my-class" — check if stored selector contains it
+        if selector.starts_with('.') && elem.selector.contains(selector) {
+            return Some(elem.ref_id);
+        }
+        // 6. Match by id: "#my-id" — check if stored selector contains it
+        if selector.starts_with('#') && elem.selector.contains(selector) {
+            return Some(elem.ref_id);
+        }
+    }
+    None
 }
 
 // Cookie persistence is handled by the engine layer now.

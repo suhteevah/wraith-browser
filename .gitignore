@@ -81,5 +81,6 @@ crates/browser-core/src/pool.rs
 packages/
 dashboard/
 website/
+playbooks/
 *.plan.md
 *.spec.md

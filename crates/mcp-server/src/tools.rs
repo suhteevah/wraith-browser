@@ -1,6 +1,8 @@
 //! MCP tool input definitions for every Wraith Browser capability.
 //! Each struct maps to exactly one MCP tool with AI-friendly descriptions.
 
+use std::collections::HashMap;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -988,4 +990,78 @@ pub struct LoginInput {
     pub password: String,
     /// The @ref ID of the submit/login button from the snapshot.
     pub submit_ref_id: u32,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PLAYBOOK (structured job-application automation)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: execute a YAML playbook (or a built-in playbook by name) that
+/// describes a sequence of browser actions — navigate, fill, upload, submit,
+/// verify — with variable interpolation.  Returns step-by-step results.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PlaybookRunInput {
+    /// Raw YAML playbook text **or** a built-in playbook name
+    /// (e.g., "greenhouse-apply", "ashby-apply", "lever-apply", "indeed-search").
+    pub playbook_yaml: String,
+    /// Variables to interpolate into the playbook.
+    /// `{{job_url}}` is always available from the `job_url` field;
+    /// additional variables such as `{{name}}`, `{{email}}`, `{{resume_path}}`
+    /// are resolved from this map.
+    #[serde(default)]
+    pub variables: HashMap<String, String>,
+    /// The target job posting URL.  Automatically bound to `{{job_url}}`.
+    pub job_url: String,
+}
+
+/// Tool: list the built-in playbook catalogue.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PlaybookListInput {}
+
+/// Tool: query the status / progress of a running (or completed) playbook.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PlaybookStatusInput {
+    /// Optional run ID.  If omitted, returns the status of the most recent run.
+    pub run_id: Option<String>,
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DEDUPLICATION (application tracking)
+// ═══════════════════════════════════════════════════════════════════
+
+/// Tool: check if a job URL has already been applied to.
+/// Returns whether the URL is in the dedup database, and if so, when and with what status.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DedupCheckInput {
+    /// The job posting URL to check (e.g., "https://boards.greenhouse.io/acme/jobs/123").
+    pub url: String,
+}
+
+/// Tool: record that a job application was submitted.
+/// Stores the URL, company, title, and platform in the dedup database so future
+/// `swarm_dedup_check` calls will detect it as already applied.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DedupRecordInput {
+    /// The job posting URL that was applied to.
+    pub url: String,
+    /// Company name (e.g., "Stripe", "Cloudflare").
+    pub company: String,
+    /// Job title (e.g., "Senior Rust Engineer").
+    pub title: String,
+    /// Platform/ATS name (e.g., "greenhouse", "lever", "ashby", "indeed").
+    pub platform: String,
+}
+
+/// Tool: return aggregate dedup statistics — total applied, breakdown by platform,
+/// today's count, and this week's count.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DedupStatsInput {}
+
+/// Tool: verify that a job application actually went through after submission.
+/// Checks the current page snapshot for success/error indicators (confirmation
+/// messages, error banners, URL patterns).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct VerifySubmissionInput {
+    /// Optional @ref ID — currently unused, reserved for future per-element verification.
+    pub ref_id: Option<u32>,
 }

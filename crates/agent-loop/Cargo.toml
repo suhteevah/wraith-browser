@@ -23,3 +23,5 @@ blake3.workspace = true
 url.workspace = true
 async-trait.workspace = true
 regex.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true

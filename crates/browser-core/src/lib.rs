@@ -22,6 +22,9 @@ pub mod engine_sevro;
 #[cfg(feature = "cdp")]
 pub mod engine_cdp;
 
+// Playbook parser & runner (swarm automation)
+pub mod playbook;
+
 // BLUEPRINT feature modules
 pub mod selectors;
 pub mod network_intel;
@@ -35,6 +38,8 @@ pub mod tor;
 pub mod telemetry;
 pub mod stealth_http;
 pub mod pool;
+pub mod rate_limit;
+pub mod verify;
 
 // Re-exports
 pub use engine::{BrowserEngine, EngineCapabilities, ScreenshotCapability};

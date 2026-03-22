@@ -65,6 +65,7 @@ pub mod diffing;
 pub mod site_capability;
 pub mod entity_graph;
 pub mod embeddings;
+pub mod dedup;
 
 pub use store::KnowledgeStore;
 pub use schema::{CachedPage, CachedSearch, CachedSnapshot, DomainProfile, ContentType};
