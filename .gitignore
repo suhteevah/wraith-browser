@@ -84,3 +84,4 @@ website/
 playbooks/
 *.plan.md
 *.spec.md
+.quarantine/
