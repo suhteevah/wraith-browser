@@ -26,6 +26,12 @@ export default function HomePage() {
           >
             Read the docs
           </Link>
+          <Link
+            href="/playground"
+            className="px-6 py-2 rounded-lg border border-emerald-500 text-emerald-400 hover:bg-emerald-500/10 font-medium transition-colors"
+          >
+            Try the playground
+          </Link>
           <a
             href="https://github.com/suhteevah/wraith-browser"
             className="px-6 py-2 rounded-lg border border-fd-border hover:bg-fd-accent text-fd-foreground font-medium transition-colors"
@@ -66,6 +72,20 @@ export default function HomePage() {
             </p>
           </div>
         </div>
+      </section>
+
+      {/* Deep dive */}
+      <section className="px-6 pb-12 max-w-4xl mx-auto text-center">
+        <p className="text-fd-muted-foreground text-sm">
+          Want to understand the internals?{' '}
+          <Link href="/docs/architecture/engine-overview" className="text-emerald-400 hover:underline">
+            Read the engine architecture deep dive
+          </Link>{' '}
+          or explore the{' '}
+          <Link href="/docs/architecture/snapshot-model" className="text-emerald-400 hover:underline">
+            snapshot model
+          </Link>.
+        </p>
       </section>
 
       {/* Feature cards */}

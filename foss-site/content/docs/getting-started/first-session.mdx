@@ -5,15 +5,53 @@ description: Connect to Wraith via MCP and run your first command
 
 ## Start the MCP server
 
+Wraith Browser implements the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) and exposes 130 tools to any MCP-compatible AI client. Start the server in stdio mode:
+
 ```bash
 wraith-browser serve --transport stdio
 ```
 
-This starts Wraith in MCP mode, communicating via JSON-RPC over stdin/stdout.
+This launches Wraith as a JSON-RPC server communicating over stdin/stdout. The server initializes the browser engine (Sevro with QuickJS by default, falling back to the pure-Rust native engine), creates the knowledge cache at `~/.openclaw/knowledge/`, and waits for MCP requests.
+
+You will not see any output in your terminal -- that is expected. All communication happens over stdin/stdout using the MCP wire protocol. Diagnostic logs go to stderr when `--verbose` is enabled.
+
+### Transport options
+
+The `serve` command accepts these flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--transport` | `stdio` | Transport mode. Currently `stdio` is supported. |
+| `--engine` | `auto` | Engine selection: `auto`, `sevro`, or `native`. |
+| `--proxy` | none | HTTP/SOCKS5 proxy URL for all outbound requests. |
+| `--verbose` | off | Enable detailed tracing logs to stderr. |
 
 ## Connect from Claude Code
 
-Add to your `.mcp.json`:
+The recommended way to connect is through Claude Code's MCP integration. Register Wraith as an MCP server:
+
+```bash
+claude mcp add wraith ./target/release/wraith-browser -- serve --transport stdio
+```
+
+Alternatively, add it to your project's `.mcp.json` file for automatic loading:
+
+```json
+{
+  "mcpServers": {
+    "wraith-browser": {
+      "command": "./target/release/wraith-browser",
+      "args": ["serve", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+Restart Claude Code after adding the configuration. On startup, Claude Code discovers the server and performs MCP capability negotiation -- you will see a message confirming that 130 new tools are available.
+
+## Connect from Cursor
+
+Add the same MCP configuration to your Cursor settings under **Settings > MCP Servers**. The config format is identical:
 
 ```json
 {
@@ -26,27 +64,128 @@ Add to your `.mcp.json`:
 }
 ```
 
-Restart Claude Code — you'll see 130 new tools available.
+## What happens on first connect
 
-## Connect from Cursor
+When an MCP client connects, the following exchange takes place:
 
-Add the same MCP configuration to your Cursor settings under **MCP Servers**.
+1. **Initialize**: The client sends an `initialize` request. Wraith responds with its server info, protocol version, and declared capabilities (tool support).
 
-## Your first command
+2. **Tool discovery**: The client calls `tools/list`. Wraith returns all 130 tool definitions with JSON Schema input specifications, descriptions, and annotations (read-only, destructive, open-world). Tools are organized into categories: navigation, interaction, extraction, search, cache, vault, scripting, sessions, and more.
 
-Once connected, try navigating to a page:
+3. **Ready**: The client sends an `initialized` notification. Wraith is now ready to accept tool calls.
+
+This entire handshake takes under 50ms. No browser is launched yet -- the engine initializes lazily on the first navigation.
+
+## Your first command: navigate to a page
+
+Once connected, ask your AI agent to navigate to a page. Behind the scenes, the agent sends a `tools/call` request like this:
 
 ```json
 {
-  "tool": "browse_navigate",
-  "arguments": {
-    "url": "https://example.com"
+  "method": "tools/call",
+  "params": {
+    "name": "browse_navigate",
+    "arguments": {
+      "url": "https://example.com"
+    }
   }
 }
 ```
 
-You'll get back a snapshot with the page URL, title, and content.
+Wraith fetches the page, parses the HTML with `html5ever`, builds an accessibility-tree-style DOM snapshot, and returns it:
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Example Domain\" (https://example.com)\n\n@e1   [heading]     \"Example Domain\"\n@e2   [text]        \"This domain is for use in illustrative examples in documents.\"\n@e3   [text]        \"You may use this domain in literature without prior coordination or asking for permission.\"\n@e4   [link]        \"More information...\" href=\"https://www.iana.org/domains/example\"\n"
+    }
+  ]
+}
+```
+
+### Understanding the snapshot format
+
+The snapshot output is optimized for LLM consumption. Each line represents one element:
+
+```text
+@e1   [heading]     "Example Domain"
+@e2   [text]        "This domain is for use in illustrative examples..."
+@e3   [text]        "You may use this domain in literature..."
+@e4   [link]        "More information..." href="https://www.iana.org/domains/example"
+```
+
+- **`@e1`, `@e2`, etc.** -- These are `@ref` IDs. Every interactive and semantic element gets a unique numeric reference. Agents use these to target actions: "click @e4", "fill @e6 with 'search query'".
+- **`[heading]`, `[link]`, `[text]`** -- The semantic role of the element. Roles include `link`, `button`, `textbox`, `select`, `heading`, `text`, `image`, `checkbox`, `radio`, and more.
+- **Quoted text** -- The visible text content or label. For form inputs, this shows the current value or placeholder.
+- **Attributes** -- Additional info like `href` for links, `placeholder` for inputs, `value` for filled fields. Disabled elements are marked with `[DISABLED]`.
+
+### Page metadata
+
+The snapshot also includes metadata in the `PageMeta` struct:
+
+- `page_type` -- Detected type: `login`, `search_results`, `article`, `form`, `dashboard`, etc.
+- `has_login_form` -- Whether a login form was detected on the page.
+- `has_captcha` -- Whether a CAPTCHA challenge was detected.
+- `form_count` -- Number of forms on the page.
+- `main_content_preview` -- First ~500 characters of readable content.
+- `overlays` -- Detected modals or popups that may block interaction.
+
+When overlays are detected, they appear at the top of the snapshot output with a warning so the agent knows to dismiss them first.
+
+## Interacting with elements
+
+Once you have a snapshot, you can interact with elements using their `@ref` IDs. For example, to click the "More information..." link from the example above:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "browse_click",
+    "arguments": {
+      "ref_id": 4
+    }
+  }
+}
+```
+
+To fill a search box (if one exists at `@e6`):
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "browse_fill",
+    "arguments": {
+      "ref_id": 6,
+      "text": "rust async tutorial"
+    }
+  }
+}
+```
+
+Both actions return a fresh snapshot of the page after the interaction, so the agent always has an up-to-date view.
+
+## Key tools to know
+
+Here are the most commonly used tools to get started:
+
+| Tool | Purpose |
+|------|---------|
+| `browse_navigate` | Go to a URL, returns DOM snapshot |
+| `browse_snapshot` | Re-read the current page's DOM state |
+| `browse_click` | Click an element by `@ref` ID |
+| `browse_fill` | Type text into a form field by `@ref` ID |
+| `browse_scroll` | Scroll up/down/left/right |
+| `browse_back` | Navigate back in history |
+| `browse_search` | Web search via metasearch (DuckDuckGo + Brave) |
+| `extract_markdown` | Convert current page to clean markdown |
+| `cache_get` | Look up a URL in the knowledge cache |
+| `cache_search` | Full-text search across all cached pages |
+
+The full list of 130 tools is documented in the [MCP tools reference](/docs/mcp-tools).
 
 ## Next steps
 
-[Scrape your first page →](/docs/getting-started/hello-world-scrape)
+[Scrape your first page](/docs/getting-started/hello-world-scrape)

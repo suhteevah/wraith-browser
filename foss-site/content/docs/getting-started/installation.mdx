@@ -3,7 +3,66 @@ title: Installation
 description: Install Wraith Browser in under a minute
 ---
 
+## Prerequisites
+
+Wraith Browser is written in Rust and builds from source. Before you start, make sure you have the following installed.
+
+### Rust 1.78 or later
+
+Install Rust via [rustup](https://rustup.rs/), the official Rust toolchain manager:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+After installation, verify your version:
+
+```bash
+rustc --version
+# rustc 1.78.0 (9b00956e5 2024-04-29) or later
+```
+
+If you already have Rust installed but are on an older version, update it:
+
+```bash
+rustup update stable
+```
+
+### Platform-specific dependencies
+
+Wraith Browser uses `reqwest` with BoringSSL (`rquest`), SQLite (`rusqlite` with bundled), and several crypto crates. Most dependencies are vendored, but your platform may need a C compiler and a few system libraries.
+
+**Linux (Debian/Ubuntu):**
+
+```bash
+sudo apt update
+sudo apt install -y build-essential pkg-config libssl-dev
+```
+
+**Linux (Fedora/RHEL):**
+
+```bash
+sudo dnf groupinstall "Development Tools"
+sudo dnf install openssl-devel pkg-config
+```
+
+**macOS:**
+
+Install the Xcode Command Line Tools. This provides `clang`, `make`, and system headers:
+
+```bash
+xcode-select --install
+```
+
+No additional packages are required -- BoringSSL and SQLite are compiled from source as part of the Cargo build.
+
+**Windows:**
+
+Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "C++ build tools" workload. Wraith Browser targets the MSVC toolchain on Windows. Make sure `cl.exe` and the Windows SDK are available on your PATH (the VS installer handles this).
+
 ## Build from source
+
+Clone the repository and build in release mode:
 
 ```bash
 git clone https://github.com/suhteevah/wraith-browser
@@ -11,14 +70,126 @@ cd wraith-browser
 cargo build --release
 ```
 
-Requires Rust 1.78+. The binary is ~15MB and lands in `target/release/wraith-browser`.
+The first build compiles all workspace crates (`browser-core`, `content-extract`, `cache`, `identity`, `mcp-server`, `search-engine`, `agent-loop`, `cli`, and `scripting`) plus vendored C libraries like BoringSSL and SQLite. Expect the initial build to take 3-8 minutes depending on your hardware.
 
-## Verify
+You will see output like this:
+
+```text
+   Compiling openclaw-browser-core v0.1.0
+   Compiling openclaw-content-extract v0.1.0
+   Compiling openclaw-cache v0.1.0
+   Compiling openclaw-identity v0.1.0
+   Compiling openclaw-mcp-server v0.1.0
+   Compiling openclaw-search v0.1.0
+   Compiling openclaw-agent-loop v0.1.0
+   Compiling openclaw-cli v0.1.0
+    Finished `release` profile [optimized] target(s) in 4m 32s
+```
+
+### What success looks like
+
+After the build completes, the binary is at `target/release/wraith-browser` (or `target\release\wraith-browser.exe` on Windows). It is a single static binary with no runtime dependencies -- roughly 15-20 MB.
 
 ```bash
-./target/release/wraith-browser --version
+ls -lh target/release/wraith-browser
+# -rwxr-xr-x 1 user user 17M Jun 15 12:34 target/release/wraith-browser
 ```
+
+You can optionally move it somewhere on your PATH:
+
+```bash
+# Linux / macOS
+sudo cp target/release/wraith-browser /usr/local/bin/
+
+# Or add to your user bin
+cp target/release/wraith-browser ~/.local/bin/
+```
+
+## Verify installation
+
+Run the version check to confirm the binary works:
+
+```bash
+wraith-browser --version
+# openclaw-browser 0.1.0
+```
+
+You can also do a quick smoke test by navigating to a page from the command line:
+
+```bash
+wraith-browser navigate https://example.com --format markdown
+```
+
+This will fetch the page using the native engine, extract content, and print it as markdown. You should see the page title and body text. No browser is launched -- the entire operation runs in-process using `html5ever` and `reqwest`.
+
+## Docker alternative
+
+If you prefer not to install Rust locally, you can run Wraith Browser in a Docker container. See the [Docker self-hosting guide](/docs/self-hosting/docker) for a complete `Dockerfile` and `docker-compose.yml` setup that includes the MCP server, knowledge cache persistence, and optional Tor routing.
+
+```bash
+docker run -it ghcr.io/suhteevah/wraith-browser:latest --version
+```
+
+## Troubleshooting
+
+### Missing `openssl-dev` or `pkg-config` on Linux
+
+```text
+error: failed to run custom build command for `openssl-sys`
+--- stderr
+Could not find directory of OpenSSL installation
+```
+
+Install the development headers for your distribution:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libssl-dev pkg-config
+
+# Fedora/RHEL
+sudo dnf install openssl-devel pkg-config
+
+# Arch
+sudo pacman -S openssl pkg-config
+```
+
+### Old Rust version
+
+```text
+error[E0658]: use of unstable library feature 'lazy_cell'
+```
+
+Wraith Browser requires Rust 1.78 or later. Update your toolchain:
+
+```bash
+rustup update stable
+rustc --version
+```
+
+### Windows: MSVC vs GNU toolchain
+
+Wraith Browser is tested against the MSVC toolchain (`x86_64-pc-windows-msvc`). If you are using the GNU toolchain (`x86_64-pc-windows-gnu`), you may encounter linker errors with BoringSSL or the Windows DPAPI bindings used for Chrome cookie decryption. Switch to MSVC:
+
+```bash
+rustup default stable-x86_64-pc-windows-msvc
+```
+
+### Linking errors with `ring` or BoringSSL
+
+Some systems require `cmake` and `perl` for compiling BoringSSL (used by `rquest`). Install them if you see cmake-related errors:
+
+```bash
+# Debian/Ubuntu
+sudo apt install cmake perl
+
+# macOS (via Homebrew)
+brew install cmake
+```
+
+### Build succeeds but binary crashes on start
+
+Make sure you are building in release mode (`--release`). Debug builds of the crypto crates (argon2, blake2) are extremely slow and may appear to hang. The workspace `Cargo.toml` applies `opt-level = 3` overrides for these crates even in debug mode, but release mode is always recommended.
 
 ## Next steps
 
-[Start your first MCP session →](/docs/getting-started/first-session)
+[Start your first MCP session](/docs/getting-started/first-session)

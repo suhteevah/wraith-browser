@@ -5,47 +5,232 @@ description: Navigate, snapshot, and extract content in 3 commands
 
 ## The 3-command scrape
 
-### 1. Navigate
+Every Wraith Browser scraping workflow follows the same pattern: **navigate** to a page, **snapshot** the DOM to understand the page structure, and **extract** the content you need. This walkthrough demonstrates the complete flow with realistic tool calls and responses.
+
+## Step 1: Navigate
+
+Tell the agent to visit a page. The `browse_navigate` tool fetches the HTML, parses it with `html5ever`, and returns a DOM snapshot in a single round trip.
 
 ```json
 {
-  "tool": "browse_navigate",
-  "arguments": { "url": "https://news.ycombinator.com" }
+  "method": "tools/call",
+  "params": {
+    "name": "browse_navigate",
+    "arguments": {
+      "url": "https://news.ycombinator.com"
+    }
+  }
 }
 ```
 
-Response: `{ "url": "https://news.ycombinator.com", "title": "Hacker News" }`
-
-### 2. Snapshot
+**Response:**
 
 ```json
 {
-  "tool": "browse_snapshot"
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Hacker News\" (https://news.ycombinator.com)\n\n@e1   [link]        \"Hacker News\" href=\"https://news.ycombinator.com\"\n@e2   [link]        \"new\" href=\"https://news.ycombinator.com/newest\"\n@e3   [link]        \"past\" href=\"https://news.ycombinator.com/front\"\n@e4   [link]        \"comments\" href=\"https://news.ycombinator.com/newcomments\"\n@e5   [link]        \"ask\" href=\"https://news.ycombinator.com/ask\"\n@e6   [link]        \"show\" href=\"https://news.ycombinator.com/show\"\n@e7   [link]        \"jobs\" href=\"https://news.ycombinator.com/jobs\"\n@e8   [link]        \"submit\" href=\"https://news.ycombinator.com/submit\"\n@e9   [link]        \"login\" href=\"https://news.ycombinator.com/login\"\n@e10  [link]        \"Show HN: A Rust web browser for AI agents\" href=\"https://example.com/article1\"\n@e11  [text]        \"142 points by rustdev 3 hours ago | 87 comments\"\n@e12  [link]        \"Why SQLite is the best database for AI workloads\" href=\"https://example.com/article2\"\n@e13  [text]        \"98 points by dbfan 5 hours ago | 43 comments\"\n@e14  [link]        \"More\" href=\"https://news.ycombinator.com/news?p=2\"\n\n--- Main Content Preview ---\nShow HN: A Rust web browser for AI agents (142 points) Why SQLite is the best database for AI workloads (98 points)...\n"
+    }
+  ]
 }
 ```
 
-Returns the DOM with `@ref` IDs on every interactive element — these are how you target clicks and fills.
+### Understanding the response
 
-### 3. Extract
+| Field | Meaning |
+|-------|---------|
+| `Page: "Hacker News"` | The `<title>` tag of the page. |
+| `(https://news.ycombinator.com)` | The final URL after any redirects. |
+| `@e1` through `@e14` | Unique `@ref` IDs assigned to every interactive or semantic element. |
+| `[link]`, `[text]` | The semantic role -- links are clickable, text is informational. |
+| `"Show HN: A Rust..."` | The visible text content of the element. |
+| `href="..."` | The link destination -- shown for all `[link]` elements. |
+| `Main Content Preview` | A ~500 character preview of the page's main readable content. |
+
+Notice that the entire Hacker News front page is represented in about 20 lines. No raw HTML, no CSS classes, no JavaScript -- just the interactive elements an agent needs to understand and act on the page.
+
+## Step 2: Snapshot to dig deeper
+
+If you need to re-read the current page (for example, after scrolling or waiting for content to load), use `browse_snapshot`:
 
 ```json
 {
-  "tool": "extract_markdown"
+  "method": "tools/call",
+  "params": {
+    "name": "browse_snapshot",
+    "arguments": {}
+  }
 }
 ```
 
-Returns the page content as clean Markdown — headings, links, lists, all preserved.
+This returns the same format as `browse_navigate` but without fetching the page again. It re-reads the current DOM state, which is useful after interactions like clicking, scrolling, or waiting.
+
+### Identifying elements by @ref ID
+
+The `@ref` IDs are stable within a page load. When you see `@e10  [link]  "Show HN: A Rust web browser for AI agents"`, you know that `ref_id: 10` targets that specific link. To click it and navigate to the article:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "browse_click",
+    "arguments": {
+      "ref_id": 10
+    }
+  }
+}
+```
+
+The response includes a fresh snapshot of the page you navigated to, so you immediately see the article content.
+
+## Step 3: Extract as markdown
+
+Once you are on the page you want to scrape, use `extract_markdown` to convert the rendered DOM into clean, structured markdown:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "extract_markdown",
+    "arguments": {}
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "# Show HN: A Rust Web Browser for AI Agents\n\nI built a web browser designed entirely for AI agent control. No GUI, no Chrome dependency — just a Rust binary that exposes 130 MCP tools.\n\n## Why another browser?\n\nExisting browser automation tools (Playwright, Puppeteer, Selenium) were built for humans testing human-facing UIs. They launch a full Chrome instance, consume 200+ MB of RAM, and take seconds to start.\n\nWraith Browser takes a different approach:\n\n- **Native Rust engine** — parses HTML with html5ever, no browser process\n- **~50ms per page** — fetch, parse, and snapshot in one round trip\n- **~8MB memory** — no renderer, no GPU process, no sandbox\n- **130 MCP tools** — designed for LLM tool-calling, not DOM selectors\n\n## Getting started\n\n```bash\ngit clone https://github.com/suhteevah/wraith-browser\ncargo build --release\n```\n\n[Read more on GitHub](https://github.com/suhteevah/wraith-browser)\n"
+    }
+  ]
+}
+```
+
+The `extract_markdown` tool runs the content through a multi-stage pipeline:
+
+1. **Strip noise** -- Removes `<script>`, `<style>`, ads, trackers, and navigation chrome using `lol_html`.
+2. **Readability extraction** -- Identifies the main article content and discards sidebars, footers, and headers.
+3. **Markdown conversion** -- Converts the cleaned HTML to markdown, preserving headings, links, lists, code blocks, and tables.
+
+### Budgeted extraction
+
+If the page is long and you want to limit token usage, pass a `max_tokens` budget using `browse_extract`:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "browse_extract",
+    "arguments": {
+      "max_tokens": 2000
+    }
+  }
+}
+```
+
+The extractor will truncate the content to approximately 2,000 tokens (estimated at ~4 characters per token) while preserving complete paragraphs and section structure.
+
+## Saving to the knowledge cache
+
+After extracting content, you can save it to Wraith's persistent knowledge cache so the agent never fetches the same page twice:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cache_get",
+    "arguments": {
+      "url": "https://news.ycombinator.com"
+    }
+  }
+}
+```
+
+The knowledge cache is backed by SQLite (metadata), Tantivy (full-text search), and a compressed blob store (raw HTML). It uses intelligent staleness rules based on content type -- news articles expire after 1 hour, documentation after 7 days, and user-pinned content never expires.
+
+Later, use `cache_search` to find cached content by keyword without hitting the web:
+
+```json
+{
+  "method": "tools/call",
+  "params": {
+    "name": "cache_search",
+    "arguments": {
+      "query": "rust browser AI agents",
+      "max_results": 5
+    }
+  }
+}
+```
 
 ## What just happened
 
-1. Wraith navigated to the URL using its native html5ever-based engine (~50ms)
-2. The snapshot mapped every element to an `@ref` ID for agent interaction
-3. The extractor converted the rendered DOM to structured Markdown
+1. Wraith navigated to the URL using its native `html5ever`-based engine (~50ms for fetch + parse).
+2. The snapshot mapped every element to a `@ref` ID for agent interaction -- links, buttons, inputs, text blocks.
+3. Clicking a link followed it and returned a new snapshot automatically.
+4. The extractor converted the rendered DOM to structured markdown, stripping ads, navigation, and scripts.
+5. The knowledge cache stored the result for instant retrieval on future visits.
 
-No Chrome was launched. No browser driver was installed. The entire operation used ~8MB of memory.
+No Chrome was launched. No browser driver was installed. The entire operation used ~8MB of memory and completed in under a second.
+
+## Common patterns
+
+### Pagination
+
+To scrape multiple pages, look for "Next" or "More" links in the snapshot and click them:
+
+```json
+{"name": "browse_navigate", "arguments": {"url": "https://example.com/articles"}}
+{"name": "extract_markdown", "arguments": {}}
+{"name": "browse_click", "arguments": {"ref_id": 42}}
+{"name": "extract_markdown", "arguments": {}}
+```
+
+The agent repeats the click-and-extract loop until there are no more pagination links.
+
+### Following links
+
+When the snapshot shows a list of links (search results, article indexes, directory listings), the agent can click into each one, extract the content, go back, and continue:
+
+```json
+{"name": "browse_click", "arguments": {"ref_id": 10}}
+{"name": "extract_markdown", "arguments": {}}
+{"name": "browse_back", "arguments": {}}
+{"name": "browse_click", "arguments": {"ref_id": 12}}
+{"name": "extract_markdown", "arguments": {}}
+{"name": "browse_back", "arguments": {}}
+```
+
+### Extracting tables
+
+Tables are preserved in the markdown output as markdown tables. For structured data extraction, the agent can also use `browse_eval_js` to run JavaScript against the page's QuickJS engine:
+
+```json
+{
+  "name": "browse_eval_js",
+  "arguments": {
+    "code": "document.querySelectorAll('table tr').length"
+  }
+}
+```
+
+### Form submission
+
+To fill and submit a form (search box, login page, etc.):
+
+```json
+{"name": "browse_fill", "arguments": {"ref_id": 6, "text": "rust web browser"}}
+{"name": "browse_key_press", "arguments": {"key": "Enter"}}
+{"name": "browse_snapshot", "arguments": {}}
+```
 
 ## Next steps
 
-- [Web scraping guide →](/docs/guides/web-scraping)
-- [MCP tools reference →](/docs/mcp-tools)
-- [Try the playground →](/playground)
+- [Web scraping guide](/docs/guides/web-scraping) -- Advanced patterns, rate limiting, and stealth configuration
+- [MCP tools reference](/docs/mcp-tools) -- Full documentation of all 130 tools
+- [Try the playground](/playground) -- Replay real Wraith sessions in your browser
