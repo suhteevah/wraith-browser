@@ -3,7 +3,7 @@ title: Interaction
 description: Click, fill, select, type, hover, and submit -- form control and element interaction tools
 ---
 
-Interaction tools let your agent click buttons, fill forms, select dropdowns, type with realistic delays, upload files, and submit forms. All element targeting uses `@ref` IDs from the DOM snapshot. Pass `force: true` to bypass hidden/disabled safety checks when needed.
+Interaction tools let your agent click buttons, fill forms, select dropdowns, type with realistic delays, upload files, and submit forms. All element targeting uses `@ref` IDs from the DOM snapshot. Pass `force: true` to override hidden/disabled visibility checks when needed.
 
 ## Tools
 
@@ -19,7 +19,7 @@ Interaction tools let your agent click buttons, fill forms, select dropdowns, ty
 | `browse_submit_form` | Submit a form by clicking its button or calling submit() | `ref_id` (required) |
 | `browse_custom_dropdown` | Interact with a non-native dropdown/combobox | `ref_id` (required), `value` (required), `type_to_filter` |
 | `browse_fetch_scripts` | Fetch and execute external script tags (activate React) | *(none)* |
-| `browse_solve_captcha` | Solve a CAPTCHA using a third-party service | `captcha_type`, `site_key` |
+| `browse_solve_captcha` | CAPTCHA integration via third-party service | `captcha_type`, `site_key` |
 | `browse_login` | Full login flow with redirect chain following | `url` (required), `username` (required), `password` (required) |
 | `browse_eval_js` | Execute JavaScript on the current page | `code` (required) |
 

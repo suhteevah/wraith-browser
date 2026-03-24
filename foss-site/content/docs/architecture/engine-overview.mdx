@@ -140,7 +140,7 @@ config.fallback_proxy_url = Some("http://backup-proxy:8080".into());
 ```
 
 The engine supports proxy routing (including SOCKS5 for Tor), FlareSolverr integration for
-Cloudflare bypass, and fallback proxy chains. All of this is configured at engine creation
+challenge handling, and fallback proxy chains. All of this is configured at engine creation
 time and transparent to the MCP layer above.
 
 ### CdpEngine — Chrome DevTools Protocol
@@ -195,7 +195,7 @@ The practical impact:
 - **Resource usage:** No separate Chrome process consuming hundreds of MB of RAM.
 
 The CdpEngine exists as an escape hatch for pages that require full Chrome compatibility —
-complex SPAs, sites with aggressive bot detection that fingerprint the rendering engine, or
+complex SPAs, sites that require full Chrome rendering fidelity, or
 cases where pixel-perfect screenshots are needed. The MCP server supports **automatic CDP
 fallback**: when SevroEngine renders a page with fewer than 5 interactive elements, the
 server detects a likely SPA and re-renders through CdpEngine transparently.

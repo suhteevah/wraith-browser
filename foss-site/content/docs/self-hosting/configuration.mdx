@@ -55,7 +55,7 @@ are available for sites that require full JavaScript rendering.
 | `WRAITH_PROXY` | Same as `--proxy`, used when running as MCP server | _(none)_ |
 | `--fallback-proxy` (CLI flag) | Fallback proxy for access-restricted sites | _(none)_ |
 | `WRAITH_FALLBACK_PROXY` | Same as `--fallback-proxy` | _(none)_ |
-| `--flaresolverr` (CLI flag) | FlareSolverr endpoint for challenge bypass | _(none)_ |
+| `--flaresolverr` (CLI flag) | FlareSolverr endpoint for challenge handling | _(none)_ |
 | `WRAITH_FLARESOLVERR` | Same as `--flaresolverr` | _(none)_ |
 
 CLI flags take precedence over environment variables. Proxy format examples:
@@ -108,11 +108,11 @@ wraith-browser task "Find the latest Rust release notes" --url https://blog.rust
 Search works out of the box via SearXNG. API keys for Brave, RapidAPI, and Adzuna
 are optional and enable additional result sources.
 
-## CAPTCHA Solving
+## CAPTCHA Integration
 
 | Variable | Description | Default |
 |---|---|---|
-| `TWOCAPTCHA_API_KEY` | 2Captcha API key for automated CAPTCHA solving | _(none)_ |
+| `TWOCAPTCHA_API_KEY` | 2Captcha API key for CAPTCHA service integration | _(none)_ |
 
 ## Webhooks
 

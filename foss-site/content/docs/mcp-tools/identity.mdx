@@ -1,6 +1,6 @@
 ---
 title: Identity & Fingerprinting
-description: Browser fingerprints, identity profiles, site technology detection, and stealth status
+description: Browser fingerprints, identity profiles, site technology detection, and compatibility status
 ---
 
 Identity tools control how Wraith Browser presents itself to websites. You can switch between browser fingerprint profiles, set personal or anonymous identity modes, detect a site's technology stack, and verify your TLS fingerprint matches a real Chrome browser.
@@ -13,7 +13,7 @@ Identity tools control how Wraith Browser presents itself to websites. You can s
 | `fingerprint_import` | Import a fingerprint profile from a JSON file | `path` (required) |
 | `identity_profile` | Set browsing identity (personal or anonymous) | `profile_type` (required), `name` |
 | `site_fingerprint` | Detect a website's technology stack | `url` |
-| `stealth_status` | Show current TLS compatibility and evasion config | *(none)* |
+| `stealth_status` | Show current TLS compatibility and compatibility config | *(none)* |
 | `tls_verify` | Verify TLS fingerprint matches Chrome 136 | *(none)* |
 
 ## Examples
@@ -44,7 +44,7 @@ Switches to anonymous mode. Use `"personal"` with a `name` parameter when you wa
 
 Returns detected technologies: React, WordPress, Shopify, Next.js, etc. Useful for deciding whether to use the native engine or CDP for JavaScript-heavy frameworks.
 
-### Verify TLS stealth
+### Verify TLS compatibility
 
 ```json
 {

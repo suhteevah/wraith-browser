@@ -67,12 +67,12 @@ wraith-browser vault store --domain example.com --kind password --identity user@
 
 | Variable | Purpose |
 |----------|---------|
-| `WRAITH_FLARESOLVERR` | URL for external challenge-solving proxy |
+| `WRAITH_FLARESOLVERR` | URL for external challenge-handling proxy |
 | `WRAITH_PROXY` | Primary HTTP/SOCKS5 proxy URL |
 | `WRAITH_FALLBACK_PROXY` | Fallback proxy for IP-blocked sites |
 | `ANTHROPIC_API_KEY` | Required for `browse_task` autonomous agent |
 | `BRAVE_SEARCH_API_KEY` | Optional Brave Search provider |
-| `TWOCAPTCHA_API_KEY` | Required for `browse_solve_captcha` CAPTCHA solving |
+| `TWOCAPTCHA_API_KEY` | Required for `browse_solve_captcha` CAPTCHA integration |
 
 ---
 

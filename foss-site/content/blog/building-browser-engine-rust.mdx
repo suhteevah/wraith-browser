@@ -9,7 +9,7 @@ author: Matt Gates
 
 The obvious path for building a browser engine in Rust — or any language — is to not build one at all. Wrap headless Chrome, talk to it over CDP, and call it a day. We tried that. It did not scale.
 
-Each headless Chrome instance consumes 300-500 MB of RAM and spawns a tree of 20+ child processes. At 50 concurrent sessions you are already burning 15-25 GB of memory on browser overhead alone. The startup latency is measured in seconds, not milliseconds. And if you are building for AI agents that need to blend in with normal traffic, Chrome's process tree and network fingerprint are well-documented by every major bot detection system.
+Each headless Chrome instance consumes 300-500 MB of RAM and spawns a tree of 20+ child processes. At 50 concurrent sessions you are already burning 15-25 GB of memory on browser overhead alone. The startup latency is measured in seconds, not milliseconds. And if you are building for AI agents that need broad site compatibility, Chrome's process tree and network fingerprint are well-documented and can cause compatibility issues.
 
 We needed something fundamentally different: a browser engine that could render pages in under 100 milliseconds, fit dozens of sessions into a single gigabyte of RAM, and ship as one binary with zero external dependencies.
 
@@ -52,7 +52,7 @@ The engine is organized into a small set of focused crates. For the full picture
 - **browser-core** — Defines the `Engine` trait and manages session lifecycle. This is the integration point: everything else plugs in here.
 - **content-extract** — Readability-based article extraction plus Markdown conversion. Turns noisy web pages into clean text that fits neatly into an LLM context window.
 - **cache** — SQLite for metadata, Tantivy for full-text search, and vector embeddings for semantic retrieval. Every page visit is indexed automatically.
-- **identity** — Vault for encrypted credential storage plus fingerprint management. TLS profiles, header ordering, and canvas noise are generated per-session to avoid detection.
+- **identity** — Vault for encrypted credential storage plus fingerprint management. TLS profiles, header ordering, and canvas noise are generated per-session for browser compatibility.
 - **mcp-server** — The 130-tool MCP interface that agents actually talk to. Navigation, extraction, form filling, entity resolution, DAG orchestration, time-travel debugging, and more.
 
 Each crate compiles independently and communicates through well-defined Rust traits. There is no global state. Sessions are isolated by design.
