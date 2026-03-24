@@ -15,7 +15,7 @@ export default function HomePage() {
         <div className="mt-10 w-full max-w-xl mx-auto">
           <div className="flex items-center justify-between bg-fd-card border border-fd-border rounded-lg px-4 py-3 font-mono text-sm">
             <code className="text-emerald-400">
-              $ cargo install openclaw-browser
+              $ git clone https://github.com/suhteevah/wraith-browser && cd wraith-browser && cargo build --release
             </code>
           </div>
         </div>
@@ -27,7 +27,7 @@ export default function HomePage() {
             Read the docs
           </Link>
           <a
-            href="https://github.com/suhteevah/openclaw-browser"
+            href="https://github.com/suhteevah/wraith-browser"
             className="px-6 py-2 rounded-lg border border-fd-border hover:bg-fd-accent text-fd-foreground font-medium transition-colors"
           >
             GitHub
