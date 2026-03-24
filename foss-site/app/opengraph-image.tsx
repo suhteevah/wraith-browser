@@ -47,7 +47,7 @@ export default function OgImage() {
             color: '#34d399',
           }}
         >
-          <span>143 MCP Tools</span>
+          <span>130 MCP Tools</span>
           <span>·</span>
           <span>No Chrome</span>
           <span>·</span>

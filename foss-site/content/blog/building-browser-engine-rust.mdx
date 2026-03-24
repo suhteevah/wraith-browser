@@ -1,7 +1,7 @@
 ---
 title: "How We Built a Browser Engine in Rust (And Why)"
 date: "2026-03-23"
-description: "Why we chose Rust and Servo to build a native browser engine for AI agents — architecture decisions, trade-offs, and lessons learned."
+description: "Why we chose Rust, html5ever, and QuickJS to build a native browser engine for AI agents — architecture decisions, trade-offs, and lessons learned."
 author: Matt Gates
 ---
 
@@ -33,17 +33,17 @@ We needed a JavaScript engine, but not V8. V8 is massive, difficult to embed, an
 
 `cargo build --release` produces one statically-linked binary. No Python virtualenvs, no npm installs, no browser driver version matrices. Copy it to a server and run it. This matters enormously for deployment in CI pipelines, Docker containers, and air-gapped environments.
 
-## Servo as the starting point
+## html5ever as the foundation
 
-We did not write a browser engine from scratch. We forked [Servo](https://servo.org/), Mozilla's experimental engine written in Rust, and adapted it for headless AI-agent workloads.
+We did not write an HTML parser from scratch. We built on Mozilla's [html5ever](https://github.com/servo/html5ever) HTML parser and paired it with [rquickjs](https://github.com/aspect-build/rquickjs) for JavaScript execution and [reqwest](https://github.com/seanmonstar/reqwest) for HTTP.
 
-### What we kept
+### What html5ever gives us
 
-Servo's HTML parser (`html5ever`) and CSS engine (`stylo`) are production-grade. They handle the messy reality of the web — malformed markup, quirks mode, the full cascade — and they do it correctly. Reimplementing either would have been years of work with no upside.
+Mozilla's `html5ever` parser is production-grade. It handles the messy reality of the web — malformed markup, quirks mode, the full HTML5 parsing algorithm — and it does it correctly. Reimplementing a spec-compliant HTML parser would have been years of work with no upside.
 
-### What we replaced
+### The rendering approach
 
-The rendering pipeline was the biggest change. Servo is designed to paint pixels to a screen. We do not need pixels. We stripped the WebRender integration entirely and replaced it with a lightweight DOM bridge that produces a serialized snapshot of the page — a structured representation of every element, its attributes, computed styles, and layout coordinates. This is what agents actually need: not a screenshot, but a machine-readable model of the page. You can read more about this in our [snapshot model documentation](/docs/architecture/snapshot-model).
+We do not render pixels. Instead of a full layout and paint pipeline, we built a lightweight DOM bridge that produces a serialized snapshot of the page — a structured representation of every element, its attributes, and content. This is what agents actually need: not a screenshot, but a machine-readable model of the page. You can read more about this in our [snapshot model documentation](/docs/architecture/snapshot-model).
 
 ## Architecture overview
 
@@ -53,7 +53,7 @@ The engine is organized into a small set of focused crates. For the full picture
 - **content-extract** — Readability-based article extraction plus Markdown conversion. Turns noisy web pages into clean text that fits neatly into an LLM context window.
 - **cache** — SQLite for metadata, Tantivy for full-text search, and vector embeddings for semantic retrieval. Every page visit is indexed automatically.
 - **identity** — Vault for encrypted credential storage plus fingerprint management. TLS profiles, header ordering, and canvas noise are generated per-session to avoid detection.
-- **mcp-server** — The 143-tool MCP interface that agents actually talk to. Navigation, extraction, form filling, entity resolution, DAG orchestration, time-travel debugging, and more.
+- **mcp-server** — The 130-tool MCP interface that agents actually talk to. Navigation, extraction, form filling, entity resolution, DAG orchestration, time-travel debugging, and more.
 
 Each crate compiles independently and communicates through well-defined Rust traits. There is no global state. Sessions are isolated by design.
 
@@ -65,7 +65,7 @@ We are not pretending this is a drop-in Chrome replacement. Here is what we gave
 
 **No visual rendering.** Wraith is headless-only. There is no window, no GPU acceleration, no screenshot-from-rendered-pixels path. Our screenshots are composited from the DOM snapshot, which is fast but will not perfectly match Chrome's rendering of complex CSS animations or canvas-heavy pages.
 
-**Servo is complex to fork.** Servo's codebase is large and not all of it is well-documented. Upgrading to newer Servo commits requires careful merging. We maintain a patch set rather than a hard fork, which adds friction but keeps us closer to upstream improvements.
+**html5ever has limited layout support.** Since html5ever is a parser, not a full layout engine, we do not compute pixel-accurate bounding boxes or handle complex CSS layout natively. For pages that need full layout fidelity, we fall back to CDP with a real browser.
 
 ## What we would do differently
 
@@ -75,6 +75,6 @@ We would also build the CDP compatibility layer from day one. Even though native
 
 ## What is next
 
-The Rust web browser ecosystem is maturing fast. Servo is getting more investment, `html5ever` continues to improve, and the MCP standard is gaining adoption across agent frameworks. We are betting that purpose-built browser engines — small, fast, agent-native — will replace the Chrome-wrapper model for most automation workloads within the next two years.
+The Rust web browser ecosystem is maturing fast. `html5ever` continues to improve, and the MCP standard is gaining adoption across agent frameworks. We are betting that purpose-built browser engines — small, fast, agent-native — will replace the Chrome-wrapper model for most automation workloads within the next two years.
 
 We are building this in the open. If you want to dig into the architecture, start with the [engine overview](/docs/architecture/engine-overview) and the [snapshot model docs](/docs/architecture/snapshot-model). If you want to contribute, check our [community page](/community).

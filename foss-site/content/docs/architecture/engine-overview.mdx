@@ -16,13 +16,13 @@ knows which backend is running underneath.
 │  ↕ MCP Protocol (JSON-RPC over stdio)                   │
 ├─────────────────────────────────────────────────────────┤
 │  WraithHandler (crates/mcp-server/src/server.rs)        │
-│  ├── Tool Registry (143 tools)                          │
+│  ├── Tool Registry (130 tools)                          │
 │  ├── dispatch_tool() — giant match on tool name         │
 │  ├── Session Manager (named sessions, active routing)   │
 │  └── Dedup Tracker (SQLite-backed)                      │
 ├─────────────────────────────────────────────────────────┤
 │  BrowserEngine Trait (crates/browser-core/src/engine.rs)│
-│  ├── SevroEngine  — Servo + QuickJS (default)           │
+│  ├── SevroEngine  — html5ever + QuickJS (default)        │
 │  ├── NativeEngine — Pure HTTP, no JS (~50ms/page)       │
 │  └── CdpEngine    — Chrome DevTools Protocol            │
 ├─────────────────────────────────────────────────────────┤
@@ -112,13 +112,13 @@ where the HTML source contains the content directly. For agent workflows that sc
 structured data from server-rendered pages, NativeEngine is the fastest option by a wide
 margin.
 
-### SevroEngine — Servo + QuickJS (Default)
+### SevroEngine — html5ever + QuickJS (Default)
 
 **Crate:** `crates/browser-core/src/engine_sevro.rs`
 **Feature flag:** `sevro`
 
 SevroEngine is the default engine and the core of the "no Chrome needed" story. It wraps
-the `sevro-headless` library — a Servo-derived headless browser with QuickJS for JavaScript
+the `sevro-headless` library — a headless browser using Mozilla's html5ever HTML parser and QuickJS for JavaScript
 execution. This means Wraith can render JS-heavy pages, execute DOM manipulation scripts,
 and handle SPAs, all without Chrome or Chromium installed.
 
@@ -181,7 +181,7 @@ for response correlation — a standard pattern for multiplexed RPC over a singl
 ## The "No Chrome" Story
 
 Wraith's default build (`sevro` feature enabled) requires **zero external browser
-dependencies**. The SevroEngine compiles a Servo-derived layout engine and QuickJS
+dependencies**. The SevroEngine compiles Mozilla's html5ever HTML parser and QuickJS
 JavaScript runtime directly into the binary. This is the primary differentiator from tools
 like Puppeteer, Playwright, or browser-use, which all require a Chrome installation.
 
@@ -210,7 +210,7 @@ The engine you compile determines the binary size:
 | `sevro` (default) | ~45 MB |
 | `sevro` + `cdp` | ~48 MB |
 
-The `sevro` feature adds the Servo layout engine and QuickJS, which accounts for the bulk
+The `sevro` feature adds the html5ever parser and QuickJS, which accounts for the bulk
 of the size increase. The `cdp` feature adds relatively little code since Chrome itself is
 an external process — the crate only contains the WebSocket client and CDP protocol
 marshaling.

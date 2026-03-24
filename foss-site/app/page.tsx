@@ -61,7 +61,7 @@ export default function HomePage() {
             <div className="text-4xl font-bold text-emerald-500 mb-3">3</div>
             <h3 className="text-lg font-semibold mb-2">Automate</h3>
             <p className="text-fd-muted-foreground text-sm">
-              Navigate, extract, fill forms, build knowledge graphs. 143 tools
+              Navigate, extract, fill forms, build knowledge graphs. 130 tools
               at your fingertips.
             </p>
           </div>
@@ -75,12 +75,12 @@ export default function HomePage() {
           <div className="bg-fd-card border border-fd-border rounded-xl p-6">
             <h3 className="text-lg font-semibold mb-2">Native Engine</h3>
             <p className="text-fd-muted-foreground text-sm">
-              15MB binary. Servo-derived rendering. ~50ms per page. Run
+              15MB binary. html5ever-based parsing. ~50ms per page. Run
               thousands of concurrent sessions without Chrome overhead.
             </p>
           </div>
           <div className="bg-fd-card border border-fd-border rounded-xl p-6">
-            <h3 className="text-lg font-semibold mb-2">143 MCP Tools</h3>
+            <h3 className="text-lg font-semibold mb-2">130 MCP Tools</h3>
             <p className="text-fd-muted-foreground text-sm">
               Navigation, extraction, vault, knowledge graph, entity resolution,
               time-travel debugging, automation scripts, and more.
@@ -99,15 +99,6 @@ export default function HomePage() {
       {/* Footer */}
       <footer className="border-t border-fd-border px-6 py-12 text-center text-sm text-fd-muted-foreground">
         <p>Wraith Browser — AGPL-3.0 — Free and open source, forever.</p>
-        <p className="mt-2">
-          Need managed hosting &amp; team features?{' '}
-          <a
-            href="https://wraith.dev/enterprise"
-            className="text-fd-foreground hover:underline"
-          >
-            Learn about Wraith Enterprise
-          </a>
-        </p>
       </footer>
     </main>
   );

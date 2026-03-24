@@ -23,7 +23,7 @@ There are also detection problems. Every headless Chrome instance shares recogni
 
 ## What a native engine looks like
 
-A purpose-built browser engine strips away everything an agent does not need and optimizes for what it does. [Wraith Browser](/docs/getting-started/installation) takes this approach. It is a Servo-derived rendering engine compiled into a single 15 MB binary. No Chrome dependency, no browser drivers, no multi-hundred-megabyte downloads.
+A purpose-built browser engine strips away everything an agent does not need and optimizes for what it does. [Wraith Browser](/docs/getting-started/installation) takes this approach. It uses Mozilla's html5ever HTML parser and QuickJS for JavaScript, compiled into a single 15 MB binary. No Chrome dependency, no browser drivers, no multi-hundred-megabyte downloads.
 
 ### Speed
 
@@ -47,7 +47,7 @@ For AI agent builders specifically, a native engine unlocks patterns that are im
 
 **Built-in credential management.** The [vault](/docs/guides/vault) stores passwords, API keys, and TOTP secrets with AES-256 encryption. No more passing credentials through environment variables or plain-text config files.
 
-**143 MCP tools.** Every capability is exposed through the [Model Context Protocol](/docs/mcp-tools), so any MCP-compatible client, Claude Code, Cursor, or your own agent, can drive the browser natively. Check the [full tool reference](/docs/mcp-tools) for the complete catalog.
+**130 MCP tools.** Every capability is exposed through the [Model Context Protocol](/docs/mcp-tools), so any MCP-compatible client, Claude Code, Cursor, or your own agent, can drive the browser natively. Check the [full tool reference](/docs/mcp-tools) for the complete catalog.
 
 **Time-travel debugging.** Every navigation, click, and extraction is recorded. You can replay any agent session step-by-step, branch from any point, and diff states. This is invaluable for debugging agents that go off-script on page 47 of a 200-page workflow.
 

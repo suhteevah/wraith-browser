@@ -11,18 +11,18 @@ export const metadata = {
     template: '%s — Wraith Browser',
   },
   description:
-    'A native browser engine for AI agents. 143 MCP tools. No Chrome. ~50ms per page.',
+    'A native browser engine for AI agents. 130 MCP tools. No Chrome. ~50ms per page.',
   openGraph: {
     title: 'Wraith Browser',
     description:
-      'A native browser engine for AI agents. 143 MCP tools. No Chrome. ~50ms per page.',
+      'A native browser engine for AI agents. 130 MCP tools. No Chrome. ~50ms per page.',
     images: ['/og-image.png'],
   },
   twitter: {
     card: 'summary_large_image' as const,
     title: 'Wraith Browser — AI-Agent-First Browser Engine',
     description:
-      'A native browser engine for AI agents. 143 MCP tools. No Chrome. ~50ms per page.',
+      'A native browser engine for AI agents. 130 MCP tools. No Chrome. ~50ms per page.',
     images: ['/og-image.png'],
   },
 };
