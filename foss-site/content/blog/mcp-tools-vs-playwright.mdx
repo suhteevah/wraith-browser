@@ -1,0 +1,87 @@
+---
+title: "MCP Tools vs Playwright: A Different Model for Browser Automation"
+date: "2026-03-23"
+description: "How MCP-native browser tools compare to Playwright and Puppeteer for AI agent workflows — and when to use each."
+author: Matt Gates
+---
+
+## AI agents do not write scripts
+
+If you have spent time building AI agent workflows that interact with the web, you have probably reached for Playwright or Puppeteer. They are excellent tools — battle-tested, well-documented, and backed by large communities. But they were designed for a fundamentally different job than what AI agents need.
+
+Playwright and Puppeteer are imperative scripting frameworks. You write code that specifies every step: launch a browser, navigate to a URL, wait for a selector, click an element, extract text. The developer handles the logic, the sequencing, the error recovery. This model works beautifully for CI test suites and end-to-end testing pipelines where the steps are known ahead of time.
+
+MCP tools for browser automation flip this model. Instead of writing scripts, you expose declarative capabilities — `browse_navigate`, `browse_click`, `browse_extract` — that an AI agent calls as needed. The agent decides what to do, when to do it, and how to recover when something unexpected happens. This is the difference between giving someone a recipe and giving them a fully stocked kitchen.
+
+## Side-by-side: the same task, two paradigms
+
+Consider a simple workflow: navigate to a page, extract the main heading, and click a login button.
+
+### Playwright (JavaScript)
+
+```javascript
+const { chromium } = require('playwright');
+
+(async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  await page.goto('https://example.com');
+  await page.waitForSelector('h1');
+  const heading = await page.textContent('h1');
+  await page.click('button#login');
+  await browser.close();
+})();
+```
+
+You manage the browser lifecycle, write selectors, handle waits, and wrap everything in async functions. If the selector changes, the script breaks. If the page structure shifts, you rewrite.
+
+### MCP tool calls
+
+```json
+{ "tool": "browse_navigate", "args": { "url": "https://example.com" } }
+{ "tool": "browse_extract", "args": { "selector": "h1" } }
+{ "tool": "browse_click", "args": { "ref": "@login-button" } }
+```
+
+The AI agent calls each tool independently based on the page state it observes. No boilerplate, no lifecycle management, no brittle selector chains. The agent adapts to what it sees rather than following a hardcoded path.
+
+## What MCP browser tools bring to agent workflows
+
+Wraith ships [143 MCP tools](/docs/mcp-tools) that go far beyond navigation and clicking. This is where the gap between a scripting framework and an agent-native platform becomes obvious.
+
+### Built-in knowledge persistence
+
+Every page you visit is cached and indexed. Full-text search, vector embeddings, and an entity resolution system build a persistent [knowledge graph](/docs/knowledge-graph) across browsing sessions. Your agent can query what it learned three days ago without re-visiting a single page. Playwright has no concept of this — it is stateless by design.
+
+### Vault and credential management
+
+The built-in vault stores passwords, API keys, and TOTP secrets with AES-256 encryption and domain-level approval policies. Your agent can authenticate across sites without credentials ever appearing in prompts or logs. With Playwright, you manage secrets yourself, typically through environment variables or external secret managers.
+
+### Scale without the Chrome tax
+
+Each headless Chrome instance consumes 300-500 MB of RAM. Wraith sessions use 8-12 MB. A single machine running Wraith can handle thousands of concurrent sessions where Playwright would need a fleet of VMs. For agent workflows that fan out across dozens or hundreds of sites simultaneously, this is not a minor optimization — it changes what is architecturally possible.
+
+### DAG orchestration, time-travel debugging, swarm playbooks
+
+These are capabilities that simply do not exist in the Playwright ecosystem. DAG-based task orchestration lets you define complex multi-step workflows with dependency graphs. Time-travel debugging lets you replay and branch from any point in a browsing session. Swarm playbooks coordinate hundreds of browser agents from a single YAML definition.
+
+## When Playwright still wins
+
+Being fair matters. Playwright is the better tool in several important scenarios:
+
+- **CI test suites.** Playwright's test runner, assertions library, and parallel execution are purpose-built for automated testing. If you are writing regression tests for a web application, Playwright is the right choice.
+- **Full JavaScript fidelity.** Playwright runs a real Chromium (or Firefox, or WebKit) engine. If your workflow depends on pixel-perfect rendering or complex JavaScript execution that must match a production browser exactly, Playwright delivers that.
+- **Screenshot and visual regression testing.** Playwright's screenshot comparison and visual testing capabilities are mature and well-integrated with CI pipelines.
+- **Existing ecosystem.** If your team already has hundreds of Playwright tests, migrating to a different paradigm is not free. Playwright's ecosystem of plugins, reporters, and integrations is extensive.
+
+## Different paradigms, not competing products
+
+The core insight is that Playwright and MCP browser tools solve different problems. Playwright answers the question: "How do I script a browser to do exactly what I tell it?" MCP tools answer a different question: "How do I give an AI agent the ability to use a browser?"
+
+If you are building deterministic test suites, use Playwright. If you are building AI agent workflows that need to browse, extract, reason, and persist knowledge across sessions, [MCP-native tools are the natural interface](/docs/getting-started/first-session).
+
+They can also coexist. Wraith is building a CDP compatibility layer specifically so teams can use Playwright for testing and Wraith for agent workflows, sharing session state and cookies between the two. The goal is not to replace your testing infrastructure — it is to give AI agents a browser that was actually designed for them.
+
+## Getting started with MCP browser tools
+
+If you want to see what agent-native browser automation looks like in practice, the fastest path is to set up Wraith and connect it to your MCP client of choice. The [first session guide](/docs/getting-started/first-session) walks you through setup in under five minutes, and the [MCP tools reference](/docs/mcp-tools) documents all 143 tools with examples.

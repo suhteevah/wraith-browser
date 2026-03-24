@@ -5,11 +5,22 @@ import type { ReactNode } from 'react';
 import './global.css';
 
 export const metadata = {
-  title: 'OpenClaw Browser — AI-Agent-First Browser Engine',
+  metadataBase: new URL('https://wraith-docs-suhteevahs-projects.vercel.app'),
+  title: {
+    default: 'Wraith Browser — AI-Agent-First Browser Engine',
+    template: '%s — Wraith Browser',
+  },
   description:
     'A native browser engine for AI agents. 143 MCP tools. No Chrome. ~50ms per page.',
   openGraph: {
-    title: 'OpenClaw Browser',
+    title: 'Wraith Browser',
+    description:
+      'A native browser engine for AI agents. 143 MCP tools. No Chrome. ~50ms per page.',
+    images: ['/og-image.png'],
+  },
+  twitter: {
+    card: 'summary_large_image' as const,
+    title: 'Wraith Browser — AI-Agent-First Browser Engine',
     description:
       'A native browser engine for AI agents. 143 MCP tools. No Chrome. ~50ms per page.',
     images: ['/og-image.png'],

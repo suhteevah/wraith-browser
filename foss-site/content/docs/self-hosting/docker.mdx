@@ -1,15 +1,15 @@
 ---
 title: Docker Deployment
-description: Run OpenClaw Browser as a Docker container — single binary or with Redis for caching
+description: Run Wraith Browser as a Docker container — single binary or with Redis for caching
 ---
 
 ## Quick Start (Single Binary)
 
-The fastest way to run OpenClaw Browser is a single Docker container. No external
+The fastest way to run Wraith Browser is a single Docker container. No external
 dependencies are required.
 
 ```bash
-docker pull openclaw/browser:latest
+docker pull wraith/browser:latest
 ```
 
 ### Run in stdio mode (MCP clients)
@@ -19,8 +19,8 @@ Mount your config directory so the knowledge cache and vault persist between run
 
 ```bash
 docker run --rm -i \
-  -v ~/.openclaw:/root/.openclaw \
-  openclaw/browser:latest \
+  -v ~/.wraith:/root/.wraith \
+  wraith/browser:latest \
   serve --transport stdio
 ```
 
@@ -30,11 +30,11 @@ To expose the MCP server over HTTP for remote clients:
 
 ```bash
 docker run -d \
-  --name openclaw \
+  --name wraith \
   -p 3100:3100 \
-  -v ~/.openclaw:/root/.openclaw \
+  -v ~/.wraith:/root/.wraith \
   -e RUST_LOG="info" \
-  openclaw/browser:latest \
+  wraith/browser:latest \
   serve --transport sse --host 0.0.0.0 --port 3100
 ```
 
@@ -43,9 +43,9 @@ docker run -d \
 If you prefer to build the image yourself:
 
 ```bash
-git clone https://github.com/nicholasgasior/openclaw-browser.git
-cd openclaw-browser
-docker build -t openclaw-browser:latest -f deploy/Dockerfile .
+git clone https://github.com/nicholasgasior/wraith-browser.git
+cd wraith-browser
+docker build -t wraith-browser:latest -f deploy/Dockerfile .
 ```
 
 The multi-stage Dockerfile uses `rust:1.78-slim` for the build stage and
@@ -61,16 +61,16 @@ Create a `docker-compose.yml`:
 
 ```yaml
 services:
-  openclaw:
-    image: openclaw/browser:latest
+  wraith:
+    image: wraith/browser:latest
     ports:
       - "3100:3100"
     environment:
       RUST_LOG: "info"
       REDIS_URL: "redis://redis:6379"
-    command: ["./openclaw-browser", "serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "3100"]
+    command: ["./wraith-browser", "serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "3100"]
     volumes:
-      - ~/.openclaw:/root/.openclaw
+      - ~/.wraith:/root/.wraith
     depends_on:
       redis:
         condition: service_healthy
@@ -113,7 +113,7 @@ Compose file. See the full list in the
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `RUST_LOG` | Log level filter | `openclaw=info,tower_http=warn` |
+| `RUST_LOG` | Log level filter | `wraith=info,tower_http=warn` |
 | `REDIS_URL` | Redis connection string (enables caching) | _(none)_ |
 | `WRAITH_PROXY` | HTTP/SOCKS5 proxy URL | _(none)_ |
 | `WRAITH_FLARESOLVERR` | FlareSolverr endpoint for challenge pages | _(none)_ |
@@ -128,21 +128,21 @@ curl http://localhost:3100/sse
 
 # stdio mode — send an MCP initialize request
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' \
-  | docker run --rm -i openclaw/browser:latest serve --transport stdio
+  | docker run --rm -i wraith/browser:latest serve --transport stdio
 ```
 
 ## Reverse Proxy
 
-For production deployments, place OpenClaw behind nginx or Caddy for TLS
+For production deployments, place Wraith behind nginx or Caddy for TLS
 termination:
 
 ```nginx
 server {
     listen 443 ssl;
-    server_name openclaw.example.com;
+    server_name wraith.example.com;
 
-    ssl_certificate     /etc/ssl/certs/openclaw.pem;
-    ssl_certificate_key /etc/ssl/private/openclaw.key;
+    ssl_certificate     /etc/ssl/certs/wraith.pem;
+    ssl_certificate_key /etc/ssl/private/wraith.key;
 
     location / {
         proxy_pass http://127.0.0.1:3100;
@@ -161,12 +161,12 @@ server {
 
 ## Data Directory
 
-OpenClaw stores local state in `~/.openclaw/`:
+Wraith stores local state in `~/.wraith/`:
 
 | Path | Contents |
 |---|---|
-| `~/.openclaw/vault.db` | Encrypted credential vault |
-| `~/.openclaw/knowledge/` | Page cache and knowledge store |
-| `~/.openclaw/fingerprints/` | Saved browser fingerprint profiles |
+| `~/.wraith/vault.db` | Encrypted credential vault |
+| `~/.wraith/knowledge/` | Page cache and knowledge store |
+| `~/.wraith/fingerprints/` | Saved browser fingerprint profiles |
 
 Mount this directory as a volume to persist data across container restarts.

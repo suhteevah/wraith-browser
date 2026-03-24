@@ -3,7 +3,7 @@ import type { BaseLayoutProps } from 'fumadocs-ui/layouts/shared';
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: 'OpenClaw Browser',
+      title: 'Wraith Browser',
     },
     links: [
       { text: 'Playground', url: '/playground' },

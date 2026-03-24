@@ -1,9 +1,9 @@
 ---
 title: Configuration
-description: Environment variables and runtime settings for OpenClaw Browser
+description: Environment variables and runtime settings for Wraith Browser
 ---
 
-OpenClaw Browser is configured through a combination of CLI flags and environment
+Wraith Browser is configured through a combination of CLI flags and environment
 variables. Environment variables are read at startup and cannot be changed without
 restarting the process.
 
@@ -11,22 +11,22 @@ restarting the process.
 
 | Variable | Description | Default |
 |---|---|---|
-| `RUST_LOG` | Standard Rust log filter. Controls verbosity for all crates. | `openclaw=info,tower_http=warn` |
+| `RUST_LOG` | Standard Rust log filter. Controls verbosity for all crates. | `wraith=info,tower_http=warn` |
 
-The `--verbose` CLI flag sets the filter to `openclaw=trace,tower_http=debug`,
+The `--verbose` CLI flag sets the filter to `wraith=trace,tower_http=debug`,
 but `RUST_LOG` takes precedence if set.
 
 Examples:
 
 ```bash
 # Minimal output
-RUST_LOG=warn openclaw-browser serve
+RUST_LOG=warn wraith-browser serve
 
 # Trace-level for the browser engine only
-RUST_LOG="openclaw_browser_core=trace,openclaw=info" openclaw-browser serve
+RUST_LOG="wraith_browser_core=trace,wraith=info" wraith-browser serve
 
 # Debug everything
-RUST_LOG=debug openclaw-browser serve --verbose
+RUST_LOG=debug wraith-browser serve --verbose
 ```
 
 ## Browser Engine
@@ -71,8 +71,8 @@ socks5://127.0.0.1:1080
 |---|---|---|
 | `REDIS_URL` | Redis connection string. Enables persistent cache. | _(none, caching disabled)_ |
 
-Without Redis, OpenClaw uses an in-memory LRU cache that is lost when the process
-exits. The knowledge store at `~/.openclaw/knowledge/` provides a local on-disk
+Without Redis, Wraith uses an in-memory LRU cache that is lost when the process
+exits. The knowledge store at `~/.wraith/knowledge/` provides a local on-disk
 cache independent of Redis.
 
 ## Agent Loop (Task Command)
@@ -81,8 +81,8 @@ These variables configure the autonomous `task` subcommand.
 
 | Variable | Description | Default |
 |---|---|---|
-| `OPENCLAW_LLM` | LLM backend: `claude` or `ollama` | `claude` |
-| `OPENCLAW_MODEL` | Model name override | `claude` default model / `llama3.1` for Ollama |
+| `WRAITH_LLM` | LLM backend: `claude` or `ollama` | `claude` |
+| `WRAITH_MODEL` | Model name override | `claude` default model / `llama3.1` for Ollama |
 | `ANTHROPIC_API_KEY` | Anthropic API key (required for Claude backend) | _(none)_ |
 | `CLAUDE_API_KEY` | Alias for `ANTHROPIC_API_KEY` | _(none)_ |
 | `OLLAMA_URL` | Ollama API base URL | `http://localhost:11434` |
@@ -90,9 +90,9 @@ These variables configure the autonomous `task` subcommand.
 To use a local Ollama model instead of Claude:
 
 ```bash
-export OPENCLAW_LLM=ollama
-export OPENCLAW_MODEL=llama3.1
-openclaw-browser task "Find the latest Rust release notes" --url https://blog.rust-lang.org
+export WRAITH_LLM=ollama
+export WRAITH_MODEL=llama3.1
+wraith-browser task "Find the latest Rust release notes" --url https://blog.rust-lang.org
 ```
 
 ## Search Providers
@@ -124,14 +124,14 @@ are optional and enable additional result sources.
 
 ## Data Directories
 
-OpenClaw stores state in `~/.openclaw/` by default. The directory is created
+Wraith stores state in `~/.wraith/` by default. The directory is created
 automatically on first use.
 
 | Path | Purpose |
 |---|---|
-| `~/.openclaw/vault.db` | Encrypted credential vault (AES-256-GCM) |
-| `~/.openclaw/knowledge/` | On-disk page cache and knowledge store |
-| `~/.openclaw/fingerprints/` | Browser fingerprint profiles (JSON) |
+| `~/.wraith/vault.db` | Encrypted credential vault (AES-256-GCM) |
+| `~/.wraith/knowledge/` | On-disk page cache and knowledge store |
+| `~/.wraith/fingerprints/` | Browser fingerprint profiles (JSON) |
 
 There is no configuration variable to change these paths. To relocate them,
 use symlinks or bind mounts.

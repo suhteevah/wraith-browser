@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Community — OpenClaw Browser',
+  title: 'Community — Wraith Browser',
   description:
-    'Join the OpenClaw community. Chat on Discord, contribute on GitHub, and build with us.',
+    'Join the Wraith community. Chat on Discord, contribute on GitHub, and build with us.',
 };
 
 interface CardProps {
@@ -62,7 +62,7 @@ export default function CommunityPage() {
       <section className="max-w-3xl mx-auto px-6 pt-28 pb-20">
         <h1 className="text-4xl font-bold tracking-tight mb-2">Community</h1>
         <p className="text-fd-muted-foreground mb-12">
-          OpenClaw is built in the open. Here is how to get involved.
+          Wraith is built in the open. Here is how to get involved.
         </p>
 
         <div className="grid sm:grid-cols-2 gap-6">
@@ -101,7 +101,7 @@ export default function CommunityPage() {
           <CommunityCard
             title="GitHub"
             description="Browse the source, file issues, and submit pull requests."
-            href="https://github.com/suhteevah/openclaw-browser"
+            href="https://github.com/suhteevah/wraith-browser"
             icon={
               <svg
                 viewBox="0 0 24 24"
@@ -117,7 +117,7 @@ export default function CommunityPage() {
           <CommunityCard
             title="Contributing"
             description="Read the contributing guide to learn how to submit your first pull request."
-            href="https://github.com/suhteevah/openclaw-browser/blob/main/CONTRIBUTING.md"
+            href="https://github.com/suhteevah/wraith-browser/blob/main/CONTRIBUTING.md"
             icon={
               <svg
                 viewBox="0 0 24 24"
@@ -138,7 +138,7 @@ export default function CommunityPage() {
           <CommunityCard
             title="Code of Conduct"
             description="We are committed to a welcoming, inclusive community for everyone."
-            href="https://github.com/suhteevah/openclaw-browser/blob/main/CODE_OF_CONDUCT.md"
+            href="https://github.com/suhteevah/wraith-browser/blob/main/CODE_OF_CONDUCT.md"
             icon={
               <svg
                 viewBox="0 0 24 24"
@@ -158,12 +158,12 @@ export default function CommunityPage() {
 
         {/* Built with Wraith showcase */}
         <section className="mt-16">
-          <h2 className="text-2xl font-bold mb-2">Built with OpenClaw</h2>
+          <h2 className="text-2xl font-bold mb-2">Built with Wraith</h2>
           <p className="text-fd-muted-foreground mb-8">
-            Projects and tools built by the community using OpenClaw Browser.
+            Projects and tools built by the community using Wraith Browser.
             Want to be featured?{' '}
             <a
-              href="https://github.com/suhteevah/openclaw-browser/issues"
+              href="https://github.com/suhteevah/wraith-browser/issues"
               target="_blank"
               rel="noopener noreferrer"
               className="text-emerald-400 hover:underline"

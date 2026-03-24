@@ -1,11 +1,9 @@
 ---
 title: Engine Architecture
-description: How OpenClaw Browser's three engine backends work — SevroEngine, NativeEngine, and CdpEngine — and how the BrowserEngine trait unifies them behind a single async interface.
+description: How Wraith Browser's three engine backends work — SevroEngine, NativeEngine, and CdpEngine — and how the BrowserEngine trait unifies them behind a single async interface.
 ---
 
-# Engine Architecture
-
-OpenClaw Browser is not one browser engine — it is a trait-based abstraction over three
+Wraith Browser is not one browser engine — it is a trait-based abstraction over three
 distinct backends, each optimized for different workloads. Every consumer (MCP server,
 agent loop, CLI) operates through `Arc<tokio::sync::Mutex<dyn BrowserEngine>>` and never
 knows which backend is running underneath.
@@ -29,12 +27,12 @@ knows which backend is running underneath.
 │  └── CdpEngine    — Chrome DevTools Protocol            │
 ├─────────────────────────────────────────────────────────┤
 │  Supporting Crates                                      │
-│  ├── openclaw-identity    — AES-256-GCM encrypted vault │
-│  ├── openclaw-cache       — Knowledge cache + dedup DB  │
-│  ├── openclaw-search      — Web metasearch engine       │
-│  ├── openclaw-content-extract — HTML→Markdown           │
-│  ├── openclaw-scripting   — Rhai script engine          │
-│  └── openclaw-agent-loop  — Autonomous agent execution  │
+│  ├── wraith-identity    — AES-256-GCM encrypted vault │
+│  ├── wraith-cache       — Knowledge cache + dedup DB  │
+│  ├── wraith-search      — Web metasearch engine       │
+│  ├── wraith-content-extract — HTML→Markdown           │
+│  ├── wraith-scripting   — Rhai script engine          │
+│  └── wraith-agent-loop  — Autonomous agent execution  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -121,7 +119,7 @@ margin.
 
 SevroEngine is the default engine and the core of the "no Chrome needed" story. It wraps
 the `sevro-headless` library — a Servo-derived headless browser with QuickJS for JavaScript
-execution. This means OpenClaw can render JS-heavy pages, execute DOM manipulation scripts,
+execution. This means Wraith can render JS-heavy pages, execute DOM manipulation scripts,
 and handle SPAs, all without Chrome or Chromium installed.
 
 | Property | Value |
@@ -182,14 +180,14 @@ for response correlation — a standard pattern for multiplexed RPC over a singl
 
 ## The "No Chrome" Story
 
-OpenClaw's default build (`sevro` feature enabled) requires **zero external browser
+Wraith's default build (`sevro` feature enabled) requires **zero external browser
 dependencies**. The SevroEngine compiles a Servo-derived layout engine and QuickJS
 JavaScript runtime directly into the binary. This is the primary differentiator from tools
 like Puppeteer, Playwright, or browser-use, which all require a Chrome installation.
 
 The practical impact:
 
-- **CI/CD pipelines:** No need to install Chrome in Docker images. The OpenClaw binary is
+- **CI/CD pipelines:** No need to install Chrome in Docker images. The Wraith binary is
   self-contained.
 - **Edge deployments:** Works on minimal Linux containers, ARM devices, and environments
   where Chrome cannot run.
@@ -243,7 +241,7 @@ time.
 
 ## Concurrency Model
 
-OpenClaw uses **Tokio's async runtime** with a single `Arc<Mutex<dyn BrowserEngine>>`
+Wraith uses **Tokio's async runtime** with a single `Arc<Mutex<dyn BrowserEngine>>`
 per session. This means:
 
 1. **One page at a time per session.** The Mutex serializes all engine operations within a

@@ -6,7 +6,7 @@ description: Connect to Wraith via MCP and run your first command
 ## Start the MCP server
 
 ```bash
-openclaw-browser serve --transport stdio
+wraith-browser serve --transport stdio
 ```
 
 This starts Wraith in MCP mode, communicating via JSON-RPC over stdin/stdout.
@@ -18,8 +18,8 @@ Add to your `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "openclaw-browser",
+    "wraith-browser": {
+      "command": "wraith-browser",
       "args": ["serve", "--transport", "stdio"]
     }
   }

@@ -1,11 +1,9 @@
 ---
 title: Snapshot Model and @ref IDs
-description: How OpenClaw Browser builds DOM snapshots for AI agents, assigns @ref IDs to interactive elements, and enables agents to interact with pages without CSS selectors or XPath.
+description: How Wraith Browser builds DOM snapshots for AI agents, assigns @ref IDs to interactive elements, and enables agents to interact with pages without CSS selectors or XPath.
 ---
 
-# Snapshot Model and @ref IDs
-
-OpenClaw does not hand raw HTML to AI agents. Instead, it builds a **DOM snapshot** — a
+Wraith does not hand raw HTML to AI agents. Instead, it builds a **DOM snapshot** — a
 compact, flat list of interactive and semantic elements optimized for LLM context windows.
 Each element is assigned a stable `@ref` ID that agents use to click, fill, scroll to, or
 otherwise interact with page elements.
@@ -93,7 +91,7 @@ When the MCP server returns a snapshot to an agent, it calls `to_agent_text()` t
 compact text representation. Here is an example of what an agent actually sees:
 
 ```
-Page: "GitHub - openclaw-browser" (https://github.com/example/openclaw-browser)
+Page: "GitHub - wraith-browser" (https://github.com/example/wraith-browser)
 
 @e1    [link]        "Code"
 @e2    [link]        "Issues (3)"

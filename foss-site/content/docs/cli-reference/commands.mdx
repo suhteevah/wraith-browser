@@ -1,6 +1,6 @@
 ---
 title: Commands
-description: Complete reference for all openclaw-browser CLI commands and flags
+description: Complete reference for all wraith-browser CLI commands and flags
 ---
 
 ## Global Flags
@@ -9,7 +9,7 @@ These flags apply to every subcommand.
 
 | Flag | Short | Description | Default |
 |---|---|---|---|
-| `--verbose` | `-v` | Enable verbose logging (`openclaw=trace`) | off |
+| `--verbose` | `-v` | Enable verbose logging (`wraith=trace`) | off |
 | `--engine <ENGINE>` | | Browser engine: `auto`, `sevro`, `native` | `auto` |
 | `--proxy <URL>` | | HTTP or SOCKS5 proxy | _(none)_ |
 | `--flaresolverr <URL>` | | FlareSolverr endpoint for challenge pages | _(none)_ |
@@ -23,7 +23,7 @@ Start the MCP server. This is the primary command for integrating with AI client
 like Claude Desktop and Claude Code.
 
 ```bash
-openclaw-browser serve [OPTIONS]
+wraith-browser serve [OPTIONS]
 ```
 
 | Option | Short | Description | Default |
@@ -36,13 +36,13 @@ Examples:
 
 ```bash
 # Default: stdio transport for Claude Desktop / Claude Code
-openclaw-browser serve
+wraith-browser serve
 
 # HTTP/SSE on all interfaces, port 4000
-openclaw-browser serve --transport sse --host 0.0.0.0 --port 4000
+wraith-browser serve --transport sse --host 0.0.0.0 --port 4000
 
 # With proxy and verbose logging
-openclaw-browser serve -v --proxy socks5://127.0.0.1:1080
+wraith-browser serve -v --proxy socks5://127.0.0.1:1080
 ```
 
 ## navigate
@@ -51,7 +51,7 @@ Navigate to a URL and print the result to stdout. Useful for quick one-off page
 fetches and scripting.
 
 ```bash
-openclaw-browser navigate <URL> [OPTIONS]
+wraith-browser navigate <URL> [OPTIONS]
 ```
 
 | Option | Short | Description | Default |
@@ -62,13 +62,13 @@ Examples:
 
 ```bash
 # DOM snapshot with @ref IDs (same view the AI agent sees)
-openclaw-browser navigate https://example.com
+wraith-browser navigate https://example.com
 
 # Extracted markdown
-openclaw-browser navigate https://example.com --format markdown
+wraith-browser navigate https://example.com --format markdown
 
 # Full JSON snapshot
-openclaw-browser navigate https://example.com --format json
+wraith-browser navigate https://example.com --format json
 ```
 
 ## task
@@ -77,7 +77,7 @@ Run an autonomous browsing task powered by an LLM. The agent loop navigates,
 clicks, fills forms, and extracts information to complete the described task.
 
 ```bash
-openclaw-browser task <DESCRIPTION> [OPTIONS]
+wraith-browser task <DESCRIPTION> [OPTIONS]
 ```
 
 | Option | Short | Description | Default |
@@ -86,20 +86,20 @@ openclaw-browser task <DESCRIPTION> [OPTIONS]
 | `--max-steps <N>` | | Maximum agent steps before stopping | `50` |
 
 Requires either `ANTHROPIC_API_KEY` (or `CLAUDE_API_KEY`) for the Claude backend,
-or `OPENCLAW_LLM=ollama` for local models. See
+or `WRAITH_LLM=ollama` for local models. See
 [Configuration](/docs/self-hosting/configuration) for all agent-related variables.
 
 Examples:
 
 ```bash
 # Search and summarize
-openclaw-browser task "Find the latest Rust release date"
+wraith-browser task "Find the latest Rust release date"
 
 # Start from a specific page
-openclaw-browser task "Extract the pricing table" --url https://example.com/pricing
+wraith-browser task "Extract the pricing table" --url https://example.com/pricing
 
 # Limit to 10 steps
-openclaw-browser task "Log in and check notifications" --url https://app.example.com --max-steps 10
+wraith-browser task "Log in and check notifications" --url https://app.example.com --max-steps 10
 ```
 
 ## search
@@ -107,7 +107,7 @@ openclaw-browser task "Log in and check notifications" --url https://app.example
 Search the web using SearXNG metasearch and optional API-backed providers.
 
 ```bash
-openclaw-browser search <QUERY> [OPTIONS]
+wraith-browser search <QUERY> [OPTIONS]
 ```
 
 | Option | Short | Description | Default |
@@ -117,7 +117,7 @@ openclaw-browser search <QUERY> [OPTIONS]
 Examples:
 
 ```bash
-openclaw-browser search "Rust async runtime comparison" --max-results 5
+wraith-browser search "Rust async runtime comparison" --max-results 5
 ```
 
 ## extract
@@ -126,7 +126,7 @@ Navigate to a URL and extract readable content as markdown, with a configurable
 token budget.
 
 ```bash
-openclaw-browser extract <URL> [OPTIONS]
+wraith-browser extract <URL> [OPTIONS]
 ```
 
 | Option | Description | Default |
@@ -136,17 +136,17 @@ openclaw-browser extract <URL> [OPTIONS]
 Examples:
 
 ```bash
-openclaw-browser extract https://blog.rust-lang.org/2024/02/08/Rust-1.76.0.html
-openclaw-browser extract https://en.wikipedia.org/wiki/Rust_(programming_language) --max-tokens 8000
+wraith-browser extract https://blog.rust-lang.org/2024/02/08/Rust-1.76.0.html
+wraith-browser extract https://en.wikipedia.org/wiki/Rust_(programming_language) --max-tokens 8000
 ```
 
 ## vault
 
-Manage the encrypted credential vault at `~/.openclaw/vault.db`. The vault uses
+Manage the encrypted credential vault at `~/.wraith/vault.db`. The vault uses
 AES-256-GCM encryption and requires a passphrase to unlock.
 
 ```bash
-openclaw-browser vault <SUBCOMMAND>
+wraith-browser vault <SUBCOMMAND>
 ```
 
 ### vault unlock
@@ -154,7 +154,7 @@ openclaw-browser vault <SUBCOMMAND>
 Unlock the vault (or create it on first use). Prompts for a passphrase.
 
 ```bash
-openclaw-browser vault unlock
+wraith-browser vault unlock
 ```
 
 ### vault lock
@@ -162,7 +162,7 @@ openclaw-browser vault unlock
 Lock the vault and zeroize the master key from memory.
 
 ```bash
-openclaw-browser vault lock
+wraith-browser vault lock
 ```
 
 ### vault store
@@ -170,7 +170,7 @@ openclaw-browser vault lock
 Store a new credential in the vault.
 
 ```bash
-openclaw-browser vault store --domain <DOMAIN> --identity <IDENTITY> [OPTIONS]
+wraith-browser vault store --domain <DOMAIN> --identity <IDENTITY> [OPTIONS]
 ```
 
 | Option | Short | Description | Default |
@@ -186,7 +186,7 @@ openclaw-browser vault store --domain <DOMAIN> --identity <IDENTITY> [OPTIONS]
 List all stored credentials. Secrets remain encrypted.
 
 ```bash
-openclaw-browser vault list
+wraith-browser vault list
 ```
 
 ### vault delete
@@ -194,7 +194,7 @@ openclaw-browser vault list
 Delete a credential by ID.
 
 ```bash
-openclaw-browser vault delete <ID>
+wraith-browser vault delete <ID>
 ```
 
 ### vault totp
@@ -202,7 +202,7 @@ openclaw-browser vault delete <ID>
 Generate a TOTP code for a domain.
 
 ```bash
-openclaw-browser vault totp <DOMAIN>
+wraith-browser vault totp <DOMAIN>
 ```
 
 ### vault audit
@@ -210,7 +210,7 @@ openclaw-browser vault totp <DOMAIN>
 Show recent audit log entries.
 
 ```bash
-openclaw-browser vault audit [--limit <N>]
+wraith-browser vault audit [--limit <N>]
 ```
 
 Default limit is 20 entries.
@@ -220,7 +220,7 @@ Default limit is 20 entries.
 Approve a domain for credential use.
 
 ```bash
-openclaw-browser vault approve --credential-id <ID> --domain <DOMAIN>
+wraith-browser vault approve --credential-id <ID> --domain <DOMAIN>
 ```
 
 ### vault rotate
@@ -228,7 +228,7 @@ openclaw-browser vault approve --credential-id <ID> --domain <DOMAIN>
 Rotate a credential's secret value. Prompts for the new secret.
 
 ```bash
-openclaw-browser vault rotate <ID>
+wraith-browser vault rotate <ID>
 ```
 
 ## fingerprint
@@ -236,7 +236,7 @@ openclaw-browser vault rotate <ID>
 Manage browser fingerprint profiles used for stealth browsing.
 
 ```bash
-openclaw-browser fingerprint <SUBCOMMAND>
+wraith-browser fingerprint <SUBCOMMAND>
 ```
 
 ### fingerprint import
@@ -244,15 +244,15 @@ openclaw-browser fingerprint <SUBCOMMAND>
 Import a fingerprint from a JSON file (exported from browser DevTools).
 
 ```bash
-openclaw-browser fingerprint import <FILE>
+wraith-browser fingerprint import <FILE>
 ```
 
-The profile is saved to `~/.openclaw/fingerprints/`.
+The profile is saved to `~/.wraith/fingerprints/`.
 
 ### fingerprint list
 
 List all stored fingerprint profiles.
 
 ```bash
-openclaw-browser fingerprint list
+wraith-browser fingerprint list
 ```

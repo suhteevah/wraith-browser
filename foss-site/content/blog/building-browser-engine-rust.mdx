@@ -1,0 +1,80 @@
+---
+title: "How We Built a Browser Engine in Rust (And Why)"
+date: "2026-03-23"
+description: "Why we chose Rust and Servo to build a native browser engine for AI agents — architecture decisions, trade-offs, and lessons learned."
+author: Matt Gates
+---
+
+## Why not just wrap Chrome?
+
+The obvious path for building a browser engine in Rust — or any language — is to not build one at all. Wrap headless Chrome, talk to it over CDP, and call it a day. We tried that. It did not scale.
+
+Each headless Chrome instance consumes 300-500 MB of RAM and spawns a tree of 20+ child processes. At 50 concurrent sessions you are already burning 15-25 GB of memory on browser overhead alone. The startup latency is measured in seconds, not milliseconds. And if you are building for AI agents that need to blend in with normal traffic, Chrome's process tree and network fingerprint are well-documented by every major bot detection system.
+
+We needed something fundamentally different: a browser engine that could render pages in under 100 milliseconds, fit dozens of sessions into a single gigabyte of RAM, and ship as one binary with zero external dependencies.
+
+## Why Rust for a browser engine?
+
+Rust was not a trendy choice — it was the only one that checked every box.
+
+### Memory safety without a garbage collector
+
+A browser engine is one of the most adversarial pieces of software you can write. It parses untrusted HTML, CSS, and JavaScript from the open internet. Rust gives us memory safety guarantees at compile time without the stop-the-world pauses of a garbage collector. For a system driving thousands of concurrent sessions, predictable latency matters more than raw throughput.
+
+### Async runtime with tokio
+
+Browser automation is inherently concurrent. An agent might be navigating one tab, extracting content from another, and waiting on a network response in a third. Tokio's async runtime lets us multiplex thousands of sessions onto a small thread pool without the callback spaghetti you get in Node or the GIL contention you hit in Python.
+
+### FFI for QuickJS
+
+We needed a JavaScript engine, but not V8. V8 is massive, difficult to embed, and brings its own memory management story. QuickJS is 600 KB, compiles in seconds, and exposes a clean C API that Rust can call through FFI with minimal overhead. The trade-off is real — QuickJS does not support every bleeding-edge Web API — but for the 95% of pages that agents actually interact with, it is more than sufficient.
+
+### Single binary distribution
+
+`cargo build --release` produces one statically-linked binary. No Python virtualenvs, no npm installs, no browser driver version matrices. Copy it to a server and run it. This matters enormously for deployment in CI pipelines, Docker containers, and air-gapped environments.
+
+## Servo as the starting point
+
+We did not write a browser engine from scratch. We forked [Servo](https://servo.org/), Mozilla's experimental engine written in Rust, and adapted it for headless AI-agent workloads.
+
+### What we kept
+
+Servo's HTML parser (`html5ever`) and CSS engine (`stylo`) are production-grade. They handle the messy reality of the web — malformed markup, quirks mode, the full cascade — and they do it correctly. Reimplementing either would have been years of work with no upside.
+
+### What we replaced
+
+The rendering pipeline was the biggest change. Servo is designed to paint pixels to a screen. We do not need pixels. We stripped the WebRender integration entirely and replaced it with a lightweight DOM bridge that produces a serialized snapshot of the page — a structured representation of every element, its attributes, computed styles, and layout coordinates. This is what agents actually need: not a screenshot, but a machine-readable model of the page. You can read more about this in our [snapshot model documentation](/docs/architecture/snapshot-model).
+
+## Architecture overview
+
+The engine is organized into a small set of focused crates. For the full picture, see the [engine overview](/docs/architecture/engine-overview).
+
+- **browser-core** — Defines the `Engine` trait and manages session lifecycle. This is the integration point: everything else plugs in here.
+- **content-extract** — Readability-based article extraction plus Markdown conversion. Turns noisy web pages into clean text that fits neatly into an LLM context window.
+- **cache** — SQLite for metadata, Tantivy for full-text search, and vector embeddings for semantic retrieval. Every page visit is indexed automatically.
+- **identity** — Vault for encrypted credential storage plus fingerprint management. TLS profiles, header ordering, and canvas noise are generated per-session to avoid detection.
+- **mcp-server** — The 143-tool MCP interface that agents actually talk to. Navigation, extraction, form filling, entity resolution, DAG orchestration, time-travel debugging, and more.
+
+Each crate compiles independently and communicates through well-defined Rust traits. There is no global state. Sessions are isolated by design.
+
+## Trade-offs we made
+
+We are not pretending this is a drop-in Chrome replacement. Here is what we gave up and why.
+
+**QuickJS instead of V8.** QuickJS handles ES2023 and covers the vast majority of real-world pages, but it will not run heavy single-page applications that depend on bleeding-edge browser APIs or WebAssembly. For those cases, we are building a CDP compatibility layer that can delegate to a real Chrome instance when full fidelity is required.
+
+**No visual rendering.** Wraith is headless-only. There is no window, no GPU acceleration, no screenshot-from-rendered-pixels path. Our screenshots are composited from the DOM snapshot, which is fast but will not perfectly match Chrome's rendering of complex CSS animations or canvas-heavy pages.
+
+**Servo is complex to fork.** Servo's codebase is large and not all of it is well-documented. Upgrading to newer Servo commits requires careful merging. We maintain a patch set rather than a hard fork, which adds friction but keeps us closer to upstream improvements.
+
+## What we would do differently
+
+If we started over today, we would invest earlier in a robust CSS layout test suite. Layout bugs are the hardest to diagnose because the symptoms show up far from the root cause — a missed margin-collapse rule cascades into a completely wrong element position, which breaks click targeting for agents.
+
+We would also build the CDP compatibility layer from day one. Even though native mode is faster and lighter, the ability to fall back to Chrome for edge cases removes an entire class of support questions.
+
+## What is next
+
+The Rust web browser ecosystem is maturing fast. Servo is getting more investment, `html5ever` continues to improve, and the MCP standard is gaining adoption across agent frameworks. We are betting that purpose-built browser engines — small, fast, agent-native — will replace the Chrome-wrapper model for most automation workloads within the next two years.
+
+We are building this in the open. If you want to dig into the architecture, start with the [engine overview](/docs/architecture/engine-overview) and the [snapshot model docs](/docs/architecture/snapshot-model). If you want to contribute, check our [community page](/community).

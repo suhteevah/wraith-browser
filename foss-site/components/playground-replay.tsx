@@ -112,7 +112,7 @@ export default function PlaygroundReplay({
             <span className="w-3 h-3 rounded-full bg-green-500/70" />
           </div>
           <span className="text-xs text-zinc-400 font-mono">
-            openclaw-browser
+            wraith-browser
           </span>
         </div>
         <div className="text-xs text-zinc-500">

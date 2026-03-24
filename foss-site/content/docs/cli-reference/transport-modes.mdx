@@ -1,16 +1,16 @@
 ---
 title: Transport Modes
-description: How OpenClaw Browser communicates with MCP clients — stdio and HTTP/SSE
+description: How Wraith Browser communicates with MCP clients — stdio and HTTP/SSE
 ---
 
-OpenClaw Browser's `serve` command supports two transport modes for MCP
+Wraith Browser's `serve` command supports two transport modes for MCP
 communication. The transport determines how messages flow between the browser
 and the AI client.
 
 ## stdio (default)
 
 ```bash
-openclaw-browser serve --transport stdio
+wraith-browser serve --transport stdio
 ```
 
 In stdio mode, the server reads JSON-RPC messages from stdin and writes responses
@@ -25,9 +25,9 @@ to stdout. This is the standard MCP transport used by local AI clients.
 
 **How it works:**
 
-1. The MCP client launches `openclaw-browser serve` as a subprocess.
+1. The MCP client launches `wraith-browser serve` as a subprocess.
 2. The client sends JSON-RPC requests over the process's stdin.
-3. OpenClaw writes JSON-RPC responses to stdout.
+3. Wraith writes JSON-RPC responses to stdout.
 4. Logs go to stderr (controlled by `RUST_LOG`), so they never interfere with
    the JSON-RPC stream.
 
@@ -38,8 +38,8 @@ Add this to your Claude Desktop MCP config (`claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "openclaw-browser",
+    "wraith-browser": {
+      "command": "wraith-browser",
       "args": ["serve", "--transport", "stdio"]
     }
   }
@@ -51,8 +51,8 @@ With a proxy:
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "openclaw-browser",
+    "wraith-browser": {
+      "command": "wraith-browser",
       "args": ["serve", "--transport", "stdio", "--proxy", "socks5://127.0.0.1:1080"]
     }
   }
@@ -64,8 +64,8 @@ With a proxy:
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "openclaw-browser",
+    "wraith-browser": {
+      "command": "wraith-browser",
       "args": ["serve"]
     }
   }
@@ -77,7 +77,7 @@ Since stdio is the default transport, `--transport stdio` can be omitted.
 ## SSE (HTTP)
 
 ```bash
-openclaw-browser serve --transport sse --host 0.0.0.0 --port 3100
+wraith-browser serve --transport sse --host 0.0.0.0 --port 3100
 ```
 
 In SSE (Server-Sent Events) mode, the server listens on an HTTP endpoint. Clients
@@ -113,13 +113,13 @@ or firewall in front when exposed to the internet.
 
 ```bash
 # Localhost only, default port
-openclaw-browser serve --transport sse
+wraith-browser serve --transport sse
 
 # All interfaces, custom port
-openclaw-browser serve --transport sse --host 0.0.0.0 --port 8080
+wraith-browser serve --transport sse --host 0.0.0.0 --port 8080
 
 # With verbose logging
-openclaw-browser serve --transport sse --host 0.0.0.0 --port 3100 -v
+wraith-browser serve --transport sse --host 0.0.0.0 --port 3100 -v
 ```
 
 ### Docker
@@ -128,9 +128,9 @@ When running inside Docker, bind to `0.0.0.0` so the port mapping works:
 
 ```bash
 docker run -d \
-  --name openclaw \
+  --name wraith \
   -p 3100:3100 \
-  openclaw/browser:latest \
+  wraith/browser:latest \
   serve --transport sse --host 0.0.0.0 --port 3100
 ```
 

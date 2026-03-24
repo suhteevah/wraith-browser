@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!post) return {};
 
   return {
-    title: `${post.title} — OpenClaw Browser`,
+    title: `${post.title} — Wraith Browser`,
     description: post.description,
     openGraph: {
       title: post.title,

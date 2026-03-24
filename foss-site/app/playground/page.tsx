@@ -9,9 +9,9 @@ import vaultAndLogin from '@/content/playground/vault-and-login.json';
 import type { SessionRecording } from '@/lib/replay-parser';
 
 export const metadata: Metadata = {
-  title: 'Interactive Playground — OpenClaw Browser',
+  title: 'Interactive Playground — Wraith Browser',
   description:
-    'Step through real browser automation sessions. See how OpenClaw navigates, extracts, fills forms, and builds knowledge graphs.',
+    'Step through real browser automation sessions. See how Wraith navigates, extracts, fills forms, and builds knowledge graphs.',
 };
 
 const tutorials: SessionRecording[] = [

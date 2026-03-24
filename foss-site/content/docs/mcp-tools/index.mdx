@@ -1,9 +1,9 @@
 ---
 title: MCP Tools Reference
-description: Complete reference for all 143 MCP tools exposed by OpenClaw Browser
+description: Complete reference for all 143 MCP tools exposed by Wraith Browser
 ---
 
-OpenClaw Browser exposes **143 tools** through the [Model Context Protocol](https://modelcontextprotocol.io). Every tool is callable from any MCP-compatible AI agent (Claude Code, Cursor, Windsurf, etc.) over stdio transport.
+Wraith Browser exposes **143 tools** through the [Model Context Protocol](https://modelcontextprotocol.io). Every tool is callable from any MCP-compatible AI agent (Claude Code, Cursor, Windsurf, etc.) over stdio transport.
 
 Tools are organized into 15 categories. Each tool carries permission annotations (`read_only`, `destructive`, `open_world`) so your agent framework can enforce safety policies automatically.
 
@@ -46,8 +46,8 @@ Add to your `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "openclaw-browser",
+    "wraith-browser": {
+      "command": "wraith-browser",
       "args": ["serve", "--transport", "stdio"]
     }
   }

@@ -3,3 +3,5 @@ node_modules/
 .source/
 out/
 .env*.local
+
+.vercel

@@ -1,11 +1,9 @@
 ---
 title: MCP Protocol Integration
-description: How OpenClaw Browser implements the Model Context Protocol — JSON-RPC over stdio, tool registration, the dispatch model, and transport modes.
+description: How Wraith Browser implements the Model Context Protocol — JSON-RPC over stdio, tool registration, the dispatch model, and transport modes.
 ---
 
-# MCP Protocol Integration
-
-OpenClaw Browser exposes its capabilities through the
+Wraith Browser exposes its capabilities through the
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io), a standard for connecting
 AI agents to external tools. The implementation lives in `crates/mcp-server/` and uses the
 `rmcp` Rust crate for protocol handling.
@@ -17,8 +15,8 @@ by external servers. An MCP server advertises a list of tools (with JSON Schema 
 definitions), and agents call those tools by name with structured arguments. The protocol
 handles request/response correlation, error propagation, and capability negotiation.
 
-For OpenClaw, MCP is the primary interface. Claude Code, Cursor, and other MCP-compatible
-agents connect to the OpenClaw MCP server and gain browser automation capabilities without
+For Wraith, MCP is the primary interface. Claude Code, Cursor, and other MCP-compatible
+agents connect to the Wraith MCP server and gain browser automation capabilities without
 any custom integration code.
 
 ## Transport: stdio
@@ -46,14 +44,14 @@ is the expected lifecycle for a tool that is launched as a subprocess by an AI a
 
 ### How Agents Connect
 
-An MCP client (like Claude Code) launches OpenClaw as a subprocess and communicates over
+An MCP client (like Claude Code) launches Wraith as a subprocess and communicates over
 the process's stdin/stdout pipes. The typical configuration in an agent's MCP settings:
 
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "openclaw-browser",
+    "wraith-browser": {
+      "command": "wraith-browser",
       "args": ["mcp"]
     }
   }
@@ -282,10 +280,10 @@ The complete server startup sequence:
 
 ## Building a Custom MCP Client
 
-Since OpenClaw uses standard MCP over stdio, any MCP-compatible client can connect to it.
+Since Wraith uses standard MCP over stdio, any MCP-compatible client can connect to it.
 The protocol flow:
 
-1. Spawn the OpenClaw binary with `mcp` as the subcommand.
+1. Spawn the Wraith binary with `mcp` as the subcommand.
 2. Send an `initialize` request to negotiate capabilities.
 3. Call `tools/list` to discover available tools.
 4. Call `tools/call` with the desired tool name and arguments.

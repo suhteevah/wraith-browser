@@ -52,7 +52,7 @@ export default function HomePage() {
             <h3 className="text-lg font-semibold mb-2">Connect via MCP</h3>
             <p className="text-fd-muted-foreground text-sm">
               <code className="text-xs bg-fd-card px-1.5 py-0.5 rounded">
-                openclaw-browser serve --transport stdio
+                wraith-browser serve --transport stdio
               </code>{' '}
               — works with Claude Code, Cursor, and any MCP client.
             </p>
@@ -70,6 +70,7 @@ export default function HomePage() {
 
       {/* Feature cards */}
       <section className="px-6 py-20 max-w-5xl mx-auto">
+        <h2 className="text-3xl font-bold text-center mb-8">Why Wraith?</h2>
         <div className="grid md:grid-cols-3 gap-6">
           <div className="bg-fd-card border border-fd-border rounded-xl p-6">
             <h3 className="text-lg font-semibold mb-2">Native Engine</h3>
@@ -97,7 +98,7 @@ export default function HomePage() {
 
       {/* Footer */}
       <footer className="border-t border-fd-border px-6 py-12 text-center text-sm text-fd-muted-foreground">
-        <p>OpenClaw Browser — AGPL-3.0 — Free and open source, forever.</p>
+        <p>Wraith Browser — AGPL-3.0 — Free and open source, forever.</p>
         <p className="mt-2">
           Need managed hosting &amp; team features?{' '}
           <a

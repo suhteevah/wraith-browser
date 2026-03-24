@@ -1,0 +1,184 @@
+---
+title: "Building a Knowledge Graph From Web Data With MCP Tools"
+date: "2026-03-23"
+description: "Learn how to build a knowledge graph from web data using MCP tools for entity extraction, linking, and semantic search."
+author: Matt Gates
+---
+
+## Why a knowledge graph from web data matters
+
+AI agents browse the web constantly, visiting dozens or hundreds of pages in a single workflow. But most agents treat each page as disposable: extract some text, pass it to the LLM, move on. The information from page 3 is gone by the time the agent reaches page 30.
+
+A knowledge graph changes this. Instead of discarding context, your agent accumulates structured knowledge as it browses. Entities like people, companies, products, and concepts get linked together across pages. When the agent encounters a company name on page 50 that it first saw on page 5, it can instantly retrieve everything it knows about that entity and all its relationships.
+
+Wraith Browser ships with built-in MCP tools for building a knowledge graph from web data as you browse. No external database, no separate ETL pipeline. The graph lives inside the browser engine and is queryable at any time. This guide walks through the core tools and shows how to wire them together.
+
+## Setting up the tools
+
+All [knowledge graph tools](/docs/knowledge-graph) are available through MCP the moment you start the Wraith server. There is nothing extra to install. The key tools are:
+
+- `entity_add` — Create a new entity (person, org, concept, etc.)
+- `entity_relate` — Link two entities with a typed relationship
+- `entity_search` — Find entities by name or attributes
+- `entity_query` — Run structured queries across the graph
+- `embedding_upsert` — Store vector embeddings for semantic search
+- `embedding_search` — Find similar content by vector similarity
+
+Let us walk through a realistic scenario: an agent researching companies in the AI infrastructure space.
+
+## Step 1: Adding entities as you browse
+
+After navigating to a company page and extracting information, your agent creates an entity:
+
+```json
+{
+  "tool": "entity_add",
+  "arguments": {
+    "name": "Acme AI Corp",
+    "entity_type": "organization",
+    "attributes": {
+      "industry": "AI infrastructure",
+      "founded": "2023",
+      "headquarters": "San Francisco, CA",
+      "funding": "$45M Series B",
+      "source_url": "https://example.com/acme-ai"
+    }
+  }
+}
+```
+
+The `entity_add` tool returns an entity ID that you use for subsequent operations. Every entity can carry arbitrary key-value attributes, so you can store whatever structured data the page yields.
+
+As the agent continues browsing, it adds more entities:
+
+```json
+{
+  "tool": "entity_add",
+  "arguments": {
+    "name": "Jane Chen",
+    "entity_type": "person",
+    "attributes": {
+      "role": "CEO",
+      "background": "Former VP Engineering at DataScale",
+      "source_url": "https://example.com/acme-ai/team"
+    }
+  }
+}
+```
+
+## Step 2: Creating relationships
+
+Now the agent links these entities:
+
+```json
+{
+  "tool": "entity_relate",
+  "arguments": {
+    "from_entity": "Jane Chen",
+    "to_entity": "Acme AI Corp",
+    "relation_type": "leads",
+    "attributes": {
+      "since": "2023",
+      "title": "Chief Executive Officer"
+    }
+  }
+}
+```
+
+Relationships are directional and typed. Common relation types include `leads`, `founded`, `invested_in`, `competes_with`, `acquired`, `partners_with`, and `employed_by`, but you can define any string. The graph grows organically as the agent visits more pages.
+
+After visiting a competitor's page, the agent might add:
+
+```json
+{
+  "tool": "entity_relate",
+  "arguments": {
+    "from_entity": "Acme AI Corp",
+    "to_entity": "Rival ML Inc",
+    "relation_type": "competes_with",
+    "attributes": {
+      "market_segment": "inference optimization"
+    }
+  }
+}
+```
+
+## Step 3: Semantic search with embeddings
+
+For unstructured content that does not fit neatly into entities, the `embedding_upsert` tool stores vector embeddings alongside a text chunk:
+
+```json
+{
+  "tool": "embedding_upsert",
+  "arguments": {
+    "content": "Acme AI Corp announced a new inference engine that reduces GPU costs by 40% through dynamic batching and speculative decoding.",
+    "metadata": {
+      "source_url": "https://example.com/acme-ai/blog/inference-engine",
+      "entity": "Acme AI Corp",
+      "date": "2026-03-15"
+    }
+  }
+}
+```
+
+Later, the agent can search semantically across everything it has stored:
+
+```json
+{
+  "tool": "embedding_search",
+  "arguments": {
+    "query": "GPU cost reduction techniques",
+    "top_k": 5
+  }
+}
+```
+
+This returns the most relevant chunks by vector similarity, even if the exact words do not match. Combined with the entity graph, this gives the agent two complementary retrieval paths: structured queries over entities and relationships, plus semantic search over raw content.
+
+## Step 4: Querying the graph
+
+Once the agent has built up a graph across many pages, `entity_search` and `entity_query` let it retrieve structured knowledge:
+
+```json
+{
+  "tool": "entity_search",
+  "arguments": {
+    "query": "AI infrastructure",
+    "entity_type": "organization",
+    "limit": 10
+  }
+}
+```
+
+For traversing relationships, `entity_query` supports path queries:
+
+```json
+{
+  "tool": "entity_query",
+  "arguments": {
+    "from": "Jane Chen",
+    "relation_type": "leads",
+    "depth": 2
+  }
+}
+```
+
+This returns not just the companies Jane leads, but also entities connected to those companies, investors, partners, competitors, up to the specified depth. This is where the graph becomes genuinely powerful: the agent can answer questions like "which investors are connected to companies competing with Acme AI?" without revisiting any pages.
+
+## Entity resolution across pages
+
+One subtlety worth highlighting: real web data is messy. The same company might appear as "Acme AI Corp", "Acme AI", and "Acme" across different pages. Wraith's entity resolution handles this through the `entity_merge` tool, which lets the agent consolidate duplicate entities and carry forward all attributes and relationships. The [knowledge graph documentation](/docs/knowledge-graph) covers resolution strategies in detail.
+
+## Putting it all together
+
+The pattern is straightforward. As your agent browses:
+
+1. **Extract** structured data from each page using `browse_extract`
+2. **Add entities** for people, organizations, products, and concepts
+3. **Create relationships** between entities as you discover connections
+4. **Store embeddings** for unstructured content you want to search later
+5. **Query the graph** whenever the agent needs context from previous pages
+
+This turns your agent from a stateless page-visitor into something closer to a researcher with a persistent memory. The knowledge graph grows with every page visited, and every future decision benefits from the accumulated context.
+
+For a full reference of all graph-related tools, see the [knowledge graph docs](/docs/knowledge-graph). To get started with Wraith, follow the [installation guide](/docs/getting-started/installation) and try building a graph from your first browsing session.

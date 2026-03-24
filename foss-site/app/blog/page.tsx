@@ -2,8 +2,8 @@ import Link from 'next/link';
 import { getAllPosts } from '@/lib/blog';
 
 export const metadata = {
-  title: 'Blog — OpenClaw Browser',
-  description: 'News, releases, and deep dives from the OpenClaw project.',
+  title: 'Blog — Wraith Browser',
+  description: 'News, releases, and deep dives from the Wraith project.',
 };
 
 export default function BlogListPage() {
@@ -14,7 +14,7 @@ export default function BlogListPage() {
       <section className="max-w-3xl mx-auto px-6 pt-28 pb-20">
         <h1 className="text-4xl font-bold tracking-tight mb-2">Blog</h1>
         <p className="text-fd-muted-foreground mb-12">
-          News, releases, and deep dives from the OpenClaw project.
+          News, releases, and deep dives from the Wraith project.
         </p>
 
         {posts.length === 0 && (
