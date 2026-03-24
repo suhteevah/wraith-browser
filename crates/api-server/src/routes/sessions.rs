@@ -37,6 +37,8 @@ pub struct EngineActionResult {
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
     pub target_url: Option<String>,
+    pub task_description: Option<String>,
+    pub config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -199,9 +201,15 @@ fn row_to_session(row: &sqlx::postgres::PgRow) -> BrowserSession {
         org_id: row.get("org_id"),
         user_id: row.get("user_id"),
         status: status_from_db(&status_str),
-        target_url: row.get("target_url"),
+        engine_snapshot_url: row.get("engine_snapshot_url"),
+        config_json: row.get("config_json"),
+        task_description: row.get("task_description"),
+        steps_taken: row.get("steps_taken"),
+        urls_visited: row.get("urls_visited"),
+        result: row.get("result"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+        completed_at: row.get("completed_at"),
     }
 }
 
@@ -213,7 +221,9 @@ async fn fetch_session_owned(
 ) -> Result<BrowserSession, AppError> {
     let row = sqlx::query(
         r#"
-        SELECT id, org_id, user_id, status, target_url, created_at, updated_at
+        SELECT id, org_id, user_id, status, engine_snapshot_url, config_json,
+               task_description, steps_taken, urls_visited, result,
+               created_at, updated_at, completed_at
         FROM browser_sessions
         WHERE id = $1
         "#,
@@ -248,17 +258,23 @@ async fn create_session(
     let now = Utc::now();
     let status_str = status_to_db(&SessionStatus::Pending);
 
+    let config = body.config.unwrap_or(serde_json::json!({}));
+    let task_desc = body.task_description.as_deref().unwrap_or("");
+    let urls: Vec<String> = body.target_url.iter().cloned().collect();
+
     sqlx::query(
         r#"
-        INSERT INTO browser_sessions (id, org_id, user_id, status, target_url, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO browser_sessions (id, org_id, user_id, status, config_json, task_description, urls_visited, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         "#,
     )
     .bind(id)
     .bind(claims.org_id)
     .bind(claims.sub)
     .bind(status_str)
-    .bind(body.target_url.as_deref())
+    .bind(&config)
+    .bind(task_desc)
+    .bind(&urls)
     .bind(now)
     .bind(now)
     .execute(&state.db)
@@ -286,7 +302,9 @@ async fn list_sessions(
 
         let rows = sqlx::query(
             r#"
-            SELECT id, org_id, user_id, status, target_url, created_at, updated_at
+            SELECT id, org_id, user_id, status, engine_snapshot_url, config_json,
+               task_description, steps_taken, urls_visited, result,
+               created_at, updated_at, completed_at
             FROM browser_sessions
             WHERE org_id = $1 AND status = $2
             ORDER BY created_at DESC
@@ -318,7 +336,9 @@ async fn list_sessions(
     } else {
         let rows = sqlx::query(
             r#"
-            SELECT id, org_id, user_id, status, target_url, created_at, updated_at
+            SELECT id, org_id, user_id, status, engine_snapshot_url, config_json,
+               task_description, steps_taken, urls_visited, result,
+               created_at, updated_at, completed_at
             FROM browser_sessions
             WHERE org_id = $1
             ORDER BY created_at DESC
@@ -405,18 +425,18 @@ async fn navigate(
 ) -> Result<Json<SnapshotResponse>, AppError> {
     let _session = fetch_session_owned(&state.db, id, claims.org_id).await?;
 
-    // Update stored target_url + mark as running.
+    // Mark as running and append the URL to urls_visited.
     let running = status_to_db(&SessionStatus::Running);
     let now = Utc::now();
     sqlx::query(
         r#"
         UPDATE browser_sessions
-        SET target_url = $1, status = $2, updated_at = $3
+        SET status = $1, urls_visited = array_append(urls_visited, $2), updated_at = $3
         WHERE id = $4
         "#,
     )
-    .bind(&body.url)
     .bind(running)
+    .bind(&body.url)
     .bind(now)
     .bind(id)
     .execute(&state.db)
