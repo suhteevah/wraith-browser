@@ -1,0 +1,54 @@
+{
+  "title": "Your First Scrape",
+  "description": "Navigate to a page, see the structured snapshot, and extract clean markdown content.",
+  "steps": [
+    {
+      "type": "command",
+      "content": "browse_navigate url=\"https://example.com\"",
+      "delay_ms": 800,
+      "annotation": "Navigate to example.com — the engine fetches and renders the page natively"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"url\": \"https://example.com/\",\n  \"title\": \"Example Domain\",\n  \"status\": 200,\n  \"elapsed_ms\": 47\n}",
+      "delay_ms": 600
+    },
+    {
+      "type": "annotation",
+      "content": "47ms to navigate and render. No Chrome process needed — this is the native engine at work.",
+      "delay_ms": 1200
+    },
+    {
+      "type": "command",
+      "content": "browse_snapshot",
+      "delay_ms": 800,
+      "annotation": "Snapshot the page to see interactive elements with @ref IDs"
+    },
+    {
+      "type": "output",
+      "content": "[page snapshot]\n  Example Domain\n  ─────────────\n  This domain is for use in illustrative examples in documents.\n  You may use this domain in literature without prior coordination\n  or asking for permission.\n\n  [@ref=1] <a> \"More information...\" → https://www.iana.org/domains/example",
+      "delay_ms": 800
+    },
+    {
+      "type": "annotation",
+      "content": "Each clickable element gets a unique @ref ID. You can use these to click, fill forms, or interact with the page.",
+      "delay_ms": 1200
+    },
+    {
+      "type": "command",
+      "content": "extract_markdown",
+      "delay_ms": 800,
+      "annotation": "Extract the page content as clean, structured markdown"
+    },
+    {
+      "type": "output",
+      "content": "# Example Domain\n\nThis domain is for use in illustrative examples in documents.\nYou may use this domain in literature without prior coordination\nor asking for permission.\n\n[More information...](https://www.iana.org/domains/example)",
+      "delay_ms": 600
+    },
+    {
+      "type": "annotation",
+      "content": "Clean markdown output — ready for your AI pipeline, RAG system, or any downstream processing.",
+      "delay_ms": 1000
+    }
+  ]
+}

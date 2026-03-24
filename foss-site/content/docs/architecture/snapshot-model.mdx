@@ -1,0 +1,274 @@
+---
+title: Snapshot Model and @ref IDs
+description: How OpenClaw Browser builds DOM snapshots for AI agents, assigns @ref IDs to interactive elements, and enables agents to interact with pages without CSS selectors or XPath.
+---
+
+# Snapshot Model and @ref IDs
+
+OpenClaw does not hand raw HTML to AI agents. Instead, it builds a **DOM snapshot** — a
+compact, flat list of interactive and semantic elements optimized for LLM context windows.
+Each element is assigned a stable `@ref` ID that agents use to click, fill, scroll to, or
+otherwise interact with page elements.
+
+This model is inspired by accessibility tree approaches (like AgentChrome) and spatial DOM
+representations (like browsy-core), but tuned specifically for token efficiency and agent
+usability.
+
+## Why Not Raw HTML?
+
+A typical web page's HTML source is 50,000-200,000 tokens. An LLM with a 128k context
+window would spend most of its budget just reading the page. Worse, most of that HTML is
+boilerplate — `<div>` nesting, CSS classes, tracking scripts, SVG icons — that carries
+zero information for an agent trying to fill out a form or click a link.
+
+The DOM snapshot compresses a page to its **interactive essence**: what can be clicked, what
+can be filled in, what text is visible. A page that is 100,000 tokens as raw HTML becomes
+200-500 tokens as a snapshot.
+
+## The DomSnapshot Structure
+
+Defined in `crates/browser-core/src/dom.rs`:
+
+```rust
+pub struct DomSnapshot {
+    pub url: String,
+    pub title: String,
+    pub elements: Vec<DomElement>,
+    pub meta: PageMeta,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+```
+
+### DomElement
+
+Each element in the snapshot is a flat struct:
+
+```rust
+pub struct DomElement {
+    pub ref_id: u32,            // Unique @ref ID
+    pub role: String,           // Semantic role: link, button, textbox, etc.
+    pub text: Option<String>,   // Visible text content
+    pub href: Option<String>,   // URL for links
+    pub placeholder: Option<String>, // Placeholder for inputs
+    pub value: Option<String>,  // Current value for inputs/selects
+    pub enabled: bool,          // Can the element be interacted with?
+    pub visible: bool,          // Is the element visible?
+    pub aria_label: Option<String>, // ARIA label if present
+    pub selector: String,       // CSS selector path (fallback targeting)
+    pub bounds: Option<(f64, f64, f64, f64)>, // Bounding box (x, y, w, h)
+}
+```
+
+The `ref_id` is a monotonically incrementing integer assigned during snapshot construction.
+It is **stable within a single snapshot** but may change between snapshots if the page
+mutates (elements added or removed). Agents should always take a fresh snapshot after
+performing actions that modify the page.
+
+### PageMeta
+
+Page-level metadata provides situational awareness:
+
+```rust
+pub struct PageMeta {
+    pub page_type: Option<String>,      // "login", "search_results", "article", etc.
+    pub main_content_preview: Option<String>, // First ~500 chars of readable content
+    pub description: Option<String>,    // Open Graph / meta description
+    pub form_count: usize,              // Number of forms on the page
+    pub has_login_form: bool,           // Login form detected?
+    pub has_captcha: bool,              // CAPTCHA detected?
+    pub interactive_element_count: usize,
+    pub overlays: Vec<(String, String, String)>, // (ref_id, type, title)
+}
+```
+
+The `overlays` field is particularly important for agents. When the snapshot detects a
+modal dialog, cookie banner, or other overlay blocking the page, it records the overlay's
+ref ID and type. The agent text rendering places these **at the top of the output** with a
+warning, so the agent sees them first and knows to dismiss them before interacting with the
+underlying page.
+
+## Agent Text Rendering
+
+When the MCP server returns a snapshot to an agent, it calls `to_agent_text()` to produce a
+compact text representation. Here is an example of what an agent actually sees:
+
+```
+Page: "GitHub - openclaw-browser" (https://github.com/example/openclaw-browser)
+
+@e1    [link]        "Code"
+@e2    [link]        "Issues (3)"
+@e3    [link]        "Pull requests (1)"
+@e4    [button]      "Star"
+@e5    [button]      "Fork"
+@e6    [textbox]     "" placeholder="Go to file"
+@e7    [link]        "README.md"
+@e8    [text]        "An AI-agent-first web browser written in Rust"
+```
+
+Each line follows the format: `@eN [role] "text" attributes`. The formatting is
+deliberately aligned into columns so that both humans and LLMs can scan it quickly.
+
+### Form Inputs
+
+For form fields (`textbox`, `email`, `password`, `combobox`, etc.), the rendering shows the
+current **value** if one is set, otherwise the **placeholder**:
+
+```
+@e12   [textbox]     "" placeholder="Email address"
+@e13   [password]    "" placeholder="Password"
+@e14   [button]      "Sign in"
+```
+
+After an agent fills `@e12`:
+
+```
+@e12   [textbox]     "user@example.com" placeholder="Email address" value="user@example.com"
+@e13   [password]    "" placeholder="Password"
+@e14   [button]      "Sign in"
+```
+
+### Disabled Elements
+
+Disabled elements are tagged so agents do not waste actions on them:
+
+```
+@e20   [button]      "Submit" [DISABLED]
+```
+
+### Overlay Detection
+
+When an overlay is present, the snapshot begins with a warning:
+
+```
+⚠ OVERLAY DETECTED: [cookie_banner] "We use cookies" @e1 — interact with this first
+
+Page: "Example Site" (https://example.com)
+
+@e1    [button]      "Accept All"
+@e2    [button]      "Reject All"
+@e3    [link]        "Cookie Settings"
+...
+```
+
+This priming ensures the agent addresses the overlay before trying to interact with
+elements that may be obscured behind it.
+
+## How @ref IDs Work in Actions
+
+Agents interact with page elements by passing `@ref` IDs to browser actions. The MCP tools
+accept the numeric portion of the ref ID (the `42` in `@e42`):
+
+### Clicking
+
+```json
+{
+  "tool": "browse_click",
+  "arguments": { "ref": 4 }
+}
+```
+
+This maps to `BrowserAction::Click { ref_id: 4, force: None }`. The engine looks up element
+`@e4` in the current snapshot, resolves its CSS selector, and performs the click.
+
+### Filling
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": { "ref": 12, "value": "user@example.com" }
+}
+```
+
+This maps to `BrowserAction::Fill { ref_id: 12, text: "user@example.com", force: None }`.
+
+### Selecting
+
+```json
+{
+  "tool": "browse_select",
+  "arguments": { "ref": 15, "value": "California" }
+}
+```
+
+Maps to `BrowserAction::Select { ref_id: 15, value: "California", force: None }`.
+
+### Scrolling To
+
+```json
+{
+  "tool": "browse_scroll_to",
+  "arguments": { "ref": 42 }
+}
+```
+
+Maps to `BrowserAction::ScrollTo { ref_id: 42 }`. Centers the viewport on element `@e42`.
+
+### Force Mode
+
+Some elements may be hidden, disabled, or obscured by overlays. Actions accept a `force`
+flag to bypass pre-checks:
+
+```json
+{
+  "tool": "browse_click",
+  "arguments": { "ref": 7, "force": true }
+}
+```
+
+This is useful when the agent knows an element exists (from a previous snapshot) but it is
+temporarily covered by an animation or positioned off-screen.
+
+## The Snapshot Lifecycle
+
+A typical agent interaction follows this cycle:
+
+```
+1. browse_navigate("https://example.com")
+   └── Engine fetches page, builds DomSnapshot, returns agent text
+
+2. Agent reads snapshot, identifies @e6 as a search input
+
+3. browse_fill(ref=6, value="openai")
+   └── Engine resolves @e6 → CSS selector, sets value
+
+4. browse_click(ref=7)  // "Search" button
+   └── Engine clicks, page navigates
+
+5. browse_snapshot()
+   └── Fresh snapshot of search results page (new @ref IDs)
+
+6. Agent reads new snapshot, identifies result links
+```
+
+**Key rule:** after any action that might change the page (click, navigate, form submit),
+the agent should take a fresh snapshot. The ref IDs from the previous snapshot may no longer
+be valid.
+
+## Token Budgeting
+
+The snapshot includes a token estimate:
+
+```rust
+pub fn estimated_tokens(&self) -> usize {
+    self.to_agent_text().len() / 4
+}
+```
+
+This rough estimate (4 characters per token) lets the agent loop budget context window
+usage. A typical page snapshot consumes 200-800 tokens. Complex pages with many form fields
+might reach 1,500-2,000 tokens. This is still 100x smaller than the raw HTML.
+
+## CSS Selector Fallback
+
+Each `DomElement` carries a `selector` field — the CSS selector path to the element. This
+serves as a fallback targeting mechanism. If an engine cannot resolve an element by ref ID
+(for example, after a partial page re-render), it can fall back to the CSS selector. The
+selector is also useful for debugging — it tells you exactly which DOM node a ref ID points
+to.
+
+## Bounding Boxes
+
+When the engine supports layout (SevroEngine and CdpEngine, but not NativeEngine), each
+element includes a bounding box as `(x, y, width, height)`. This enables spatial reasoning
+— an agent can determine whether an element is above, below, or beside another element.
+NativeEngine sets `bounds` to `None` since it has no layout engine.

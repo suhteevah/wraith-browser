@@ -1,0 +1,267 @@
+---
+title: Engine Architecture
+description: How OpenClaw Browser's three engine backends work — SevroEngine, NativeEngine, and CdpEngine — and how the BrowserEngine trait unifies them behind a single async interface.
+---
+
+# Engine Architecture
+
+OpenClaw Browser is not one browser engine — it is a trait-based abstraction over three
+distinct backends, each optimized for different workloads. Every consumer (MCP server,
+agent loop, CLI) operates through `Arc<tokio::sync::Mutex<dyn BrowserEngine>>` and never
+knows which backend is running underneath.
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  AI Agent (Claude Code, Cursor, etc.)                   │
+│  ↕ MCP Protocol (JSON-RPC over stdio)                   │
+├─────────────────────────────────────────────────────────┤
+│  WraithHandler (crates/mcp-server/src/server.rs)        │
+│  ├── Tool Registry (143 tools)                          │
+│  ├── dispatch_tool() — giant match on tool name         │
+│  ├── Session Manager (named sessions, active routing)   │
+│  └── Dedup Tracker (SQLite-backed)                      │
+├─────────────────────────────────────────────────────────┤
+│  BrowserEngine Trait (crates/browser-core/src/engine.rs)│
+│  ├── SevroEngine  — Servo + QuickJS (default)           │
+│  ├── NativeEngine — Pure HTTP, no JS (~50ms/page)       │
+│  └── CdpEngine    — Chrome DevTools Protocol            │
+├─────────────────────────────────────────────────────────┤
+│  Supporting Crates                                      │
+│  ├── openclaw-identity    — AES-256-GCM encrypted vault │
+│  ├── openclaw-cache       — Knowledge cache + dedup DB  │
+│  ├── openclaw-search      — Web metasearch engine       │
+│  ├── openclaw-content-extract — HTML→Markdown           │
+│  ├── openclaw-scripting   — Rhai script engine          │
+│  └── openclaw-agent-loop  — Autonomous agent execution  │
+└─────────────────────────────────────────────────────────┘
+```
+
+## The BrowserEngine Trait
+
+All three backends implement one async trait defined in `crates/browser-core/src/engine.rs`.
+It is object-safe via `async_trait` and stored behind `Arc<Mutex<dyn BrowserEngine>>`:
+
+```rust
+#[async_trait]
+pub trait BrowserEngine: Send + Sync {
+    async fn navigate(&mut self, url: &str) -> BrowserResult<()>;
+    async fn snapshot(&self) -> BrowserResult<DomSnapshot>;
+    async fn execute_action(&mut self, action: BrowserAction) -> BrowserResult<ActionResult>;
+    async fn eval_js(&self, script: &str) -> BrowserResult<String>;
+    async fn page_source(&self) -> BrowserResult<String>;
+    async fn current_url(&self) -> Option<String>;
+    async fn screenshot(&self) -> BrowserResult<Vec<u8>>;
+    fn capabilities(&self) -> EngineCapabilities;
+    async fn set_cookie_values(&mut self, domain: &str, name: &str, value: &str, path: &str);
+    async fn shutdown(&mut self) -> BrowserResult<()>;
+}
+```
+
+The key design decision: **`snapshot()` takes `&self`** (shared reference) while
+**`navigate()` and `execute_action()` take `&mut self`** (exclusive reference). This means
+snapshots can be taken without blocking ongoing navigation in theory, though in practice
+the outer `Mutex` serializes all access. The split is still meaningful — it documents which
+operations mutate engine state and which are read-only.
+
+## Engine Capabilities
+
+Each engine declares what it can do via `EngineCapabilities`:
+
+```rust
+pub struct EngineCapabilities {
+    pub javascript: bool,       // Can execute JS?
+    pub screenshots: ScreenshotCapability, // None, ViewportOnly, FullPage
+    pub layout: bool,           // Compute bounding boxes?
+    pub cookies: bool,          // Persistent cookie jar?
+    pub stealth: bool,          // Anti-detection evasions?
+}
+```
+
+The MCP server and agent loop use these capabilities to decide which features are available
+at runtime and to produce informative errors when an agent tries to use an unsupported feature.
+
+## The Three Engines
+
+### NativeEngine — Pure HTTP, No JS
+
+**Crate:** `crates/browser-core/src/engine_native.rs`
+
+NativeEngine is the lightest backend. It is a pure-Rust HTTP client that fetches HTML,
+parses the DOM, and builds a `DomSnapshot` — all without spawning a browser process. There
+is no JavaScript engine, no layout engine, and no screenshot capability.
+
+| Property | Value |
+|---|---|
+| Latency | ~50ms per page |
+| JavaScript | No |
+| Screenshots | None |
+| Layout / Bounding Boxes | No |
+| External Dependencies | None |
+| Feature Flag | Always available |
+
+NativeEngine wraps the internal `NativeClient`, which handles HTTP requests, cookie
+persistence, redirect following, and HTML parsing. When the MCP tool `browse_eval_js` is
+called against NativeEngine, it returns a clear error:
+
+```
+JavaScript not available in native engine
+```
+
+This engine excels at static sites, documentation pages, REST API responses, and any page
+where the HTML source contains the content directly. For agent workflows that scrape
+structured data from server-rendered pages, NativeEngine is the fastest option by a wide
+margin.
+
+### SevroEngine — Servo + QuickJS (Default)
+
+**Crate:** `crates/browser-core/src/engine_sevro.rs`
+**Feature flag:** `sevro`
+
+SevroEngine is the default engine and the core of the "no Chrome needed" story. It wraps
+the `sevro-headless` library — a Servo-derived headless browser with QuickJS for JavaScript
+execution. This means OpenClaw can render JS-heavy pages, execute DOM manipulation scripts,
+and handle SPAs, all without Chrome or Chromium installed.
+
+| Property | Value |
+|---|---|
+| JavaScript | Yes (QuickJS) |
+| Screenshots | Viewport only |
+| Layout / Bounding Boxes | Yes |
+| External Dependencies | None (compiled in) |
+| Feature Flag | `sevro` (enabled by default) |
+
+SevroEngine accepts configuration through `SevroConfig`:
+
+```rust
+let mut config = sevro_headless::SevroConfig::default();
+config.proxy_url = Some("socks5://127.0.0.1:9050".into());
+config.flaresolverr_url = Some("http://localhost:8191".into());
+config.fallback_proxy_url = Some("http://backup-proxy:8080".into());
+```
+
+The engine supports proxy routing (including SOCKS5 for Tor), FlareSolverr integration for
+Cloudflare bypass, and fallback proxy chains. All of this is configured at engine creation
+time and transparent to the MCP layer above.
+
+### CdpEngine — Chrome DevTools Protocol
+
+**Crate:** `crates/browser-core/src/engine_cdp.rs`
+**Feature flag:** `cdp`
+
+CdpEngine connects to a real Chrome or Chromium instance via WebSocket using the Chrome
+DevTools Protocol. It launches Chrome as a child process in headless mode with a temporary
+user-data directory:
+
+```
+CdpEngine
+  ├── Chrome child process (--headless=new --remote-debugging-port=…)
+  ├── WebSocket (tokio-tungstenite) → JSON-RPC over CDP
+  └── Temp user-data-dir (cleaned up on shutdown)
+```
+
+| Property | Value |
+|---|---|
+| JavaScript | Yes (V8, full browser) |
+| Screenshots | Full-page |
+| Layout / Bounding Boxes | Yes |
+| External Dependencies | Chrome/Chromium must be installed |
+| Feature Flag | `cdp` |
+
+CdpEngine has several tuned timeouts for reliability:
+
+- **CDP command timeout:** 30 seconds
+- **Post-navigation hydration wait:** 2 seconds (for React/SPA hydration)
+- **Post-click navigation wait:** 500ms
+- **Target reconnect polling:** up to 10 seconds at 200ms intervals
+- **Chrome startup timeout:** 15 seconds
+
+The engine manages WebSocket message routing with atomic command IDs and oneshot channels
+for response correlation — a standard pattern for multiplexed RPC over a single connection.
+
+## The "No Chrome" Story
+
+OpenClaw's default build (`sevro` feature enabled) requires **zero external browser
+dependencies**. The SevroEngine compiles a Servo-derived layout engine and QuickJS
+JavaScript runtime directly into the binary. This is the primary differentiator from tools
+like Puppeteer, Playwright, or browser-use, which all require a Chrome installation.
+
+The practical impact:
+
+- **CI/CD pipelines:** No need to install Chrome in Docker images. The OpenClaw binary is
+  self-contained.
+- **Edge deployments:** Works on minimal Linux containers, ARM devices, and environments
+  where Chrome cannot run.
+- **Startup time:** No browser process launch. The engine initializes in-process.
+- **Resource usage:** No separate Chrome process consuming hundreds of MB of RAM.
+
+The CdpEngine exists as an escape hatch for pages that require full Chrome compatibility —
+complex SPAs, sites with aggressive bot detection that fingerprint the rendering engine, or
+cases where pixel-perfect screenshots are needed. The MCP server supports **automatic CDP
+fallback**: when SevroEngine renders a page with fewer than 5 interactive elements, the
+server detects a likely SPA and re-renders through CdpEngine transparently.
+
+## Binary Size Comparison
+
+The engine you compile determines the binary size:
+
+| Configuration | Approximate Binary Size |
+|---|---|
+| `native` only (no `sevro`, no `cdp`) | ~15 MB |
+| `sevro` (default) | ~45 MB |
+| `sevro` + `cdp` | ~48 MB |
+
+The `sevro` feature adds the Servo layout engine and QuickJS, which accounts for the bulk
+of the size increase. The `cdp` feature adds relatively little code since Chrome itself is
+an external process — the crate only contains the WebSocket client and CDP protocol
+marshaling.
+
+## Engine Selection
+
+Engine selection happens at startup through `create_engine_with_options()`:
+
+```rust
+pub async fn create_engine_with_options(
+    name: &str,
+    opts: EngineOptions,
+) -> BrowserResult<Arc<Mutex<dyn BrowserEngine>>> {
+    match name {
+        "native" => Ok(Arc::new(Mutex::new(NativeEngine::new()))),
+        "sevro" | "native-js" => { /* SevroEngine with config */ },
+        "cdp" | "chrome" => { /* CdpEngine::new().await */ },
+        "auto" => { /* Sevro if available, else Native */ },
+        other => Err(BrowserError::EngineError(format!("Unknown engine: '{}'", other))),
+    }
+}
+```
+
+The `"auto"` mode is what the MCP server uses by default. It selects SevroEngine if the
+binary was compiled with the `sevro` feature, and falls back to NativeEngine otherwise. This
+means the same MCP server code works regardless of which features were enabled at compile
+time.
+
+## Concurrency Model
+
+OpenClaw uses **Tokio's async runtime** with a single `Arc<Mutex<dyn BrowserEngine>>`
+per session. This means:
+
+1. **One page at a time per session.** The Mutex serializes all engine operations within a
+   session. Navigate, snapshot, click — they queue behind the lock.
+
+2. **Multiple sessions in parallel.** When CDP is enabled, the `WraithHandler` maintains a
+   `HashMap<String, Arc<Mutex<dyn BrowserEngine>>>` of named sessions. Each session has its
+   own engine instance and its own Mutex, so sessions run concurrently.
+
+3. **No blocking the Tokio runtime.** NativeEngine and SevroEngine wrap synchronous
+   operations in async (the `async_trait` methods return immediately since the actual work
+   is CPU-bound, not I/O-bound). CdpEngine is genuinely async — it awaits WebSocket
+   responses from Chrome.
+
+4. **Snapshot reads do not block navigations in different sessions.** Since each session has
+   its own `Arc<Mutex<...>>`, a long-running CDP navigation in session A does not block a
+   snapshot in session B.
+
+The session model means an agent can maintain a "native" session for fast static-page
+scraping and a "cdp" session for JS-heavy SPAs simultaneously, switching between them with
+`browse_session_switch`.

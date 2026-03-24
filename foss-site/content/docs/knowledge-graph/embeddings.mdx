@@ -1,0 +1,197 @@
+---
+title: Embeddings & Semantic Search
+description: Vector embeddings for semantic similarity search across all cached pages and documents
+---
+
+## What Embeddings Do
+
+The page cache gives you keyword-based full-text search. Embeddings add **semantic search** -- finding content by meaning rather than exact words.
+
+When you upsert an embedding, the text is converted into a high-dimensional vector. When you search, your query text is also vectorized, and the system finds the cached content whose vectors are closest in cosine similarity. This means a search for "how to handle errors in async code" can match a page titled "Tokio error handling patterns" even though the words differ.
+
+### When to use embeddings vs. cache_search
+
+| Use case | Tool |
+|----------|------|
+| Find pages containing a specific term or phrase | `cache_search` |
+| Find pages about a concept, even if they use different words | `embedding_search` |
+| Find pages similar to one you already have | `embedding_search` with that page's content |
+
+---
+
+## embedding_upsert
+
+Store a text embedding for a source document. The text is vectorized internally and stored alongside the source ID so it can be retrieved by similarity search later.
+
+If a record with the same `source_id` already exists, it is replaced (upsert semantics).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `source_id` | string | yes | Unique identifier for the source (typically a URL or document ID) |
+| `content` | string | yes | Text content to embed |
+
+**Example request:**
+
+```json
+{
+  "tool": "embedding_upsert",
+  "arguments": {
+    "source_id": "https://docs.rs/tokio/latest/tokio/",
+    "content": "Tokio is an asynchronous runtime for the Rust programming language. It provides the building blocks needed for writing networking applications. It gives the flexibility to target a wide range of systems, from large servers with dozens of cores to small embedded devices."
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "source_id": "https://docs.rs/tokio/latest/tokio/",
+  "dimensions": 384,
+  "stored": true
+}
+```
+
+### Automatic vs. manual embedding
+
+The cache automatically stores page text when you browse. However, embeddings must be explicitly created with `embedding_upsert`. This gives you control over what gets embedded and how the content is chunked.
+
+Typical workflows:
+
+- **Embed full pages:** After visiting a page, call `embedding_upsert` with the URL as `source_id` and the extracted markdown as `content`.
+- **Embed chunks:** For long pages, split the content into sections and upsert each chunk with a unique `source_id` (e.g., `"https://example.com/docs#section-3"`).
+- **Embed summaries:** Upsert an agent-generated summary for better semantic matching.
+
+---
+
+## embedding_search
+
+Semantic similarity search across all stored embeddings. The query text is vectorized and compared against all stored vectors using cosine similarity.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `text` | string | yes | -- | Text to find semantically similar content for |
+| `top_k` | integer | no | `5` | Maximum number of results |
+
+**Example request:**
+
+```json
+{
+  "tool": "embedding_search",
+  "arguments": {
+    "text": "handling errors in concurrent network requests",
+    "top_k": 3
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "results": [
+    {
+      "source_id": "https://docs.rs/tokio/latest/tokio/",
+      "similarity": 0.87,
+      "snippet": "Tokio is an asynchronous runtime for the Rust programming language..."
+    },
+    {
+      "source_id": "https://docs.rs/anyhow/latest/anyhow/",
+      "similarity": 0.79,
+      "snippet": "This library provides anyhow::Error, a trait object based error type..."
+    },
+    {
+      "source_id": "https://rust-lang.github.io/async-book/07_workarounds/03_err_in_async_blocks.html",
+      "similarity": 0.74,
+      "snippet": "Error handling in async blocks currently requires..."
+    }
+  ],
+  "query": "handling errors in concurrent network requests",
+  "total": 3
+}
+```
+
+Note that none of the matched pages contain the exact phrase "handling errors in concurrent network requests." The embedding model captured the semantic relationship between the query and the stored content.
+
+### Combining with cache_get
+
+`embedding_search` returns source IDs and snippets. To get the full cached content for a result, pass the `source_id` (which is typically a URL) to `cache_get`:
+
+```json
+{
+  "tool": "cache_get",
+  "arguments": {
+    "url": "https://docs.rs/tokio/latest/tokio/"
+  }
+}
+```
+
+---
+
+## Building a research workflow
+
+A common pattern for research tasks is to combine browsing, caching, embedding, and search in sequence:
+
+### Step 1: Browse and cache pages
+
+```json
+{
+  "tool": "browse_navigate",
+  "arguments": { "url": "https://docs.rs/tokio/latest/tokio/" }
+}
+```
+
+The page is automatically cached in SQLite and indexed in Tantivy.
+
+### Step 2: Embed the content
+
+```json
+{
+  "tool": "embedding_upsert",
+  "arguments": {
+    "source_id": "https://docs.rs/tokio/latest/tokio/",
+    "content": "Tokio is an asynchronous runtime for Rust..."
+  }
+}
+```
+
+### Step 3: Repeat for more pages
+
+Browse and embed several related pages to build up the vector store.
+
+### Step 4: Search semantically
+
+```json
+{
+  "tool": "embedding_search",
+  "arguments": {
+    "text": "best practices for spawning background tasks",
+    "top_k": 5
+  }
+}
+```
+
+### Step 5: Retrieve full content for top results
+
+```json
+{
+  "tool": "cache_get",
+  "arguments": { "url": "https://docs.rs/tokio/latest/tokio/task/index.html" }
+}
+```
+
+This workflow builds a personal knowledge base that gets smarter with every page visited.
+
+---
+
+## Technical details
+
+- **Model:** Embeddings are computed locally using a lightweight sentence transformer model. No external API calls are made.
+- **Dimensions:** 384-dimensional vectors (MiniLM-L6-v2 equivalent).
+- **Storage:** Vectors are stored in the knowledge store alongside the source metadata.
+- **Similarity metric:** Cosine similarity, range 0.0 (unrelated) to 1.0 (identical).
+- **Performance:** Embedding a page takes ~10ms. Searching 10,000 vectors takes ~5ms.

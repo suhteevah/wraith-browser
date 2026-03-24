@@ -1,0 +1,136 @@
+---
+title: Automation
+description: Parallel browsing, playbook templates, deduplication tracking, workflows, and DAG orchestration
+---
+
+Automation tools handle multi-page and multi-step operations. Use swarm tools for local parallel browsing, playbooks for repeatable automation templates, deduplication tracking to avoid processing the same URL twice, workflows for recording and replaying browser sessions, and DAGs for complex task orchestration with dependencies.
+
+## Parallel Browsing
+
+Local parallelism tools that visit multiple URLs concurrently using separate browser instances on your machine.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `swarm_fan_out` | Visit multiple URLs in parallel and collect results | `urls` (required), `max_concurrent` |
+| `swarm_collect` | Collect results from a parallel browsing operation | *(none)* |
+
+## Playbook Templates
+
+Pre-authored automation templates for common multi-step flows. Playbooks are defined in YAML and support variables, conditionals, loops, and error handling.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `swarm_run_playbook` | Execute a YAML playbook or built-in template | `playbook` (required), `variables`, `url` |
+| `swarm_list_playbooks` | List all available playbook templates | *(none)* |
+| `swarm_playbook_status` | Check progress of a running playbook | *(none)* |
+
+Built-in templates:
+- `greenhouse-apply` -- Greenhouse application flow
+- `ashby-apply` -- Ashby application flow
+- `lever-apply` -- Lever application flow
+- `indeed-apply` -- Indeed Easy Apply flow
+
+Playbook step types include: Navigate, Click, Fill, Select, Wait, Extract, Verify, Screenshot, CustomDropdown, UploadFile, SubmitForm, EvalJs, Conditional (`if_url_contains`, `if_variable`), and Repeat (for-each loops). Each step can define error handling: Abort, Skip, Retry (with count/delay), or Screenshot.
+
+## Deduplication & Verification
+
+SQLite-backed tracking to avoid processing the same URL twice. Records submissions with metadata and verifies success.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `swarm_dedup_check` | Check if a URL has already been processed | `url` (required) |
+| `swarm_dedup_record` | Record that a submission was completed | `url` (required), `company`, `title`, `platform` |
+| `swarm_dedup_stats` | Show aggregate deduplication statistics | *(none)* |
+| `swarm_verify_submission` | Check page for success/error indicators | *(none)* |
+
+## Workflow Recording & Replay
+
+Record multi-step browser sessions and replay them with variable substitution.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `workflow_start_recording` | Begin recording a replayable workflow | `name` (required) |
+| `workflow_stop_recording` | Stop recording and save the workflow | `description` (required) |
+| `workflow_replay` | Replay a workflow with variable substitution | `name` (required), `variables` |
+| `workflow_list` | List all saved workflows | *(none)* |
+
+## DAG Orchestration
+
+Declarative task graphs with dependency management for complex parallel execution.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `dag_create` | Create a new task DAG | `name` (required) |
+| `dag_add_task` | Add a task node | `task_id` (required), `description` (required), `action_type` (required), `target` |
+| `dag_add_dependency` | Add a dependency edge between tasks | `task_id` (required), `depends_on` (required) |
+| `dag_ready` | Get tasks ready to execute (all dependencies met) | *(none)* |
+| `dag_complete` | Mark a task as completed | `task_id` (required), `result` (required) |
+| `dag_progress` | Show DAG completion progress | *(none)* |
+| `dag_visualize` | Generate a Mermaid diagram of the DAG | *(none)* |
+
+## Examples
+
+### Fan out across multiple pages
+
+```json
+{
+  "tool": "swarm_fan_out",
+  "arguments": {
+    "urls": [
+      "https://example.com/page-1",
+      "https://example.com/page-2",
+      "https://example.com/page-3",
+      "https://example.com/page-4"
+    ],
+    "max_concurrent": 4
+  }
+}
+```
+
+Visits all URLs in parallel using separate local browser instances, then use `swarm_collect` to gather the results. The `max_concurrent` parameter controls how many pages are fetched simultaneously.
+
+### Run a playbook template
+
+```json
+{
+  "tool": "swarm_run_playbook",
+  "arguments": {
+    "playbook": "greenhouse-apply",
+    "variables": {
+      "resume_path": "/home/user/resume.pdf",
+      "first_name": "Jane",
+      "last_name": "Doe",
+      "email": "jane@example.com"
+    },
+    "url": "https://boards.greenhouse.io/company/jobs/12345"
+  }
+}
+```
+
+Executes the automation template with variable substitution. Check progress with `swarm_playbook_status`.
+
+### Record and replay a workflow
+
+```json
+{
+  "tool": "workflow_start_recording",
+  "arguments": {
+    "name": "search-and-extract"
+  }
+}
+```
+
+All subsequent `browse_*` tool calls are captured as workflow steps. Stop recording, then replay later with different variables:
+
+```json
+{
+  "tool": "workflow_replay",
+  "arguments": {
+    "name": "search-and-extract",
+    "variables": {
+      "query": "Rust Developer",
+      "location": "Remote"
+    }
+  }
+}
+```

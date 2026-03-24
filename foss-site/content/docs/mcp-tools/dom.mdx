@@ -1,0 +1,44 @@
+---
+title: DOM Manipulation
+description: CSS selector queries, attribute reading/writing, and element focus tools
+---
+
+DOM manipulation tools provide low-level access to the page structure. Use `dom_query_selector` to find elements by CSS selector, read or write HTML attributes, and programmatically focus elements. These complement the higher-level interaction tools when you need precise DOM control.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `dom_query_selector` | Run a CSS selector query against the current page | `selector` (required) |
+| `dom_get_attribute` | Read an HTML attribute from an element by @ref ID | `ref_id` (required), `name` (required) |
+| `dom_set_attribute` | Set an HTML attribute on an element by @ref ID | `ref_id` (required), `name` (required), `value` (required) |
+| `dom_focus` | Focus an element by @ref ID | `ref_id` (required) |
+
+## Examples
+
+### Query elements by CSS selector
+
+```json
+{
+  "tool": "dom_query_selector",
+  "arguments": {
+    "selector": "a[href*='apply']"
+  }
+}
+```
+
+Returns all matching elements with their @ref IDs. Useful for finding elements that do not appear in the interactive snapshot, or for bulk operations across many matching elements.
+
+### Read a data attribute
+
+```json
+{
+  "tool": "dom_get_attribute",
+  "arguments": {
+    "ref_id": 7,
+    "name": "data-job-id"
+  }
+}
+```
+
+Reads any HTML attribute: `href`, `class`, `data-*`, `aria-label`, `value`, etc. Use this when the snapshot text does not contain the information you need (e.g., extracting hidden IDs or URLs from elements).

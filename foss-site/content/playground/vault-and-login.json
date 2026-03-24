@@ -1,0 +1,71 @@
+{
+  "title": "Vault & Login",
+  "description": "Store credentials securely in the local vault, then use them to log in to a site.",
+  "steps": [
+    {
+      "type": "annotation",
+      "content": "The vault stores credentials locally using OS-level encryption (macOS Keychain, Windows DPAPI, Linux secret-service). Nothing leaves your machine.",
+      "delay_ms": 1500
+    },
+    {
+      "type": "command",
+      "content": "browse_vault_store domain=\"demo.example.com\" username=\"alice\" password=\"s3cure-p@ss\"",
+      "delay_ms": 800,
+      "annotation": "Store credentials in the encrypted local vault"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"domain\": \"demo.example.com\",\n  \"username\": \"alice\",\n  \"stored\": true,\n  \"encryption\": \"os-keychain\"\n}",
+      "delay_ms": 600
+    },
+    {
+      "type": "command",
+      "content": "browse_navigate url=\"https://demo.example.com/login\"",
+      "delay_ms": 800,
+      "annotation": "Navigate to the login page"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"url\": \"https://demo.example.com/login\",\n  \"title\": \"Sign In — Demo App\",\n  \"status\": 200,\n  \"elapsed_ms\": 44\n}",
+      "delay_ms": 500
+    },
+    {
+      "type": "command",
+      "content": "browse_snapshot",
+      "delay_ms": 600,
+      "annotation": "See the login form fields"
+    },
+    {
+      "type": "output",
+      "content": "[page snapshot]\n  Sign In — Demo App\n  ──────────────────\n  Email:     [@ref=1] <input name=\"email\" type=\"email\">\n  Password:  [@ref=2] <input name=\"password\" type=\"password\">\n  [@ref=3] <input type=\"checkbox\"> Remember me\n  [@ref=4] <button type=\"submit\"> Sign in",
+      "delay_ms": 600
+    },
+    {
+      "type": "command",
+      "content": "browse_login domain=\"demo.example.com\"",
+      "delay_ms": 1000,
+      "annotation": "Auto-login using vault credentials — detects fields and fills them"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"domain\": \"demo.example.com\",\n  \"username\": \"alice\",\n  \"fields_filled\": [\n    { \"ref\": 1, \"field\": \"email\", \"value\": \"alice\" },\n    { \"ref\": 2, \"field\": \"password\", \"value\": \"••••••••••\" }\n  ],\n  \"submitted\": true,\n  \"navigated_to\": \"https://demo.example.com/dashboard\",\n  \"status\": 200\n}",
+      "delay_ms": 800
+    },
+    {
+      "type": "command",
+      "content": "browse_snapshot",
+      "delay_ms": 600,
+      "annotation": "Verify we are now on the authenticated dashboard"
+    },
+    {
+      "type": "output",
+      "content": "[page snapshot]\n  Dashboard — Demo App\n  ────────────────────\n  Welcome back, Alice!\n\n  [@ref=1] <a> \"My Projects\" → /projects\n  [@ref=2] <a> \"Settings\" → /settings\n  [@ref=3] <a> \"Team\" → /team\n  [@ref=4] <button> Sign out",
+      "delay_ms": 600
+    },
+    {
+      "type": "annotation",
+      "content": "Logged in successfully. The vault auto-detected the email and password fields, filled them from stored credentials, and submitted the form — all in one command.",
+      "delay_ms": 1000
+    }
+  ]
+}

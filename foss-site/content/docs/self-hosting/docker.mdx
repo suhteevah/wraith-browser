@@ -1,0 +1,172 @@
+---
+title: Docker Deployment
+description: Run OpenClaw Browser as a Docker container — single binary or with Redis for caching
+---
+
+## Quick Start (Single Binary)
+
+The fastest way to run OpenClaw Browser is a single Docker container. No external
+dependencies are required.
+
+```bash
+docker pull openclaw/browser:latest
+```
+
+### Run in stdio mode (MCP clients)
+
+Most MCP clients (Claude Desktop, Claude Code) communicate over stdin/stdout.
+Mount your config directory so the knowledge cache and vault persist between runs:
+
+```bash
+docker run --rm -i \
+  -v ~/.openclaw:/root/.openclaw \
+  openclaw/browser:latest \
+  serve --transport stdio
+```
+
+### Run in HTTP mode (remote access)
+
+To expose the MCP server over HTTP for remote clients:
+
+```bash
+docker run -d \
+  --name openclaw \
+  -p 3100:3100 \
+  -v ~/.openclaw:/root/.openclaw \
+  -e RUST_LOG="info" \
+  openclaw/browser:latest \
+  serve --transport sse --host 0.0.0.0 --port 3100
+```
+
+## Build from Source
+
+If you prefer to build the image yourself:
+
+```bash
+git clone https://github.com/nicholasgasior/openclaw-browser.git
+cd openclaw-browser
+docker build -t openclaw-browser:latest -f deploy/Dockerfile .
+```
+
+The multi-stage Dockerfile uses `rust:1.78-slim` for the build stage and
+`debian:bookworm-slim` for the runtime image. The final image contains only the
+compiled binary, CA certificates, and OpenSSL -- roughly 30 MB.
+
+## Docker Compose (with Redis)
+
+Redis is optional. It enables persistent caching of page snapshots and extracted
+content, which can significantly speed up repeated visits and reduce bandwidth.
+
+Create a `docker-compose.yml`:
+
+```yaml
+services:
+  openclaw:
+    image: openclaw/browser:latest
+    ports:
+      - "3100:3100"
+    environment:
+      RUST_LOG: "info"
+      REDIS_URL: "redis://redis:6379"
+    command: ["./openclaw-browser", "serve", "--transport", "sse", "--host", "0.0.0.0", "--port", "3100"]
+    volumes:
+      - ~/.openclaw:/root/.openclaw
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redisdata:
+```
+
+Start the stack:
+
+```bash
+docker compose up -d
+```
+
+Tear down and remove volumes:
+
+```bash
+docker compose down -v
+```
+
+## Environment Variables
+
+Pass environment variables with `-e` flags or in the `environment` block of your
+Compose file. See the full list in the
+[Configuration](/docs/self-hosting/configuration) reference.
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `RUST_LOG` | Log level filter | `openclaw=info,tower_http=warn` |
+| `REDIS_URL` | Redis connection string (enables caching) | _(none)_ |
+| `WRAITH_PROXY` | HTTP/SOCKS5 proxy URL | _(none)_ |
+| `WRAITH_FLARESOLVERR` | FlareSolverr endpoint for challenge pages | _(none)_ |
+
+## Health Check
+
+Verify the server is running:
+
+```bash
+# HTTP mode — curl the SSE endpoint
+curl http://localhost:3100/sse
+
+# stdio mode — send an MCP initialize request
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' \
+  | docker run --rm -i openclaw/browser:latest serve --transport stdio
+```
+
+## Reverse Proxy
+
+For production deployments, place OpenClaw behind nginx or Caddy for TLS
+termination:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name openclaw.example.com;
+
+    ssl_certificate     /etc/ssl/certs/openclaw.pem;
+    ssl_certificate_key /etc/ssl/private/openclaw.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE requires these settings
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 86400s;
+    }
+}
+```
+
+## Data Directory
+
+OpenClaw stores local state in `~/.openclaw/`:
+
+| Path | Contents |
+|---|---|
+| `~/.openclaw/vault.db` | Encrypted credential vault |
+| `~/.openclaw/knowledge/` | Page cache and knowledge store |
+| `~/.openclaw/fingerprints/` | Saved browser fingerprint profiles |
+
+Mount this directory as a volume to persist data across container restarts.

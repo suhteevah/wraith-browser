@@ -1,0 +1,77 @@
+---
+title: Navigation
+description: Core browsing tools -- navigate, scroll, wait, tabs, history, and engine config
+---
+
+Navigation tools handle page loading, scrolling, waiting, and browser state inspection. These are the foundation of every browsing session. The native Sevro engine handles most pages at ~100ms; use `browse_navigate_cdp` for JavaScript-heavy SPAs.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `browse_navigate` | Navigate to a URL using the native engine | `url` (required), `wait_for_load` |
+| `browse_navigate_cdp` | Navigate using Chrome DevTools Protocol for JS-heavy pages | `url` (required), `wait_for_load` |
+| `browse_back` | Go back in browser history | *(none)* |
+| `browse_forward` | Go forward in browser history | *(none)* |
+| `browse_reload` | Reload the current page | *(none)* |
+| `browse_scroll` | Scroll the page in a direction | `direction` (required), `amount` |
+| `browse_scroll_to` | Scroll to center a specific element | `ref_id` (required) |
+| `browse_wait` | Wait for a CSS selector or fixed time | `selector`, `ms` |
+| `browse_wait_navigation` | Wait for navigation to complete after a click | `timeout_ms` |
+| `browse_tabs` | Show current page URL and title | *(none)* |
+| `browse_config` | Show engine configuration (type, proxy, TLS) | *(none)* |
+| `browse_engine_status` | Check which engine is active (native or CDP) | *(none)* |
+| `browse_enter_iframe` | Switch context into a cross-origin iframe | `ref_id`, `selector` |
+| `browse_dismiss_overlay` | Auto-dismiss a modal, popup, or cookie banner | `ref_id` |
+
+## Examples
+
+### Navigate to a page
+
+```json
+{
+  "tool": "browse_navigate",
+  "arguments": {
+    "url": "https://example.com"
+  }
+}
+```
+
+Returns a DOM snapshot with interactive elements tagged as `@e1`, `@e2`, etc.:
+
+```
+Page title: Example
+URL: https://example.com
+
+Interactive elements:
+@e1 [link] "Home" href=/
+@e2 [input:text] placeholder="Search..."
+@e3 [button] "Submit"
+```
+
+### Wait for dynamic content
+
+```json
+{
+  "tool": "browse_wait",
+  "arguments": {
+    "selector": "#results",
+    "ms": 5000
+  }
+}
+```
+
+If `selector` is provided, waits up to `ms` milliseconds for that CSS selector to appear in the DOM. Without a selector, waits for a fixed duration.
+
+### Navigate a JavaScript SPA with CDP
+
+```json
+{
+  "tool": "browse_navigate_cdp",
+  "arguments": {
+    "url": "https://app.example.com/dashboard"
+  }
+}
+```
+
+Launches Chrome via DevTools Protocol for full V8 JavaScript execution. All subsequent `browse_*` commands route through CDP until you call `browse_navigate` (native) again. Requires the `cdp` feature flag and Chrome installed.

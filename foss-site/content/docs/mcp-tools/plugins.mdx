@@ -1,0 +1,69 @@
+---
+title: Plugins & Scripting
+description: Extend OpenClaw with WASM plugins and Rhai userscripts
+---
+
+OpenClaw Browser supports two extension mechanisms: WASM plugins for compiled extensions (requires the `wasm` feature flag and Wasmtime), and Rhai userscripts for lightweight automation written in a simple scripting language. Both can be loaded at runtime and executed against the current page.
+
+## WASM Plugins
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `plugin_register` | Register a WASM plugin | `name` (required), `wasm_path` (required), `description`, `domains` |
+| `plugin_execute` | Execute a registered WASM plugin | `name` (required), `input` |
+| `plugin_list` | List all registered WASM plugins | *(none)* |
+| `plugin_remove` | Unregister a WASM plugin | `name` (required) |
+
+## Rhai Scripts
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `script_load` | Load a Rhai userscript | `name` (required), `source` (required), `trigger` |
+| `script_list` | List all loaded Rhai userscripts | *(none)* |
+| `script_run` | Execute a loaded script by name | `name` (required) |
+
+## Examples
+
+### Register and run a WASM plugin
+
+```json
+{
+  "tool": "plugin_register",
+  "arguments": {
+    "name": "price-tracker",
+    "wasm_path": "/home/user/plugins/price-tracker.wasm",
+    "description": "Extract and compare product prices",
+    "domains": ["amazon.com", "ebay.com"]
+  }
+}
+```
+
+```json
+{
+  "tool": "plugin_execute",
+  "arguments": {
+    "name": "price-tracker",
+    "input": { "product_url": "https://amazon.com/dp/B0123" }
+  }
+}
+```
+
+Plugins run in a sandboxed Wasmtime environment. The `domains` parameter restricts which sites the plugin can operate on.
+
+### Load a Rhai userscript
+
+```json
+{
+  "tool": "script_load",
+  "arguments": {
+    "name": "highlight-links",
+    "source": "let links = query_all(\"a\"); for link in links { set_style(link, \"border\", \"2px solid red\"); }",
+    "trigger": "always"
+  }
+}
+```
+
+The `trigger` parameter controls when the script runs:
+- `"always"` -- runs on every page navigation
+- `"manual"` -- runs only when you call `script_run`
+- A URL substring (e.g., `"github.com"`) -- runs automatically when navigating to matching pages

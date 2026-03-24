@@ -1,0 +1,137 @@
+---
+title: Configuration
+description: Environment variables and runtime settings for OpenClaw Browser
+---
+
+OpenClaw Browser is configured through a combination of CLI flags and environment
+variables. Environment variables are read at startup and cannot be changed without
+restarting the process.
+
+## Logging
+
+| Variable | Description | Default |
+|---|---|---|
+| `RUST_LOG` | Standard Rust log filter. Controls verbosity for all crates. | `openclaw=info,tower_http=warn` |
+
+The `--verbose` CLI flag sets the filter to `openclaw=trace,tower_http=debug`,
+but `RUST_LOG` takes precedence if set.
+
+Examples:
+
+```bash
+# Minimal output
+RUST_LOG=warn openclaw-browser serve
+
+# Trace-level for the browser engine only
+RUST_LOG="openclaw_browser_core=trace,openclaw=info" openclaw-browser serve
+
+# Debug everything
+RUST_LOG=debug openclaw-browser serve --verbose
+```
+
+## Browser Engine
+
+| Variable / Flag | Description | Default |
+|---|---|---|
+| `--engine` (CLI flag) | Engine selection: `auto`, `sevro`, `native` | `auto` |
+| `WRAITH_CDP_CHROME` | Path to a Chrome/Chromium binary for CDP engine | _(auto-detected)_ |
+| `WRAITH_CDP_AUTO` | Enable automatic CDP fallback (`true`/`false`) | `false` |
+| `CHROME_PATH` | Alternative Chrome path (checked during CDP discovery) | _(auto-detected)_ |
+
+Engine modes:
+
+- **`auto`** (default) -- tries the Sevro engine first, falls back to native.
+- **`sevro`** -- Sevro headless engine (Rust-native, no Chrome dependency, fastest).
+- **`native`** -- Native HTTP+DOM engine (pure Rust, no JS execution).
+
+When CDP features are enabled and a Chrome binary is found, CDP-backed sessions
+are available for sites that require full JavaScript rendering.
+
+## Network and Proxy
+
+| Variable | Description | Default |
+|---|---|---|
+| `--proxy` (CLI flag) | HTTP or SOCKS5 proxy URL | _(none)_ |
+| `WRAITH_PROXY` | Same as `--proxy`, used when running as MCP server | _(none)_ |
+| `--fallback-proxy` (CLI flag) | Fallback proxy for access-restricted sites | _(none)_ |
+| `WRAITH_FALLBACK_PROXY` | Same as `--fallback-proxy` | _(none)_ |
+| `--flaresolverr` (CLI flag) | FlareSolverr endpoint for challenge bypass | _(none)_ |
+| `WRAITH_FLARESOLVERR` | Same as `--flaresolverr` | _(none)_ |
+
+CLI flags take precedence over environment variables. Proxy format examples:
+
+```
+http://user:pass@proxy.example.com:8080
+socks5://127.0.0.1:1080
+```
+
+## Caching
+
+| Variable | Description | Default |
+|---|---|---|
+| `REDIS_URL` | Redis connection string. Enables persistent cache. | _(none, caching disabled)_ |
+
+Without Redis, OpenClaw uses an in-memory LRU cache that is lost when the process
+exits. The knowledge store at `~/.openclaw/knowledge/` provides a local on-disk
+cache independent of Redis.
+
+## Agent Loop (Task Command)
+
+These variables configure the autonomous `task` subcommand.
+
+| Variable | Description | Default |
+|---|---|---|
+| `OPENCLAW_LLM` | LLM backend: `claude` or `ollama` | `claude` |
+| `OPENCLAW_MODEL` | Model name override | `claude` default model / `llama3.1` for Ollama |
+| `ANTHROPIC_API_KEY` | Anthropic API key (required for Claude backend) | _(none)_ |
+| `CLAUDE_API_KEY` | Alias for `ANTHROPIC_API_KEY` | _(none)_ |
+| `OLLAMA_URL` | Ollama API base URL | `http://localhost:11434` |
+
+To use a local Ollama model instead of Claude:
+
+```bash
+export OPENCLAW_LLM=ollama
+export OPENCLAW_MODEL=llama3.1
+openclaw-browser task "Find the latest Rust release notes" --url https://blog.rust-lang.org
+```
+
+## Search Providers
+
+| Variable | Description | Default |
+|---|---|---|
+| `SEARXNG_URL` | Custom SearXNG instance URL | _(uses built-in instance list)_ |
+| `BRAVE_SEARCH_API_KEY` | Brave Search API key | _(none)_ |
+| `RAPIDAPI_KEY` | RapidAPI key (for additional search backends) | _(none)_ |
+| `ADZUNA_APP_ID` | Adzuna job search app ID | _(none)_ |
+| `ADZUNA_APP_KEY` | Adzuna job search app key | _(none)_ |
+
+Search works out of the box via SearXNG. API keys for Brave, RapidAPI, and Adzuna
+are optional and enable additional result sources.
+
+## CAPTCHA Solving
+
+| Variable | Description | Default |
+|---|---|---|
+| `TWOCAPTCHA_API_KEY` | 2Captcha API key for automated CAPTCHA solving | _(none)_ |
+
+## Webhooks
+
+| Variable | Description | Default |
+|---|---|---|
+| `WRAITH_WEBHOOK_URL` | Webhook endpoint for task completion events | _(none)_ |
+| `WRAITH_WEBHOOK_SECRET` | HMAC secret for webhook signature verification | _(none)_ |
+| `WRAITH_WEBHOOK_FORMAT` | Payload format: `json` or `slack` | `json` |
+
+## Data Directories
+
+OpenClaw stores state in `~/.openclaw/` by default. The directory is created
+automatically on first use.
+
+| Path | Purpose |
+|---|---|
+| `~/.openclaw/vault.db` | Encrypted credential vault (AES-256-GCM) |
+| `~/.openclaw/knowledge/` | On-disk page cache and knowledge store |
+| `~/.openclaw/fingerprints/` | Browser fingerprint profiles (JSON) |
+
+There is no configuration variable to change these paths. To relocate them,
+use symlinks or bind mounts.

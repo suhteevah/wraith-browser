@@ -1,0 +1,465 @@
+---
+title: Form Filling
+description: Snapshot a page, identify form fields by @ref ID, fill text inputs, select dropdowns, upload files, and submit forms
+---
+
+## Overview
+
+OpenClaw Browser maps every interactive element on a page to a stable `@ref` ID. Form filling is a matter of reading the snapshot, identifying the right `@ref` numbers, and calling `browse_fill`, `browse_select`, or `browse_upload_file` for each field. No CSS selectors, no XPath, no fragile DOM traversal.
+
+This guide covers text inputs, textareas, radio buttons, checkboxes, native dropdowns, custom JavaScript dropdowns, file uploads, and form submission.
+
+---
+
+## Step 1: Navigate and snapshot the form
+
+Start by navigating to the page that contains the form:
+
+```json
+{
+  "tool": "browse_navigate",
+  "arguments": {
+    "url": "https://jobs.example.com/apply"
+  }
+}
+```
+
+The response includes the DOM snapshot. Look for form elements:
+
+```
+Page title: Apply — Software Engineer
+URL: https://jobs.example.com/apply
+
+Interactive elements:
+@e1  [input:text]     name="first_name" placeholder="First name"
+@e2  [input:text]     name="last_name" placeholder="Last name"
+@e3  [input:email]    name="email" placeholder="Email address"
+@e4  [input:tel]      name="phone" placeholder="Phone number"
+@e5  [select]         name="country" options=["United States", "Canada", ...]
+@e6  [textarea]       name="cover_letter" placeholder="Cover letter (optional)"
+@e7  [input:file]     name="resume"
+@e8  [input:checkbox] name="terms" label="I agree to the terms"
+@e9  [button]         "Submit Application"
+```
+
+If you need a fresh snapshot without re-navigating:
+
+```json
+{
+  "tool": "browse_snapshot"
+}
+```
+
+---
+
+## Step 2: Fill text inputs
+
+Use `browse_fill` with the `@ref` ID and the text value. This replaces any existing content in the field.
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 1,
+    "text": "Jane"
+  }
+}
+```
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 2,
+    "text": "Smith"
+  }
+}
+```
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 3,
+    "text": "jane.smith@email.com"
+  }
+}
+```
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 4,
+    "text": "+1-555-123-4567"
+  }
+}
+```
+
+### Fill a textarea
+
+Textareas work identically to text inputs:
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 6,
+    "text": "Dear Hiring Manager,\n\nI am writing to express my interest in the Software Engineer position. I have 5 years of experience building production systems in Rust and TypeScript.\n\nBest regards,\nJane Smith"
+  }
+}
+```
+
+### Human-like typing
+
+If the site uses keystroke detection or autocomplete that fires on each keypress, use `browse_type` instead of `browse_fill`. It simulates individual keystrokes with configurable delay:
+
+```json
+{
+  "tool": "browse_type",
+  "arguments": {
+    "ref_id": 3,
+    "text": "jane.smith@email.com",
+    "delay_ms": 80
+  }
+}
+```
+
+---
+
+## Step 3: Select native dropdowns
+
+For standard HTML `<select>` elements, use `browse_select` with the option value:
+
+```json
+{
+  "tool": "browse_select",
+  "arguments": {
+    "ref_id": 5,
+    "value": "United States"
+  }
+}
+```
+
+The `value` parameter matches against the `<option>` element's `value` attribute. If the value attribute differs from the display text, use the value attribute.
+
+---
+
+## Step 4: Handle custom (JavaScript) dropdowns
+
+Many modern sites use custom dropdown components instead of native `<select>` elements. These appear in the snapshot as buttons, divs, or input fields rather than `<select>` elements.
+
+Use `browse_custom_dropdown`:
+
+```json
+{
+  "tool": "browse_custom_dropdown",
+  "arguments": {
+    "ref_id": 12,
+    "value": "United States",
+    "type_to_filter": true
+  }
+}
+```
+
+This tool:
+1. Clicks the dropdown trigger to open it
+2. Types the value to filter the option list (when `type_to_filter` is true)
+3. Clicks the matching option
+
+Set `type_to_filter` to `false` if the dropdown does not support text filtering and you need to scroll through options.
+
+### Identifying custom dropdowns
+
+Custom dropdowns typically appear in the snapshot as:
+
+```
+@e12 [input:text]  role="combobox" placeholder="Select a country..."
+@e13 [div]         role="listbox" (hidden)
+```
+
+or:
+
+```
+@e12 [button]      "Select country ▾"
+```
+
+If you see a combobox role or a button that looks like a dropdown trigger, use `browse_custom_dropdown` instead of `browse_select`.
+
+---
+
+## Step 5: Check checkboxes and radio buttons
+
+Checkboxes and radio buttons are toggled with `browse_click`:
+
+```json
+{
+  "tool": "browse_click",
+  "arguments": {
+    "ref_id": 8
+  }
+}
+```
+
+For radio button groups, click the specific option you want:
+
+```
+@e14 [input:radio] name="experience" value="junior" label="0-2 years"
+@e15 [input:radio] name="experience" value="mid" label="3-5 years"
+@e16 [input:radio] name="experience" value="senior" label="6+ years"
+```
+
+```json
+{
+  "tool": "browse_click",
+  "arguments": {
+    "ref_id": 16
+  }
+}
+```
+
+---
+
+## Step 6: Upload files
+
+Use `browse_upload_file` to upload a file from your local disk to an `<input type="file">` element:
+
+```json
+{
+  "tool": "browse_upload_file",
+  "arguments": {
+    "ref_id": 7,
+    "file_path": "/home/user/documents/resume.pdf"
+  }
+}
+```
+
+The tool reads the file, base64-encodes it, and injects it into the file input via JavaScript. It works with PDFs, images, documents, and any other file type the form accepts.
+
+If the file input's `@ref` ID is not obvious, you can omit `ref_id` and the tool will auto-detect the first `<input type="file">` on the page:
+
+```json
+{
+  "tool": "browse_upload_file",
+  "arguments": {
+    "file_path": "/home/user/documents/resume.pdf"
+  }
+}
+```
+
+---
+
+## Step 7: Submit the form
+
+Once all fields are filled, submit the form using `browse_submit_form`:
+
+```json
+{
+  "tool": "browse_submit_form",
+  "arguments": {
+    "ref_id": 9
+  }
+}
+```
+
+The `ref_id` can point to:
+- A submit `<button>` -- clicks it
+- A `<form>` element -- calls `form.submit()`
+- Any element inside a form -- submits the parent form
+
+After submission, if the page navigates, the response includes the new page snapshot. If the form submits via AJAX (React/Vue forms), take a new snapshot to see the result:
+
+```json
+{
+  "tool": "browse_snapshot"
+}
+```
+
+### Alternative: Press Enter
+
+For simple single-field forms (like search boxes), you can submit by pressing Enter:
+
+```json
+{
+  "tool": "browse_key_press",
+  "arguments": {
+    "key": "Enter"
+  }
+}
+```
+
+In native mode, this automatically finds and clicks the first submit button on the page.
+
+---
+
+## Step 8: Wait for confirmation
+
+After submission, you may need to wait for a confirmation message or redirect:
+
+```json
+{
+  "tool": "browse_wait_navigation",
+  "arguments": {
+    "timeout_ms": 5000
+  }
+}
+```
+
+Or wait for a specific element to appear:
+
+```json
+{
+  "tool": "browse_wait",
+  "arguments": {
+    "selector": ".success-message",
+    "ms": 5000
+  }
+}
+```
+
+Then snapshot to verify:
+
+```json
+{
+  "tool": "browse_snapshot"
+}
+```
+
+---
+
+## Handling hidden or disabled elements
+
+Some forms reveal fields based on previous selections (conditional fields). If a field is hidden or disabled, `browse_fill` will reject the action by default. To override:
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 20,
+    "text": "Some value",
+    "force": true
+  }
+}
+```
+
+The `force` parameter is available on `browse_fill`, `browse_click`, `browse_select`, and `browse_type`. Use it when you are certain the element exists but the safety check is too strict.
+
+---
+
+## Handling overlays and modals
+
+Cookie consent banners and modals can block form interaction. Dismiss them first:
+
+```json
+{
+  "tool": "browse_dismiss_overlay"
+}
+```
+
+This auto-detects the topmost overlay and closes it. If auto-detection fails, pass the specific `@ref` ID:
+
+```json
+{
+  "tool": "browse_dismiss_overlay",
+  "arguments": {
+    "ref_id": 30
+  }
+}
+```
+
+---
+
+## Working with iframes
+
+Some forms (especially payment forms and embedded applications) live inside iframes. Switch context to the iframe before interacting:
+
+```json
+{
+  "tool": "browse_enter_iframe",
+  "arguments": {
+    "ref_id": 25
+  }
+}
+```
+
+After entering, `browse_snapshot` shows the iframe's DOM with its own `@ref` IDs. Fill fields as normal, then use `browse_back` to return to the parent page.
+
+---
+
+## React and SPA forms
+
+React-based forms often require JavaScript to mount before fields become interactive. If `browse_navigate` shows fewer than expected interactive elements, fetch and run the page's scripts:
+
+```json
+{
+  "tool": "browse_fetch_scripts"
+}
+```
+
+This downloads JavaScript bundles and executes them in QuickJS so React's event system activates. Take a new snapshot afterward to see the rendered form.
+
+Alternatively, use CDP mode for JavaScript-heavy pages:
+
+```json
+{
+  "tool": "browse_navigate_cdp",
+  "arguments": {
+    "url": "https://jobs.example.com/apply"
+  }
+}
+```
+
+CDP mode uses Chrome's V8 engine, so all JavaScript frameworks work natively.
+
+---
+
+## Complete example: Fill a job application form
+
+```json
+// Navigate to the application page
+{ "tool": "browse_navigate", "arguments": { "url": "https://boards.greenhouse.io/example/jobs/12345" } }
+
+// Dismiss cookie banner if present
+{ "tool": "browse_dismiss_overlay" }
+
+// Take a snapshot to see all form fields
+{ "tool": "browse_snapshot" }
+
+// Fill personal information
+{ "tool": "browse_fill", "arguments": { "ref_id": 1, "text": "Jane" } }
+{ "tool": "browse_fill", "arguments": { "ref_id": 2, "text": "Smith" } }
+{ "tool": "browse_fill", "arguments": { "ref_id": 3, "text": "jane.smith@email.com" } }
+{ "tool": "browse_fill", "arguments": { "ref_id": 4, "text": "+1-555-123-4567" } }
+
+// Select country from a custom dropdown
+{ "tool": "browse_custom_dropdown", "arguments": { "ref_id": 5, "value": "United States" } }
+
+// Upload resume
+{ "tool": "browse_upload_file", "arguments": { "ref_id": 7, "file_path": "/home/user/resume.pdf" } }
+
+// Fill cover letter
+{ "tool": "browse_fill", "arguments": { "ref_id": 6, "text": "I am excited to apply for this role..." } }
+
+// Select experience level
+{ "tool": "browse_click", "arguments": { "ref_id": 16 } }
+
+// Accept terms
+{ "tool": "browse_click", "arguments": { "ref_id": 8 } }
+
+// Submit
+{ "tool": "browse_submit_form", "arguments": { "ref_id": 9 } }
+
+// Wait for confirmation
+{ "tool": "browse_wait", "arguments": { "selector": ".confirmation", "ms": 5000 } }
+{ "tool": "browse_snapshot" }
+```
+
+---
+
+## Tips
+
+- **Always snapshot before filling.** The `@ref` IDs can change between navigations.
+- **Use `browse_fill` for most fields.** Reserve `browse_type` for sites that need keystroke-level events (autocomplete fields, search-as-you-type).
+- **Custom dropdowns are common.** If a `<select>` does not appear in the snapshot, the site likely uses a JavaScript dropdown -- use `browse_custom_dropdown`.
+- **Check for iframes.** Payment forms, embedded applications, and CAPTCHA challenges often live in iframes.
+- **The `force` flag is a last resort.** Try without it first. If a field is genuinely hidden behind a conditional, you may need to fill a prerequisite field and re-snapshot.

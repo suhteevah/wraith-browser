@@ -1,0 +1,74 @@
+---
+title: Knowledge Graph
+description: Track entities, relationships, and connections discovered across browsing sessions
+---
+
+The knowledge graph is an in-memory entity store for tracking companies, people, technologies, and other entities discovered while browsing. Add entities, define relationships between them, merge duplicates, and visualize the graph as a Mermaid diagram. Use `entity_query` for natural language questions about your collected knowledge.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `entity_query` | Query the graph with natural language | `question` (required) |
+| `entity_add` | Add an entity to the graph | `name` (required), `entity_type` (required), `attributes` |
+| `entity_relate` | Add a relationship between two entities | `from` (required), `to` (required), `relationship` (required) |
+| `entity_merge` | Merge two entities (second into first) | `name_a` (required), `name_b` (required) |
+| `entity_find_related` | Find entities connected to a given entity | `name` (required) |
+| `entity_search` | Fuzzy search entities by name | `query` (required) |
+| `entity_visualize` | Generate a Mermaid diagram of the graph | *(none)* |
+
+## Examples
+
+### Build a knowledge graph from browsing
+
+```json
+{
+  "tool": "entity_add",
+  "arguments": {
+    "name": "Stripe",
+    "entity_type": "company",
+    "attributes": {
+      "industry": "fintech",
+      "headquarters": "San Francisco",
+      "hiring": true
+    }
+  }
+}
+```
+
+```json
+{
+  "tool": "entity_relate",
+  "arguments": {
+    "from": "Stripe",
+    "to": "Rust",
+    "relationship": "uses"
+  }
+}
+```
+
+Supported entity types: `"company"`, `"person"`, `"technology"`, `"product"`, `"location"`, `"other"`.
+
+### Query with natural language
+
+```json
+{
+  "tool": "entity_query",
+  "arguments": {
+    "question": "what companies use Rust?"
+  }
+}
+```
+
+Returns matching entities and their relationships. The graph persists across the browsing session, accumulating knowledge as you visit more pages.
+
+### Visualize the graph
+
+```json
+{
+  "tool": "entity_visualize",
+  "arguments": {}
+}
+```
+
+Returns Mermaid graph syntax that renders as an interactive diagram showing all entities and their relationships.

@@ -1,0 +1,423 @@
+---
+title: Web Scraping
+description: Navigate to URLs, extract content as markdown, handle pagination, and cache results for offline retrieval
+---
+
+## Overview
+
+OpenClaw Browser turns web scraping into a sequence of MCP tool calls. There is no browser driver to install, no Selenium grid to maintain, and no headless Chrome to babysit. The native Sevro engine fetches and renders pages in roughly 50ms each, and every interactive element gets a stable `@ref` ID you can target by number.
+
+This guide walks through a complete scraping workflow: navigate, extract, paginate, and cache.
+
+---
+
+## Step 1: Navigate to the target page
+
+Every scrape starts with `browse_navigate`. The tool fetches the URL, renders the DOM, and returns a snapshot with `@ref` IDs on every interactive element.
+
+```json
+{
+  "tool": "browse_navigate",
+  "arguments": {
+    "url": "https://news.ycombinator.com"
+  }
+}
+```
+
+The response includes:
+
+```
+Page title: Hacker News
+URL: https://news.ycombinator.com
+
+Interactive elements:
+@e1 [link] "Hacker News" href=/
+@e2 [link] "new" href=/newest
+@e3 [link] "past" href=/front
+...
+@e45 [link] "More" href=/news?p=2
+```
+
+Each `@eN` reference is stable for the lifetime of the current page state. You will use these IDs for clicking, filling forms, and extracting attributes.
+
+---
+
+## Step 2: Take a snapshot
+
+If you need to re-inspect the page without re-navigating, use `browse_snapshot`:
+
+```json
+{
+  "tool": "browse_snapshot"
+}
+```
+
+This returns the same `@ref`-annotated DOM tree without making a new HTTP request. Use it after scrolling, clicking, or waiting for dynamic content.
+
+---
+
+## Step 3: Extract content as markdown
+
+The primary extraction tool is `browse_extract`, which converts the rendered page into clean markdown optimized for LLM context windows:
+
+```json
+{
+  "tool": "browse_extract",
+  "arguments": {
+    "max_tokens": 4000
+  }
+}
+```
+
+Response:
+
+```markdown
+# Hacker News
+
+1. **Show HN: I built a Rust web browser** (github.com)
+   271 points by rustdev 3 hours ago | 142 comments
+
+2. **PostgreSQL 17 Released** (postgresql.org)
+   589 points by pgfan 5 hours ago | 203 comments
+
+...
+
+---
+30 links | ~1500 tokens
+```
+
+The `max_tokens` parameter is optional. When set, the extractor truncates content to fit your token budget, which is useful when feeding results into an LLM prompt.
+
+### Alternative extractors
+
+For specific use cases, OpenClaw provides specialized extractors:
+
+**Article body only** (strips nav, ads, sidebars):
+
+```json
+{
+  "tool": "extract_article",
+  "arguments": {
+    "readability": true
+  }
+}
+```
+
+**Plain text** (no formatting):
+
+```json
+{
+  "tool": "extract_plain_text"
+}
+```
+
+**Raw markdown from arbitrary HTML**:
+
+```json
+{
+  "tool": "extract_markdown",
+  "arguments": {
+    "html": "<div><h1>Title</h1><p>Content here</p></div>"
+  }
+}
+```
+
+**PDF extraction** (fetches and parses a remote PDF):
+
+```json
+{
+  "tool": "extract_pdf",
+  "arguments": {
+    "url": "https://example.com/report.pdf"
+  }
+}
+```
+
+---
+
+## Step 4: Extract specific element attributes
+
+Sometimes you need a specific attribute rather than the full page content. Use `dom_get_attribute` with the `@ref` ID:
+
+```json
+{
+  "tool": "dom_get_attribute",
+  "arguments": {
+    "ref_id": 12,
+    "name": "href"
+  }
+}
+```
+
+This returns the raw attribute value, which is useful for collecting links before following them.
+
+For CSS-selector-based queries:
+
+```json
+{
+  "tool": "dom_query_selector",
+  "arguments": {
+    "selector": "a.storylink"
+  }
+}
+```
+
+---
+
+## Step 5: Handle pagination
+
+Most sites use "Next" links or page-number navigation. The pattern is: extract the current page, find the "next" link by its `@ref` ID, click it, and repeat.
+
+### Click the "Next" or "More" link
+
+From the snapshot, identify the pagination element (here `@e45` is the "More" link):
+
+```json
+{
+  "tool": "browse_click",
+  "arguments": {
+    "ref_id": 45
+  }
+}
+```
+
+If the click triggers navigation, the response automatically includes the new page snapshot. If it does not (e.g., JavaScript-based pagination), take a new snapshot:
+
+```json
+{
+  "tool": "browse_snapshot"
+}
+```
+
+### Scroll-based pagination
+
+For infinite-scroll pages, use `browse_scroll` to trigger lazy loading:
+
+```json
+{
+  "tool": "browse_scroll",
+  "arguments": {
+    "direction": "down",
+    "amount": 2000
+  }
+}
+```
+
+Then wait for new content to load:
+
+```json
+{
+  "tool": "browse_wait",
+  "arguments": {
+    "selector": ".new-item",
+    "ms": 3000
+  }
+}
+```
+
+### Complete pagination loop
+
+Here is the full sequence for scraping 3 pages of Hacker News:
+
+```json
+// Page 1: Navigate and extract
+{ "tool": "browse_navigate", "arguments": { "url": "https://news.ycombinator.com" } }
+{ "tool": "browse_extract" }
+
+// Page 2: Click "More" and extract
+{ "tool": "browse_click", "arguments": { "ref_id": 45 } }
+{ "tool": "browse_extract" }
+
+// Page 3: Click "More" again and extract
+{ "tool": "browse_click", "arguments": { "ref_id": 45 } }
+{ "tool": "browse_extract" }
+```
+
+---
+
+## Step 6: Cache results for offline access
+
+Every page you visit is automatically added to the knowledge cache. You can search, retrieve, pin, and tag cached content without revisiting the network.
+
+### Search the cache
+
+```json
+{
+  "tool": "cache_search",
+  "arguments": {
+    "query": "PostgreSQL release",
+    "max_results": 5
+  }
+}
+```
+
+### Retrieve a specific cached page
+
+```json
+{
+  "tool": "cache_get",
+  "arguments": {
+    "url": "https://news.ycombinator.com"
+  }
+}
+```
+
+### Pin important pages
+
+Pinned pages are never evicted, even when the cache is purged:
+
+```json
+{
+  "tool": "cache_pin",
+  "arguments": {
+    "url": "https://news.ycombinator.com",
+    "notes": "Daily front page snapshot"
+  }
+}
+```
+
+### Tag pages for organized retrieval
+
+```json
+{
+  "tool": "cache_tag",
+  "arguments": {
+    "url": "https://news.ycombinator.com",
+    "tags": ["hacker-news", "tech-news", "daily-scrape"]
+  }
+}
+```
+
+### Check cache statistics
+
+```json
+{
+  "tool": "cache_stats"
+}
+```
+
+Returns page count, total size, domains covered, and hit/miss rates.
+
+---
+
+## Step 7: Detect page changes
+
+When re-scraping a page you have cached, use `page_diff` to see what changed:
+
+```json
+{
+  "tool": "page_diff",
+  "arguments": {
+    "url": "https://news.ycombinator.com"
+  }
+}
+```
+
+This compares the live page against the cached version and returns the content delta. Useful for monitoring price changes, job listing updates, or news feeds.
+
+To understand how frequently a site changes:
+
+```json
+{
+  "tool": "cache_domain_profile",
+  "arguments": {
+    "domain": "news.ycombinator.com"
+  }
+}
+```
+
+---
+
+## Step 8: Parallel scraping with swarm
+
+For scraping multiple URLs simultaneously, use the swarm fan-out:
+
+```json
+{
+  "tool": "swarm_fan_out",
+  "arguments": {
+    "urls": [
+      "https://news.ycombinator.com",
+      "https://lobste.rs",
+      "https://old.reddit.com/r/rust",
+      "https://old.reddit.com/r/programming"
+    ],
+    "max_concurrent": 4
+  }
+}
+```
+
+Then collect the results:
+
+```json
+{
+  "tool": "swarm_collect"
+}
+```
+
+All four pages are fetched in parallel and their content is cached automatically.
+
+---
+
+## Complete example: Scrape and cache a blog archive
+
+This end-to-end example navigates to a blog, extracts the article list, follows each link, extracts article content, and tags everything in the cache.
+
+```json
+// Step 1: Navigate to the blog index
+{
+  "tool": "browse_navigate",
+  "arguments": { "url": "https://blog.example.com/archive" }
+}
+
+// Step 2: Extract the page to get article links
+{
+  "tool": "browse_extract"
+}
+
+// Step 3: Get the href of a specific article link
+{
+  "tool": "dom_get_attribute",
+  "arguments": { "ref_id": 8, "name": "href" }
+}
+
+// Step 4: Navigate to the article
+{
+  "tool": "browse_navigate",
+  "arguments": { "url": "https://blog.example.com/posts/my-article" }
+}
+
+// Step 5: Extract just the article body
+{
+  "tool": "extract_article",
+  "arguments": { "readability": true }
+}
+
+// Step 6: Tag it in the cache
+{
+  "tool": "cache_tag",
+  "arguments": {
+    "url": "https://blog.example.com/posts/my-article",
+    "tags": ["blog", "rust", "tutorial"]
+  }
+}
+
+// Step 7: Pin it so it persists
+{
+  "tool": "cache_pin",
+  "arguments": {
+    "url": "https://blog.example.com/posts/my-article",
+    "notes": "Excellent Rust async tutorial"
+  }
+}
+```
+
+---
+
+## Tips
+
+- **Token budgets matter.** Use `max_tokens` on `browse_extract` when feeding content into an LLM. A 4000-token budget keeps responses focused.
+- **Use `extract_article` for blog posts and news.** The readability algorithm strips navigation, ads, and sidebars automatically.
+- **Cache is your friend.** Every navigation populates the cache. Search it with `cache_search` before re-fetching a page you may have already visited.
+- **Scroll before extracting** on pages with lazy-loaded content. One `browse_scroll` + `browse_wait` cycle usually reveals everything.
+- **Check `browse_engine_status`** if a page returns fewer elements than expected. Some JavaScript-heavy SPAs need CDP mode via `browse_navigate_cdp`.

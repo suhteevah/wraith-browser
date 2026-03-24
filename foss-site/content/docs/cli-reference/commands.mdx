@@ -1,0 +1,258 @@
+---
+title: Commands
+description: Complete reference for all openclaw-browser CLI commands and flags
+---
+
+## Global Flags
+
+These flags apply to every subcommand.
+
+| Flag | Short | Description | Default |
+|---|---|---|---|
+| `--verbose` | `-v` | Enable verbose logging (`openclaw=trace`) | off |
+| `--engine <ENGINE>` | | Browser engine: `auto`, `sevro`, `native` | `auto` |
+| `--proxy <URL>` | | HTTP or SOCKS5 proxy | _(none)_ |
+| `--flaresolverr <URL>` | | FlareSolverr endpoint for challenge pages | _(none)_ |
+| `--fallback-proxy <URL>` | | Fallback proxy for restricted sites | _(none)_ |
+| `--version` | `-V` | Print version and exit | |
+| `--help` | `-h` | Print help and exit | |
+
+## serve
+
+Start the MCP server. This is the primary command for integrating with AI clients
+like Claude Desktop and Claude Code.
+
+```bash
+openclaw-browser serve [OPTIONS]
+```
+
+| Option | Short | Description | Default |
+|---|---|---|---|
+| `--transport <MODE>` | `-t` | Transport mode: `stdio` or `sse` | `stdio` |
+| `--host <HOST>` | | Bind address for SSE transport | `127.0.0.1` |
+| `--port <PORT>` | `-p` | Port for SSE transport | `3100` |
+
+Examples:
+
+```bash
+# Default: stdio transport for Claude Desktop / Claude Code
+openclaw-browser serve
+
+# HTTP/SSE on all interfaces, port 4000
+openclaw-browser serve --transport sse --host 0.0.0.0 --port 4000
+
+# With proxy and verbose logging
+openclaw-browser serve -v --proxy socks5://127.0.0.1:1080
+```
+
+## navigate
+
+Navigate to a URL and print the result to stdout. Useful for quick one-off page
+fetches and scripting.
+
+```bash
+openclaw-browser navigate <URL> [OPTIONS]
+```
+
+| Option | Short | Description | Default |
+|---|---|---|---|
+| `--format <FORMAT>` | `-f` | Output format: `snapshot`, `markdown`, `json` | `snapshot` |
+
+Examples:
+
+```bash
+# DOM snapshot with @ref IDs (same view the AI agent sees)
+openclaw-browser navigate https://example.com
+
+# Extracted markdown
+openclaw-browser navigate https://example.com --format markdown
+
+# Full JSON snapshot
+openclaw-browser navigate https://example.com --format json
+```
+
+## task
+
+Run an autonomous browsing task powered by an LLM. The agent loop navigates,
+clicks, fills forms, and extracts information to complete the described task.
+
+```bash
+openclaw-browser task <DESCRIPTION> [OPTIONS]
+```
+
+| Option | Short | Description | Default |
+|---|---|---|---|
+| `--url <URL>` | `-u` | Starting URL | _(none)_ |
+| `--max-steps <N>` | | Maximum agent steps before stopping | `50` |
+
+Requires either `ANTHROPIC_API_KEY` (or `CLAUDE_API_KEY`) for the Claude backend,
+or `OPENCLAW_LLM=ollama` for local models. See
+[Configuration](/docs/self-hosting/configuration) for all agent-related variables.
+
+Examples:
+
+```bash
+# Search and summarize
+openclaw-browser task "Find the latest Rust release date"
+
+# Start from a specific page
+openclaw-browser task "Extract the pricing table" --url https://example.com/pricing
+
+# Limit to 10 steps
+openclaw-browser task "Log in and check notifications" --url https://app.example.com --max-steps 10
+```
+
+## search
+
+Search the web using SearXNG metasearch and optional API-backed providers.
+
+```bash
+openclaw-browser search <QUERY> [OPTIONS]
+```
+
+| Option | Short | Description | Default |
+|---|---|---|---|
+| `--max-results <N>` | `-m` | Maximum number of results | `10` |
+
+Examples:
+
+```bash
+openclaw-browser search "Rust async runtime comparison" --max-results 5
+```
+
+## extract
+
+Navigate to a URL and extract readable content as markdown, with a configurable
+token budget.
+
+```bash
+openclaw-browser extract <URL> [OPTIONS]
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `--max-tokens <N>` | Maximum token budget for extracted content | `4000` |
+
+Examples:
+
+```bash
+openclaw-browser extract https://blog.rust-lang.org/2024/02/08/Rust-1.76.0.html
+openclaw-browser extract https://en.wikipedia.org/wiki/Rust_(programming_language) --max-tokens 8000
+```
+
+## vault
+
+Manage the encrypted credential vault at `~/.openclaw/vault.db`. The vault uses
+AES-256-GCM encryption and requires a passphrase to unlock.
+
+```bash
+openclaw-browser vault <SUBCOMMAND>
+```
+
+### vault unlock
+
+Unlock the vault (or create it on first use). Prompts for a passphrase.
+
+```bash
+openclaw-browser vault unlock
+```
+
+### vault lock
+
+Lock the vault and zeroize the master key from memory.
+
+```bash
+openclaw-browser vault lock
+```
+
+### vault store
+
+Store a new credential in the vault.
+
+```bash
+openclaw-browser vault store --domain <DOMAIN> --identity <IDENTITY> [OPTIONS]
+```
+
+| Option | Short | Description | Default |
+|---|---|---|---|
+| `--domain <DOMAIN>` | `-d` | Domain (e.g., `github.com`) | _(required)_ |
+| `--identity <IDENTITY>` | `-i` | Username or account identifier | _(required)_ |
+| `--kind <KIND>` | `-k` | Credential type: `password`, `api_key`, `oauth_token`, `totp_seed`, `session_cookie`, `ssh_key`, `generic` | `password` |
+| `--label <LABEL>` | `-l` | Friendly label | _(none)_ |
+| `--auto-use` | | Allow auto-use without human approval | off |
+
+### vault list
+
+List all stored credentials. Secrets remain encrypted.
+
+```bash
+openclaw-browser vault list
+```
+
+### vault delete
+
+Delete a credential by ID.
+
+```bash
+openclaw-browser vault delete <ID>
+```
+
+### vault totp
+
+Generate a TOTP code for a domain.
+
+```bash
+openclaw-browser vault totp <DOMAIN>
+```
+
+### vault audit
+
+Show recent audit log entries.
+
+```bash
+openclaw-browser vault audit [--limit <N>]
+```
+
+Default limit is 20 entries.
+
+### vault approve
+
+Approve a domain for credential use.
+
+```bash
+openclaw-browser vault approve --credential-id <ID> --domain <DOMAIN>
+```
+
+### vault rotate
+
+Rotate a credential's secret value. Prompts for the new secret.
+
+```bash
+openclaw-browser vault rotate <ID>
+```
+
+## fingerprint
+
+Manage browser fingerprint profiles used for stealth browsing.
+
+```bash
+openclaw-browser fingerprint <SUBCOMMAND>
+```
+
+### fingerprint import
+
+Import a fingerprint from a JSON file (exported from browser DevTools).
+
+```bash
+openclaw-browser fingerprint import <FILE>
+```
+
+The profile is saved to `~/.openclaw/fingerprints/`.
+
+### fingerprint list
+
+List all stored fingerprint profiles.
+
+```bash
+openclaw-browser fingerprint list
+```

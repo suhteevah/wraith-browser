@@ -1,0 +1,41 @@
+---
+title: Telemetry & Monitoring
+description: Browsing metrics and performance trace span export
+---
+
+Telemetry tools provide visibility into browser performance and usage patterns. Use `telemetry_metrics` for aggregate statistics and `telemetry_spans` for detailed performance traces that can be analyzed or imported into observability tools.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `telemetry_metrics` | Show browsing metrics (cache hits, errors, navigations) | *(none)* |
+| `telemetry_spans` | Export performance trace spans as JSON | *(none)* |
+
+## Examples
+
+### View browsing metrics
+
+```json
+{
+  "tool": "telemetry_metrics",
+  "arguments": {}
+}
+```
+
+Returns aggregate statistics:
+- Cache hits and misses
+- Total navigations and errors
+- Total HTTP requests
+- Average response time
+
+### Export performance traces
+
+```json
+{
+  "tool": "telemetry_spans",
+  "arguments": {}
+}
+```
+
+Returns a JSON array of performance spans with timing data for each operation (navigation, extraction, cache lookup, etc.). Use this to identify bottlenecks or audit what the agent did during a session.

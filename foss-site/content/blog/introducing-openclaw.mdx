@@ -1,0 +1,65 @@
+---
+title: Introducing OpenClaw Browser
+date: "2026-03-23"
+description: An open-source, AI-agent-first browser engine with 143 MCP tools.
+author: Matt Gates
+---
+
+## The Chrome overhead problem
+
+If you have ever tried to run more than a handful of browser-automation sessions on a single machine, you already know the bottleneck: Chrome. Each headless Chrome instance eats roughly 300-500 MB of RAM, spins up dozens of processes, and takes multiple seconds to boot. Scale that to hundreds or thousands of concurrent sessions and you are either throwing money at cloud VMs or watching your system grind to a halt.
+
+We kept running into this wall while building AI agent workflows. Agents need to navigate, extract, fill forms, and reason about live web pages, but the browser layer was always the slowest, most resource-hungry part of the stack. So we decided to build something better.
+
+## What is OpenClaw?
+
+OpenClaw Browser is a native browser engine purpose-built for AI agents. It is not a wrapper around Chrome or Playwright. It is a Servo-derived rendering engine compiled into a single 15 MB binary that speaks the Model Context Protocol (MCP) natively.
+
+### Native performance
+
+Pages render in roughly 50 milliseconds. Memory usage sits around 8-12 MB per session instead of 300-500 MB. A single machine can comfortably drive thousands of concurrent sessions. No Chrome, no Selenium, no browser drivers to install.
+
+### 143 MCP tools
+
+OpenClaw ships with 143 tools exposed over MCP. Navigation, form filling, extraction, screenshots, vault-based credential management, knowledge-graph construction, entity resolution, time-travel debugging, DAG-based task orchestration, and more. Every tool is callable by any MCP client including Claude Code, Cursor, and custom agents.
+
+### Knowledge graph and cache
+
+Every page you visit is cached and indexed. Full-text search is powered by Tantivy, and vector embeddings let you do semantic search across your browsing history. The entity system links people, organizations, and concepts across pages, building a persistent knowledge graph your agent can query at any time.
+
+### Vault
+
+Credentials never leave your machine. The built-in vault stores passwords, API keys, and TOTP secrets with AES-256 encryption. Domain-level approval policies ensure secrets are only released to the sites they belong to.
+
+## Getting started
+
+Installation is a single command:
+
+```bash
+cargo install openclaw-browser
+```
+
+Then start the MCP server:
+
+```bash
+openclaw-browser serve --transport stdio
+```
+
+Add it to your Claude Code MCP config and you are ready to go. Visit the [installation guide](/docs/getting-started/installation) for detailed setup instructions and the [MCP tools reference](/docs/reference/mcp-tools) for the full tool catalog.
+
+## What is next
+
+This is just the beginning. Here is what we are working on:
+
+- **CDP compatibility layer** for drop-in Playwright interop when you need full JavaScript fidelity.
+- **Swarm playbooks** for orchestrating hundreds of browser agents from a single declarative YAML file.
+- **Plugin system** for community-contributed extractors, auth handlers, and automation scripts.
+- **Performance benchmarks** comparing OpenClaw against headless Chrome, Playwright, and Puppeteer across real-world workloads.
+
+We are building OpenClaw in the open under the AGPL-3.0 license. Every feature, every commit, every design decision is visible on [GitHub](https://github.com/suhteevah/openclaw-browser).
+
+Need managed hosting & team features? [Learn about Wraith Enterprise](https://wraith.dev/enterprise).
+
+## Join the community
+
+We would love to hear from you. File issues, submit pull requests, or just say hello on our [community page](/community). This project exists because of the people who use it, and we want to build it together.

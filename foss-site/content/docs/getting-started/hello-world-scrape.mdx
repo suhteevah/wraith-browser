@@ -1,0 +1,51 @@
+---
+title: Hello World Scrape
+description: Navigate, snapshot, and extract content in 3 commands
+---
+
+## The 3-command scrape
+
+### 1. Navigate
+
+```json
+{
+  "tool": "browse_navigate",
+  "arguments": { "url": "https://news.ycombinator.com" }
+}
+```
+
+Response: `{ "url": "https://news.ycombinator.com", "title": "Hacker News" }`
+
+### 2. Snapshot
+
+```json
+{
+  "tool": "browse_snapshot"
+}
+```
+
+Returns the DOM with `@ref` IDs on every interactive element — these are how you target clicks and fills.
+
+### 3. Extract
+
+```json
+{
+  "tool": "extract_markdown"
+}
+```
+
+Returns the page content as clean Markdown — headings, links, lists, all preserved.
+
+## What just happened
+
+1. Wraith navigated to the URL using its native Servo-derived engine (~50ms)
+2. The snapshot mapped every element to an `@ref` ID for agent interaction
+3. The extractor converted the rendered DOM to structured Markdown
+
+No Chrome was launched. No browser driver was installed. The entire operation used ~8MB of memory.
+
+## Next steps
+
+- [Web scraping guide →](/docs/guides/web-scraping)
+- [MCP tools reference →](/docs/mcp-tools)
+- [Try the playground →](/playground)

@@ -1,0 +1,55 @@
+---
+title: MCP Tools Reference
+description: Complete reference for all 143 MCP tools exposed by OpenClaw Browser
+---
+
+OpenClaw Browser exposes **143 tools** through the [Model Context Protocol](https://modelcontextprotocol.io). Every tool is callable from any MCP-compatible AI agent (Claude Code, Cursor, Windsurf, etc.) over stdio transport.
+
+Tools are organized into 15 categories. Each tool carries permission annotations (`read_only`, `destructive`, `open_world`) so your agent framework can enforce safety policies automatically.
+
+## Categories
+
+| Category | Tools | Description |
+|----------|-------|-------------|
+| [Navigation](/docs/mcp-tools/navigation) | 14 | Core browsing: navigate, scroll, wait, tabs, back/forward, config |
+| [Interaction](/docs/mcp-tools/interaction) | 13 | Click, fill, select, type, hover, key press, file upload, form submit |
+| [Extraction](/docs/mcp-tools/extraction) | 8 | Snapshot, extract markdown/PDF/article/plain text, screenshot, OCR, search |
+| [DOM](/docs/mcp-tools/dom) | 4 | CSS selector queries, get/set attributes, focus elements |
+| [Cookies](/docs/mcp-tools/cookies) | 5 | Get, set, save, load, and import cookies from Chrome |
+| [Cache](/docs/mcp-tools/cache) | 9 | Knowledge cache: search, pin, tag, evict, domain profiling, raw HTML |
+| [Identity](/docs/mcp-tools/identity) | 6 | Browser fingerprints, identity profiles, site tech detection, stealth status |
+| [Session](/docs/mcp-tools/session) | 4 | Named browser sessions with independent state (CDP feature) |
+| [Search](/docs/mcp-tools/search) | 5 | Web metasearch, semantic embeddings, network discovery, DNS |
+| [Entities](/docs/mcp-tools/entities) | 7 | Knowledge graph: add, relate, merge, search, query, visualize entities |
+| [Automation](/docs/mcp-tools/automation) | 18 | Parallel browsing, playbooks, deduplication, workflows, DAG orchestration |
+| [Time Travel](/docs/mcp-tools/time-travel) | 5 | Decision timeline inspection, branching, replay, diff, export |
+| [Plugins](/docs/mcp-tools/plugins) | 7 | WASM plugins and Rhai userscripts |
+| [Telemetry](/docs/mcp-tools/telemetry) | 2 | Browsing metrics and performance trace spans |
+| [Advanced](/docs/mcp-tools/advanced) | 36 | Credential vault, auth detection, TLS, planning, page diff, agent task |
+
+## Permission Model
+
+Every tool carries annotation metadata:
+
+| Annotation | Read-Only | Destructive | Network | Description |
+|------------|-----------|-------------|---------|-------------|
+| `ro_closed` | yes | no | no | Safest -- read-only, local only |
+| `ro_open` | yes | no | yes | Read-only but accesses the network |
+| `rw_closed` | no | no | no | Can modify local state |
+| `rw_open` | no | no | yes | Can modify state and access the network |
+| `rw_destructive` | no | yes | no | Permanent or irreversible modifications |
+
+## MCP Configuration
+
+Add to your `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "openclaw-browser": {
+      "command": "openclaw-browser",
+      "args": ["serve", "--transport", "stdio"]
+    }
+  }
+}
+```

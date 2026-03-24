@@ -1,0 +1,161 @@
+---
+title: Transport Modes
+description: How OpenClaw Browser communicates with MCP clients — stdio and HTTP/SSE
+---
+
+OpenClaw Browser's `serve` command supports two transport modes for MCP
+communication. The transport determines how messages flow between the browser
+and the AI client.
+
+## stdio (default)
+
+```bash
+openclaw-browser serve --transport stdio
+```
+
+In stdio mode, the server reads JSON-RPC messages from stdin and writes responses
+to stdout. This is the standard MCP transport used by local AI clients.
+
+**When to use stdio:**
+
+- Claude Desktop integration
+- Claude Code integration
+- Any MCP client that spawns the server as a child process
+- Local development and testing
+
+**How it works:**
+
+1. The MCP client launches `openclaw-browser serve` as a subprocess.
+2. The client sends JSON-RPC requests over the process's stdin.
+3. OpenClaw writes JSON-RPC responses to stdout.
+4. Logs go to stderr (controlled by `RUST_LOG`), so they never interfere with
+   the JSON-RPC stream.
+
+### Claude Desktop Configuration
+
+Add this to your Claude Desktop MCP config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "openclaw-browser": {
+      "command": "openclaw-browser",
+      "args": ["serve", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+With a proxy:
+
+```json
+{
+  "mcpServers": {
+    "openclaw-browser": {
+      "command": "openclaw-browser",
+      "args": ["serve", "--transport", "stdio", "--proxy", "socks5://127.0.0.1:1080"]
+    }
+  }
+}
+```
+
+### Claude Code Configuration
+
+```json
+{
+  "mcpServers": {
+    "openclaw-browser": {
+      "command": "openclaw-browser",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Since stdio is the default transport, `--transport stdio` can be omitted.
+
+## SSE (HTTP)
+
+```bash
+openclaw-browser serve --transport sse --host 0.0.0.0 --port 3100
+```
+
+In SSE (Server-Sent Events) mode, the server listens on an HTTP endpoint. Clients
+connect via an SSE stream to receive server-to-client messages and POST requests
+to send client-to-server messages.
+
+**When to use SSE:**
+
+- Remote access from machines that cannot run the binary locally
+- Shared server for multiple clients
+- Docker and container deployments
+- Network-separated architectures
+
+### Connection Details
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/sse` | GET | SSE stream -- server-to-client messages |
+| `/message` | POST | Client-to-server JSON-RPC requests |
+
+### Options
+
+| Flag | Description | Default |
+|---|---|---|
+| `--host <HOST>` | Bind address | `127.0.0.1` |
+| `--port <PORT>` | Listen port | `3100` |
+
+Binding to `127.0.0.1` (the default) restricts access to localhost. Use
+`0.0.0.0` to accept connections from any interface -- always put a reverse proxy
+or firewall in front when exposed to the internet.
+
+### Examples
+
+```bash
+# Localhost only, default port
+openclaw-browser serve --transport sse
+
+# All interfaces, custom port
+openclaw-browser serve --transport sse --host 0.0.0.0 --port 8080
+
+# With verbose logging
+openclaw-browser serve --transport sse --host 0.0.0.0 --port 3100 -v
+```
+
+### Docker
+
+When running inside Docker, bind to `0.0.0.0` so the port mapping works:
+
+```bash
+docker run -d \
+  --name openclaw \
+  -p 3100:3100 \
+  openclaw/browser:latest \
+  serve --transport sse --host 0.0.0.0 --port 3100
+```
+
+### Testing the Connection
+
+```bash
+# Check SSE stream (will hang open -- Ctrl+C to stop)
+curl -N http://localhost:3100/sse
+
+# Send an MCP initialize request
+curl -X POST http://localhost:3100/message \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+```
+
+## Choosing a Transport
+
+| Consideration | stdio | SSE |
+|---|---|---|
+| Setup complexity | None -- client spawns process | Requires port, optional TLS |
+| Latency | Lowest (in-process pipes) | Slightly higher (HTTP overhead) |
+| Multiple clients | One client per process | Multiple clients per server |
+| Docker-friendly | Requires `-i` flag | Native fit |
+| Firewall/NAT | Not applicable | Requires open port |
+| Security | Process isolation | Needs reverse proxy + TLS for production |
+
+For most users, **stdio is the recommended default**. Use SSE when you need
+remote access or want to run a shared instance.

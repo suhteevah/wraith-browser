@@ -1,0 +1,56 @@
+---
+title: Search & Discovery
+description: Semantic search, embedding storage, network API discovery, and DNS resolution
+---
+
+Search tools go beyond basic page content. Use semantic embeddings for similarity search across cached content, discover API endpoints from network traffic patterns, and resolve domains via DNS-over-HTTPS. These tools help your agent build understanding across browsing sessions.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `embedding_search` | Semantic similarity search across cached content | `text` (required), `top_k` |
+| `embedding_upsert` | Store a text embedding for semantic search | `source_id` (required), `content` (required) |
+| `network_discover` | Discover API endpoints from captured network traffic | *(none)* |
+| `dns_resolve` | Resolve a domain to IP addresses via DNS-over-HTTPS | `domain` (required) |
+| `page_diff` | Compare current page to cached version | `url` |
+
+## Examples
+
+### Semantic search across browsing history
+
+```json
+{
+  "tool": "embedding_search",
+  "arguments": {
+    "text": "companies hiring Rust engineers remotely",
+    "top_k": 10
+  }
+}
+```
+
+Finds cached content that is semantically similar to the query, even if the exact words do not match. Store custom embeddings with `embedding_upsert` to build a searchable knowledge base.
+
+### Discover API endpoints
+
+```json
+{
+  "tool": "network_discover",
+  "arguments": {}
+}
+```
+
+Analyzes captured network traffic patterns from browsing and returns detected API endpoints: URL templates, HTTP methods, auth types, and request/response schemas. Useful for understanding how a site's frontend communicates with its backend.
+
+### Detect page changes
+
+```json
+{
+  "tool": "page_diff",
+  "arguments": {
+    "url": "https://example.com/jobs"
+  }
+}
+```
+
+Compares the live page content against the cached version to show what has changed. Useful for monitoring job listings, price changes, or any content that updates over time.

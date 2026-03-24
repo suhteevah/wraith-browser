@@ -1,0 +1,387 @@
+---
+title: Page Cache
+description: SQLite-backed knowledge cache that automatically stores every visited page for instant retrieval, full-text search, and change detection
+---
+
+## How the Page Cache Works
+
+Every URL the browser visits is automatically cached in a local SQLite database (WAL mode). The cache stores the extracted markdown, plain text, snippet, outbound links, HTTP metadata, and a content hash for change detection. Raw HTML is stored separately as compressed blobs on disk.
+
+The cache serves three purposes:
+
+1. **Instant recall** -- retrieve a previously visited page in microseconds instead of re-fetching it over the network.
+2. **Full-text search** -- every cached page is indexed in a Tantivy full-text index so you can search across everything the agent has seen.
+3. **Change detection** -- on re-visit, the content hash is compared to detect changes and update adaptive TTLs per domain.
+
+### Storage layout
+
+```
+~/.openclaw/knowledge/
+  knowledge.db        # SQLite database (pages, searches, domain profiles)
+  blobs/              # Compressed raw HTML files
+  index/              # Tantivy full-text index (mmap)
+```
+
+---
+
+## cache_get
+
+Retrieve a cached page by URL. Returns the stored markdown, title, snippet, tags, hit count, and timestamps.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | yes | URL to look up |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_get",
+  "arguments": {
+    "url": "https://docs.rs/tokio/latest/tokio/"
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "found": true,
+  "url": "https://docs.rs/tokio/latest/tokio/",
+  "title": "tokio - Rust",
+  "snippet": "A runtime for writing reliable, asynchronous, and slim applications...",
+  "markdown": "# tokio\n\nA runtime for writing reliable...",
+  "tags": ["rust", "async", "runtime"],
+  "hit_count": 12,
+  "first_seen": "2025-10-03T14:22:00Z",
+  "last_fetched": "2025-10-15T09:11:00Z",
+  "content_type": "Documentation",
+  "pinned": false
+}
+```
+
+If the URL has not been visited, `found` is `false` and only the `url` field is returned.
+
+---
+
+## cache_search
+
+Full-text search across all cached pages. The query is parsed by Tantivy's query parser and matched against the title, body text, snippet, and URL fields. Results are ranked by BM25 relevance score.
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | string | yes | -- | Search query |
+| `max_results` | integer | no | `10` | Maximum number of results to return |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_search",
+  "arguments": {
+    "query": "async runtime Rust",
+    "max_results": 5
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "results": [
+    {
+      "url": "https://docs.rs/tokio/latest/tokio/",
+      "title": "tokio - Rust",
+      "snippet": "A runtime for writing reliable, asynchronous, and slim applications...",
+      "score": 8.42
+    },
+    {
+      "url": "https://docs.rs/async-std/latest/async_std/",
+      "title": "async-std - Rust",
+      "snippet": "Async version of the Rust standard library...",
+      "score": 6.17
+    }
+  ],
+  "total": 2,
+  "query": "async runtime Rust"
+}
+```
+
+### Query syntax
+
+Tantivy supports several query operators:
+
+- **Boolean:** `rust AND async`, `tokio OR async-std`, `rust NOT python`
+- **Phrase:** `"async runtime"` (exact phrase match)
+- **Field-scoped:** `title:tokio` (search only the title field)
+- **Wildcard:** `tok*` (prefix matching)
+
+---
+
+## cache_stats
+
+Returns aggregate statistics about the knowledge cache.
+
+**Parameters:** None.
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_stats",
+  "arguments": {}
+}
+```
+
+**Example response:**
+
+```json
+{
+  "pages_cached": 347,
+  "total_size_bytes": 12845032,
+  "domains": 42,
+  "pinned_pages": 8,
+  "oldest_page": "2025-09-01T10:00:00Z",
+  "newest_page": "2025-10-15T09:11:00Z",
+  "searches_cached": 89,
+  "total_hits": 1204
+}
+```
+
+---
+
+## cache_pin
+
+Pin a URL so it is never evicted during cache purge or eviction operations. Pinned pages survive `cache_purge` and `cache_evict` calls.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | yes | URL to pin |
+| `notes` | string | no | Optional note explaining why this page is pinned |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_pin",
+  "arguments": {
+    "url": "https://docs.rs/tokio/latest/tokio/",
+    "notes": "Core reference for the async runtime we use"
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "pinned": true,
+  "url": "https://docs.rs/tokio/latest/tokio/"
+}
+```
+
+---
+
+## cache_purge
+
+Purge stale entries from the cache. A page is considered stale when its age exceeds the computed TTL for its domain. Pinned pages are never purged.
+
+Staleness is adaptive: domains that change frequently get shorter TTLs (computed from the `change_log` table), while static documentation sites get longer ones.
+
+**Parameters:** None.
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_purge",
+  "arguments": {}
+}
+```
+
+**Example response:**
+
+```json
+{
+  "purged": 23,
+  "remaining": 324,
+  "freed_bytes": 1048576
+}
+```
+
+---
+
+## cache_raw_html
+
+Retrieve the raw cached HTML for a URL. The HTML is stored as a compressed blob on disk and decompressed on retrieval.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | yes | URL to get raw HTML for |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_raw_html",
+  "arguments": {
+    "url": "https://docs.rs/tokio/latest/tokio/"
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "url": "https://docs.rs/tokio/latest/tokio/",
+  "html": "<!DOCTYPE html><html lang=\"en\"><head><title>tokio - Rust</title>...",
+  "size_bytes": 142380
+}
+```
+
+This is useful when the extracted markdown lost structural information you need (tables, specific attributes, embedded metadata).
+
+---
+
+## cache_domain_profile
+
+Show how often a domain's content changes and the computed TTL used for staleness decisions.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `domain` | string | yes | Domain to profile (e.g., `"docs.rs"`) |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_domain_profile",
+  "arguments": {
+    "domain": "docs.rs"
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "domain": "docs.rs",
+  "pages_cached": 56,
+  "avg_change_interval_secs": 604800,
+  "computed_ttl_secs": 86400,
+  "requires_auth": false,
+  "bot_hostile": false,
+  "avg_extraction_confidence": 0.92,
+  "default_content_type": "Documentation",
+  "total_bytes": 3241088,
+  "total_hits": 234,
+  "supports_conditional": true,
+  "crawl_delay_secs": null
+}
+```
+
+The `computed_ttl_secs` is derived from the domain's observed change frequency. Domains where content rarely changes get long TTLs (up to days), while frequently-updating sites like news or job boards get shorter ones.
+
+---
+
+## cache_tag
+
+Tag a cached page with labels for organized retrieval. Tags are stored as a JSON array in the `pages` table and indexed in both Tantivy and FTS5.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | yes | URL to tag |
+| `tags` | array of strings | yes | Tags to apply |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_tag",
+  "arguments": {
+    "url": "https://docs.rs/tokio/latest/tokio/",
+    "tags": ["rust", "async", "runtime", "reference"]
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "url": "https://docs.rs/tokio/latest/tokio/",
+  "tags": ["rust", "async", "runtime", "reference"]
+}
+```
+
+Tags are additive. Calling `cache_tag` again merges the new tags with existing ones. You can then use `cache_search` to find pages by tag: searching for `tags:rust` will match tagged pages.
+
+---
+
+## cache_evict
+
+Evict cached pages to fit within a byte budget. Pages are evicted oldest-first (by `last_fetched` timestamp). Pinned pages are never evicted.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `max_bytes` | integer | yes | Maximum total cache size in bytes. Pages are removed until the cache fits under this limit. |
+
+**Example request:**
+
+```json
+{
+  "tool": "cache_evict",
+  "arguments": {
+    "max_bytes": 10485760
+  }
+}
+```
+
+**Example response:**
+
+```json
+{
+  "evicted": 45,
+  "remaining": 302,
+  "current_size_bytes": 9832417
+}
+```
+
+### Eviction order
+
+1. Unpinned pages are sorted by `last_fetched` ascending (oldest first).
+2. Pages are removed one at a time until the total size is under `max_bytes`.
+3. Each eviction deletes the SQLite row, the Tantivy index entry, and the raw HTML blob.
+
+---
+
+## Automatic caching flow
+
+You do not need to call any tool to populate the cache. The flow is automatic:
+
+1. `browse_navigate` fetches a URL.
+2. The content extraction pipeline produces markdown, plain text, and a snippet.
+3. The `KnowledgeStore` inserts a row into the `pages` table with all extracted fields.
+4. Tantivy indexes the page's title, body, snippet, URL, and tags.
+5. The raw HTML is compressed and written to the `blobs/` directory.
+6. If this URL was previously cached, the content hash is compared. If changed, a row is added to `change_log` and the domain's TTL is recalculated.
+
+Every subsequent `cache_search` or `cache_get` call benefits from this data immediately.

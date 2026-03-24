@@ -1,0 +1,85 @@
+---
+title: Extraction
+description: Content extraction tools -- snapshots, markdown, PDF, article readability, screenshots, OCR, and web search
+---
+
+Extraction tools pull structured content from pages. Use `browse_snapshot` to see the interactive DOM, `browse_extract` to get clean markdown for LLM context windows, and specialized extractors for PDFs, articles, and OCR. The `browse_search` tool provides web metasearch without navigating.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `browse_snapshot` | Get the DOM snapshot with all @ref-tagged interactive elements | *(none)* |
+| `browse_extract` | Extract page content as clean LLM-optimized markdown | `max_tokens` |
+| `browse_screenshot` | Capture a PNG screenshot | `full_page` |
+| `browse_search` | Search the web via metasearch (DuckDuckGo + Brave) | `query` (required), `max_results` |
+| `extract_pdf` | Fetch a PDF from a URL and extract text as markdown | `url` (required) |
+| `extract_article` | Extract main article body using readability algorithms | `readability` |
+| `extract_markdown` | Convert HTML to clean markdown | `html` |
+| `extract_plain_text` | Convert HTML to plain text with no formatting | `html` |
+| `extract_ocr` | Run OCR text detection on page screenshot | `description` |
+
+## Examples
+
+### Extract page content for LLM processing
+
+```json
+{
+  "tool": "browse_extract",
+  "arguments": {
+    "max_tokens": 1500
+  }
+}
+```
+
+Returns clean markdown with a token budget:
+
+```markdown
+# Page Title
+
+[markdown content...]
+
+---
+42 links | ~1500 tokens
+```
+
+Uses `openclaw_content_extract` to strip navigation, ads, and boilerplate. The `max_tokens` parameter ensures the output fits your context window budget.
+
+### Search the web
+
+```json
+{
+  "tool": "browse_search",
+  "arguments": {
+    "query": "rust async runtime comparison",
+    "max_results": 5
+  }
+}
+```
+
+Returns ranked results from DuckDuckGo and Brave without navigating to any page:
+
+```
+Search results for: rust async runtime comparison
+
+1. **Tokio - An asynchronous Rust runtime**
+   https://tokio.rs/
+   Tokio is an async runtime for Rust...
+
+2. **async-std - Async version of the Rust standard library**
+   https://async.rs/
+   ...
+```
+
+### Extract a PDF
+
+```json
+{
+  "tool": "extract_pdf",
+  "arguments": {
+    "url": "https://example.com/report.pdf"
+  }
+}
+```
+
+Fetches the PDF over HTTP and extracts text content as markdown. Useful for processing research papers, reports, and documentation that live behind PDF links.

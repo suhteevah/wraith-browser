@@ -1,0 +1,61 @@
+---
+title: Knowledge Cache
+description: Full-text search, pinning, tagging, eviction, and domain profiling for cached pages
+---
+
+The knowledge cache stores previously visited pages for fast retrieval, full-text search, and change detection. Pages are cached automatically on navigation. You can pin important pages to prevent eviction, tag them for organized retrieval, and profile domains to understand their content refresh patterns.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `cache_search` | Full-text search across all cached pages | `query` (required), `max_results` |
+| `cache_get` | Check if a URL is cached and return its content | `url` (required) |
+| `cache_stats` | Show cache statistics (size, hit rate, domains) | *(none)* |
+| `cache_purge` | Purge stale entries from the cache | *(none)* |
+| `cache_pin` | Pin a URL so it is never evicted | `url` (required), `notes` |
+| `cache_tag` | Tag a cached page with labels | `url` (required), `tags` (required) |
+| `cache_domain_profile` | Show domain content change frequency and TTL | `domain` (required) |
+| `cache_find_similar` | Find cached pages similar to a given URL | `url` (required), `max_results` |
+| `cache_evict` | Evict pages to fit within a byte budget | `max_bytes` (required) |
+| `cache_raw_html` | Get the raw cached HTML for a URL | `url` (required) |
+
+## Examples
+
+### Search cached content
+
+```json
+{
+  "tool": "cache_search",
+  "arguments": {
+    "query": "remote Rust engineer",
+    "max_results": 10
+  }
+}
+```
+
+Full-text search across all pages you have previously visited. Returns matching cached entries with URLs and relevance scores. This is much faster than re-visiting pages.
+
+### Tag and organize cached pages
+
+```json
+{
+  "tool": "cache_tag",
+  "arguments": {
+    "url": "https://example.com/jobs/rust-engineer",
+    "tags": ["job-listing", "remote", "rust"]
+  }
+}
+```
+
+Tags make it easy to retrieve related pages later via `cache_search`. Pin important pages to keep them available even when the cache is under memory pressure:
+
+```json
+{
+  "tool": "cache_pin",
+  "arguments": {
+    "url": "https://example.com/jobs/rust-engineer",
+    "notes": "Top candidate - applied 2026-03-20"
+  }
+}
+```

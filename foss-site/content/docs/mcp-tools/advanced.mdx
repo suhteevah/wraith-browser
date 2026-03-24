@@ -1,0 +1,121 @@
+---
+title: Advanced Tools
+description: Credential vault, authentication detection, TLS security, AI planning, and autonomous task execution
+---
+
+Advanced tools cover security-sensitive operations and AI-powered planning. The credential vault provides AES-256-GCM encrypted secret storage. Authentication detection identifies login flows automatically. TLS tools manage fingerprint profiles. Planning tools use Monte Carlo Tree Search for action selection, and `browse_task` runs fully autonomous multi-step browsing.
+
+## Credential Vault
+
+The vault uses AES-256-GCM encryption backed by an SQLite database at `~/.openclaw/vault.db`. All secrets are encrypted at rest. The vault auto-unlocks with an empty passphrase in MCP mode.
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `browse_vault_store` | Store a credential in the encrypted vault | `domain` (required), `kind` (required), `identity` (required), `secret` (required) |
+| `browse_vault_get` | Retrieve a credential (decrypts the secret) | `domain` (required), `kind` |
+| `browse_vault_list` | List all credentials (metadata only) | *(none)* |
+| `browse_vault_delete` | Delete a credential by ID | `id` (required) |
+| `browse_vault_totp` | Generate a TOTP 2FA code | `domain` (required) |
+| `browse_vault_rotate` | Rotate a credential's secret value | `id` (required), `new_secret` (required) |
+| `browse_vault_audit` | View vault audit log entries | `limit` |
+| `vault_lock` | Lock the vault and zeroize the master key | *(none)* |
+| `vault_unlock` | Unlock the vault with a passphrase | `passphrase` |
+| `vault_approve_domain` | Approve a domain to use a credential | `credential_id` (required), `domain` (required) |
+| `vault_revoke_domain` | Revoke a domain's access to a credential | `credential_id` (required), `domain` (required) |
+| `vault_check_approval` | Check if a domain is approved for a credential | `credential_id` (required), `domain` (required) |
+
+Credential kinds: `"password"`, `"api_key"`, `"oauth_token"`, `"totp_seed"`, `"session_cookie"`, `"generic"`.
+
+## Authentication Detection
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `auth_detect` | Detect auth flows on a page (password, OAuth, 2FA, CAPTCHA) | `url` |
+
+## TLS Security
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `tls_profiles` | List available TLS fingerprint profiles | *(none)* |
+| `tls_verify` | Verify TLS fingerprint matches Chrome 136 | *(none)* |
+
+## Planning & Prediction
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `mcts_plan` | Use MCTS to plan the best next action | `state` (required), `actions` (required), `simulations` |
+| `mcts_stats` | Show MCTS planner statistics | *(none)* |
+| `prefetch_predict` | Predict which URLs to prefetch | `task_description` (required) |
+
+## Autonomous Task Execution
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `browse_task` | Run an autonomous multi-step browsing task | `description` (required), `url`, `max_steps` |
+
+## Examples
+
+### Store and retrieve credentials
+
+```json
+{
+  "tool": "browse_vault_store",
+  "arguments": {
+    "domain": "github.com",
+    "kind": "password",
+    "identity": "user@example.com",
+    "secret": "my-password"
+  }
+}
+```
+
+```json
+{
+  "tool": "browse_vault_get",
+  "arguments": {
+    "domain": "github.com"
+  }
+}
+```
+
+Domain approval controls which sites can access a credential:
+
+```json
+{
+  "tool": "vault_approve_domain",
+  "arguments": {
+    "credential_id": "a1b2c3d4-...",
+    "domain": "login.github.com"
+  }
+}
+```
+
+### AI-powered action planning
+
+```json
+{
+  "tool": "mcts_plan",
+  "arguments": {
+    "state": "On job listing page with 10 results visible",
+    "actions": ["click @e1", "click @e5", "scroll down", "navigate /page/2"],
+    "simulations": 200
+  }
+}
+```
+
+Returns ranked action recommendations with UCB1 confidence scores. Use this when the agent needs to decide between multiple possible next steps.
+
+### Run an autonomous task
+
+```json
+{
+  "tool": "browse_task",
+  "arguments": {
+    "description": "Find the top 5 remote Rust jobs on HackerNews Who's Hiring and extract company names and URLs",
+    "url": "https://news.ycombinator.com",
+    "max_steps": 30
+  }
+}
+```
+
+Executes a fully autonomous multi-step browsing session using the AI agent loop. The agent decides which pages to visit, what to click, and when the task is complete.

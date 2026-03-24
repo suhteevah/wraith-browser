@@ -1,0 +1,52 @@
+---
+title: First MCP Session
+description: Connect to Wraith via MCP and run your first command
+---
+
+## Start the MCP server
+
+```bash
+openclaw-browser serve --transport stdio
+```
+
+This starts Wraith in MCP mode, communicating via JSON-RPC over stdin/stdout.
+
+## Connect from Claude Code
+
+Add to your `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "openclaw-browser": {
+      "command": "openclaw-browser",
+      "args": ["serve", "--transport", "stdio"]
+    }
+  }
+}
+```
+
+Restart Claude Code — you'll see 143 new tools available.
+
+## Connect from Cursor
+
+Add the same MCP configuration to your Cursor settings under **MCP Servers**.
+
+## Your first command
+
+Once connected, try navigating to a page:
+
+```json
+{
+  "tool": "browse_navigate",
+  "arguments": {
+    "url": "https://example.com"
+  }
+}
+```
+
+You'll get back a snapshot with the page URL, title, and content.
+
+## Next steps
+
+[Scrape your first page →](/docs/getting-started/hello-world-scrape)

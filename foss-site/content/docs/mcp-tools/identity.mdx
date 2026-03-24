@@ -1,0 +1,56 @@
+---
+title: Identity & Fingerprinting
+description: Browser fingerprints, identity profiles, site technology detection, and stealth status
+---
+
+Identity tools control how OpenClaw Browser presents itself to websites. You can switch between browser fingerprint profiles, set personal or anonymous identity modes, detect a site's technology stack, and verify your TLS fingerprint matches a real Chrome browser.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `fingerprint_list` | List available browser fingerprint profiles | *(none)* |
+| `fingerprint_import` | Import a fingerprint profile from a JSON file | `path` (required) |
+| `identity_profile` | Set browsing identity (personal or anonymous) | `profile_type` (required), `name` |
+| `site_fingerprint` | Detect a website's technology stack | `url` |
+| `stealth_status` | Show current TLS compatibility and evasion config | *(none)* |
+| `tls_verify` | Verify TLS fingerprint matches Chrome 136 | *(none)* |
+
+## Examples
+
+### Set an anonymous browsing identity
+
+```json
+{
+  "tool": "identity_profile",
+  "arguments": {
+    "profile_type": "anonymous"
+  }
+}
+```
+
+Switches to anonymous mode. Use `"personal"` with a `name` parameter when you want to browse as yourself.
+
+### Detect a site's technology stack
+
+```json
+{
+  "tool": "site_fingerprint",
+  "arguments": {
+    "url": "https://example.com"
+  }
+}
+```
+
+Returns detected technologies: React, WordPress, Shopify, Next.js, etc. Useful for deciding whether to use the native engine or CDP for JavaScript-heavy frameworks.
+
+### Verify TLS stealth
+
+```json
+{
+  "tool": "tls_verify",
+  "arguments": {}
+}
+```
+
+Fetches a TLS fingerprinting service and compares JA3/JA4 hashes, cipher suites, and HTTP/2 SETTINGS against known Chrome 136 values. Returns a detailed pass/fail report. Requires the `stealth-tls` feature flag.

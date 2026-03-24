@@ -1,0 +1,53 @@
+---
+title: Time-Travel Debugging
+description: Inspect, branch, replay, and diff the agent's decision timeline
+---
+
+Time-travel debugging lets you inspect the sequence of decisions your agent made during a browsing session. You can view the timeline summary, branch from any decision point to explore alternative paths, replay to a specific step, diff two branches, and export the full timeline as JSON.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `timetravel_summary` | Show the agent decision timeline summary | *(none)* |
+| `timetravel_branch` | Branch from a decision point to explore alternatives | `step` (required), `name` (required) |
+| `timetravel_replay` | Replay the timeline to a specific step | `step` (required) |
+| `timetravel_diff` | Diff two branches to see where decisions diverged | `branch_a` (required), `branch_b` (required) |
+| `timetravel_export` | Export the full timeline as JSON | *(none)* |
+
+## Examples
+
+### Inspect the decision timeline
+
+```json
+{
+  "tool": "timetravel_summary",
+  "arguments": {}
+}
+```
+
+Returns a summary of every decision the agent made: which pages were visited, what actions were taken, and in what order. Each step is numbered for reference.
+
+### Branch and explore alternatives
+
+```json
+{
+  "tool": "timetravel_branch",
+  "arguments": {
+    "step": 5,
+    "name": "try-different-search"
+  }
+}
+```
+
+Creates a new branch from step 5 of the timeline. You can then take different actions and later diff the two branches to see how the outcomes diverged:
+
+```json
+{
+  "tool": "timetravel_diff",
+  "arguments": {
+    "branch_a": "main",
+    "branch_b": "try-different-search"
+  }
+}
+```

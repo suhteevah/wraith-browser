@@ -1,0 +1,36 @@
+{
+  "name": "openclaw-foss-site",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@vercel/geistdocs": "^1.1.2",
+    "fumadocs-core": "^16.7.5",
+    "fumadocs-mdx": "^14.2.11",
+    "fumadocs-ui": "^16.7.5",
+    "geist": "^1.7.0",
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^0.400.0",
+    "next": "^16.2.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/node": "25.5.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0"
+  },
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module"
+}

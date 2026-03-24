@@ -1,0 +1,54 @@
+---
+title: Cookie Management
+description: Get, set, save, load, and import browser cookies
+---
+
+Cookie management tools let you inspect, modify, and persist cookies across sessions. You can import cookies directly from your Chrome browser profile on Windows, or save/load them as JSON files for reuse.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `cookie_get` | Get cookies for a domain from the cookie jar | `domain` (required) |
+| `cookie_set` | Set a cookie in the cookie jar | `domain` (required), `name` (required), `value` (required), `path` |
+| `cookie_save` | Save all cookies to a JSON file | `path` |
+| `cookie_load` | Load cookies from a JSON file | `path` |
+| `cookie_import_chrome` | Import cookies from Chrome browser profile (Windows) | `profile`, `domains` |
+
+## Examples
+
+### Persist cookies across sessions
+
+```json
+{
+  "tool": "cookie_save",
+  "arguments": {
+    "path": "~/.openclaw/cookies.json"
+  }
+}
+```
+
+Saves all cookies in the browser's cookie jar to a JSON file. Load them back in a future session:
+
+```json
+{
+  "tool": "cookie_load",
+  "arguments": {
+    "path": "~/.openclaw/cookies.json"
+  }
+}
+```
+
+### Import cookies from Chrome
+
+```json
+{
+  "tool": "cookie_import_chrome",
+  "arguments": {
+    "profile": "Default",
+    "domains": ["github.com", "linkedin.com"]
+  }
+}
+```
+
+Reads Chrome's encrypted SQLite cookie database and decrypts cookies using Windows DPAPI. This lets you reuse your existing authenticated sessions without logging in again. Windows only.

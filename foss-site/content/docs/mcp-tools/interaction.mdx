@@ -1,0 +1,79 @@
+---
+title: Interaction
+description: Click, fill, select, type, hover, and submit -- form control and element interaction tools
+---
+
+Interaction tools let your agent click buttons, fill forms, select dropdowns, type with realistic delays, upload files, and submit forms. All element targeting uses `@ref` IDs from the DOM snapshot. Pass `force: true` to bypass hidden/disabled safety checks when needed.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `browse_click` | Click an element by @ref ID | `ref_id` (required), `force` |
+| `browse_fill` | Fill a form field, replacing existing content | `ref_id` (required), `text` (required), `force` |
+| `browse_select` | Select a dropdown option | `ref_id` (required), `value` (required), `force` |
+| `browse_type` | Type text with realistic keystroke delays | `ref_id` (required), `text` (required), `delay_ms`, `force` |
+| `browse_hover` | Hover over an element | `ref_id` (required) |
+| `browse_key_press` | Press a keyboard key | `key` (required) |
+| `browse_upload_file` | Upload a file to a file input | `file_path` (required), `ref_id` |
+| `browse_submit_form` | Submit a form by clicking its button or calling submit() | `ref_id` (required) |
+| `browse_custom_dropdown` | Interact with a non-native dropdown/combobox | `ref_id` (required), `value` (required), `type_to_filter` |
+| `browse_fetch_scripts` | Fetch and execute external script tags (activate React) | *(none)* |
+| `browse_solve_captcha` | Solve a CAPTCHA using a third-party service | `captcha_type`, `site_key` |
+| `browse_login` | Full login flow with redirect chain following | `url` (required), `username` (required), `password` (required) |
+| `browse_eval_js` | Execute JavaScript on the current page | `code` (required) |
+
+## Examples
+
+### Fill and submit a form
+
+```json
+{
+  "tool": "browse_fill",
+  "arguments": {
+    "ref_id": 5,
+    "text": "Rust Developer"
+  }
+}
+```
+
+```json
+{
+  "tool": "browse_submit_form",
+  "arguments": {
+    "ref_id": 12
+  }
+}
+```
+
+`browse_submit_form` is smart about targets: if the `ref_id` points to a button it clicks it, if it points to a `<form>` it calls `form.submit()`, and if it points to any element inside a form it submits the parent form.
+
+### Handle a custom dropdown
+
+```json
+{
+  "tool": "browse_custom_dropdown",
+  "arguments": {
+    "ref_id": 8,
+    "value": "United States",
+    "type_to_filter": true
+  }
+}
+```
+
+Handles React/Greenhouse-style dropdowns that are not native `<select>` elements. Clicks to open, types to filter options, then clicks the matching option. Essential for country selectors and similar custom widgets.
+
+### Login with redirect following
+
+```json
+{
+  "tool": "browse_login",
+  "arguments": {
+    "url": "https://app.example.com/login",
+    "username": "user@example.com",
+    "password": "secret"
+  }
+}
+```
+
+Navigates to the login page, fills credentials, clicks submit, and follows the entire OAuth/auth redirect chain (302 -> 302 -> 200). Captures all Set-Cookie headers at every redirect hop.

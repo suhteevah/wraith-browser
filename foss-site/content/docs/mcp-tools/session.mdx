@@ -1,0 +1,53 @@
+---
+title: Session Management
+description: Named browser sessions with independent cookies, history, and page state
+---
+
+Session management tools let you run multiple browser instances simultaneously. Each named session has its own cookie jar, browsing history, and page state. You can switch between sessions to work on different tasks in parallel. Requires the `cdp` feature flag.
+
+## Tools
+
+| Tool | Description | Key Parameters |
+|------|-------------|----------------|
+| `browse_session_create` | Create a new named browser session | `name` (required), `engine_type` |
+| `browse_session_switch` | Switch the active session | `name` (required) |
+| `browse_session_list` | List all open sessions with engine type and URL | *(none)* |
+| `browse_session_close` | Close a session and shut down its engine | `name` (required) |
+
+## Examples
+
+### Work with multiple sessions
+
+```json
+{
+  "tool": "browse_session_create",
+  "arguments": {
+    "name": "linkedin",
+    "engine_type": "cdp"
+  }
+}
+```
+
+Creates a new session backed by Chrome (CDP). You can also use `"native"` for the Sevro engine. Switch between sessions:
+
+```json
+{
+  "tool": "browse_session_switch",
+  "arguments": {
+    "name": "linkedin"
+  }
+}
+```
+
+All subsequent `browse_*` commands route to the switched session's engine. The `"native"` session always exists and cannot be closed. If you close the active session, it auto-switches back to `"native"`.
+
+### List active sessions
+
+```json
+{
+  "tool": "browse_session_list",
+  "arguments": {}
+}
+```
+
+Returns all open sessions with their engine type (native Sevro or CDP Chrome) and current URL. Available even without the `cdp` feature flag.

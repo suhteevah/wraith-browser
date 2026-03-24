@@ -1,0 +1,41 @@
+---
+title: Installation
+description: Install OpenClaw Browser in under a minute
+---
+
+## Cargo (recommended)
+
+```bash
+cargo install openclaw-browser
+```
+
+Requires Rust 1.78+. The binary is ~15MB.
+
+## Docker
+
+```bash
+docker pull openclaw/browser:latest
+docker run --rm openclaw/browser:latest --version
+```
+
+## Binary download
+
+Download pre-built binaries from the [GitHub releases page](https://github.com/suhteevah/openclaw-browser/releases).
+
+| Platform | Architecture | Binary |
+|----------|-------------|--------|
+| Linux | x86_64 | `openclaw-browser-linux-amd64` |
+| macOS | Apple Silicon | `openclaw-browser-darwin-arm64` |
+| macOS | Intel | `openclaw-browser-darwin-amd64` |
+| Windows | x86_64 | `openclaw-browser-windows-amd64.exe` |
+
+## Verify
+
+```bash
+openclaw-browser --version
+# OpenClaw Browser v0.1.0
+```
+
+## Next steps
+
+[Start your first MCP session →](/docs/getting-started/first-session)

@@ -1,0 +1,295 @@
+---
+title: MCP Protocol Integration
+description: How OpenClaw Browser implements the Model Context Protocol — JSON-RPC over stdio, tool registration, the dispatch model, and transport modes.
+---
+
+# MCP Protocol Integration
+
+OpenClaw Browser exposes its capabilities through the
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io), a standard for connecting
+AI agents to external tools. The implementation lives in `crates/mcp-server/` and uses the
+`rmcp` Rust crate for protocol handling.
+
+## What is MCP?
+
+MCP is a JSON-RPC 2.0-based protocol that lets AI agents discover and invoke tools provided
+by external servers. An MCP server advertises a list of tools (with JSON Schema parameter
+definitions), and agents call those tools by name with structured arguments. The protocol
+handles request/response correlation, error propagation, and capability negotiation.
+
+For OpenClaw, MCP is the primary interface. Claude Code, Cursor, and other MCP-compatible
+agents connect to the OpenClaw MCP server and gain browser automation capabilities without
+any custom integration code.
+
+## Transport: stdio
+
+The MCP server currently supports **stdio transport** — it reads JSON-RPC messages from
+stdin and writes responses to stdout. This is the transport mode used by Claude Code and
+most MCP clients.
+
+```rust
+pub enum Transport {
+    Stdio,
+}
+```
+
+The stdio transport is initialized through the `rmcp` library:
+
+```rust
+let transport = rmcp::transport::io::stdio();
+let service = rmcp::serve_server(handler, transport).await?;
+service.waiting().await?;
+```
+
+The server blocks on `service.waiting()` until the client disconnects (closes stdin). This
+is the expected lifecycle for a tool that is launched as a subprocess by an AI agent.
+
+### How Agents Connect
+
+An MCP client (like Claude Code) launches OpenClaw as a subprocess and communicates over
+the process's stdin/stdout pipes. The typical configuration in an agent's MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "openclaw-browser": {
+      "command": "openclaw-browser",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+The agent spawns the process, performs MCP initialization (capability exchange), then begins
+calling tools. When the agent session ends, it closes stdin, which causes the server to
+shut down cleanly.
+
+### Message Format
+
+Each message is a JSON-RPC 2.0 object, newline-delimited on stdio:
+
+**Request (agent to server):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "browse_navigate",
+    "arguments": {
+      "url": "https://example.com"
+    }
+  }
+}
+```
+
+**Response (server to agent):**
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Page: \"Example Domain\" (https://example.com)\n\n@e1    [link]        \"More information...\"\n"
+      }
+    ]
+  }
+}
+```
+
+## The WraithHandler
+
+The core of the MCP server is `WraithHandler`, defined in
+`crates/mcp-server/src/server.rs`. It implements the `rmcp::ServerHandler` trait, which
+requires three methods:
+
+```rust
+impl ServerHandler for WraithHandler {
+    fn list_tools(&self, ...) -> Result<ListToolsResult, ErrorData>;
+    fn call_tool(&self, request: CallToolRequestParams, ...) -> Result<CallToolResult, ErrorData>;
+    fn get_tool(&self, name: &str) -> Option<Tool>;
+}
+```
+
+### Handler State
+
+The handler holds:
+
+- **`tools: Vec<Tool>`** — The registered tool definitions (name, description, JSON Schema
+  for parameters, annotations).
+- **`engine: Arc<Mutex<dyn BrowserEngine>>`** — The primary browser engine instance.
+- **`dedup_tracker: Arc<ApplicationTracker>`** — SQLite-backed deduplication tracker
+  (prevents duplicate operations on the same target).
+- **Named sessions** (when CDP is enabled) — A `HashMap<String, Arc<Mutex<dyn BrowserEngine>>>`
+  allowing multiple parallel browser sessions.
+
+## Tool Registration
+
+Tools are registered at handler construction time as `rmcp::model::Tool` values. Each tool
+has:
+
+- **Name** — The string agents use to call the tool (e.g., `"browse_navigate"`).
+- **Description** — A human-readable description shown during tool discovery.
+- **Input schema** — A JSON Schema generated from Rust structs via the `schemars` crate.
+- **Annotations** — Metadata about the tool's behavior:
+  - `read_only` — Does this tool modify state?
+  - `destructive` — Could this tool cause irreversible changes?
+  - `open_world` — Does this tool access the network?
+
+Example registration:
+
+```rust
+make_tool(
+    "browse_navigate",
+    "Navigate to a URL and return a DOM snapshot with interactive elements.",
+    &schema_for!(NavigateInput),
+    ToolAnnotations::new().read_only(false).destructive(false).open_world(true),
+)
+```
+
+The `schema_for!()` macro from `schemars` generates the JSON Schema from the Rust input
+struct. This means parameter validation is derived from the Rust type system — if the struct
+has a required `url: String` field, the JSON Schema will enforce that automatically.
+
+### Tool Categories
+
+The 143 registered tools span several categories:
+
+| Category | Examples | Annotations |
+|---|---|---|
+| **Navigation** | `browse_navigate`, `browse_back`, `browse_forward`, `browse_reload` | read-write, open-world |
+| **Interaction** | `browse_click`, `browse_fill`, `browse_select`, `browse_type`, `browse_hover` | read-write, open-world |
+| **Observation** | `browse_snapshot`, `browse_extract`, `browse_screenshot`, `browse_tabs` | read-only, closed-world |
+| **Search** | `browse_search` | read-only, open-world |
+| **JavaScript** | `browse_eval_js` | read-write, destructive |
+| **Vault** | `browse_vault_store`, `browse_vault_get`, `browse_vault_list` | read-write, closed-world |
+| **Sessions** | `browse_session_create`, `browse_session_switch`, `browse_session_list` | read-write, closed-world |
+| **Cache** | `cache_get`, `cache_search`, `cache_stats`, `cache_evict` | varies |
+| **Scripting** | `script_run`, `script_list`, `script_load` | read-write, closed-world |
+
+## The Dispatch Model
+
+When an agent calls a tool, the `call_tool` method extracts the tool name and arguments,
+then delegates to `dispatch_tool()`:
+
+```rust
+fn call_tool(&self, request: CallToolRequestParams, _context: ...) -> ... {
+    let name = request.name.clone();
+    let arguments = request.arguments.clone();
+    async move { self.dispatch_tool(&name, arguments).await }
+}
+```
+
+`dispatch_tool()` is a large `match` statement on the tool name. Each arm:
+
+1. **Parses arguments** into a typed Rust struct via `serde_json::from_value`.
+2. **Acquires the engine lock** (`self.engine.lock().await`).
+3. **Executes the operation** on the engine.
+4. **Formats the result** as `CallToolResult` with `Content::text(...)`.
+
+A simplified example for `browse_click`:
+
+```rust
+"browse_click" => {
+    let input: ClickInput = parse_args(args)?;
+    let mut engine = self.engine.lock().await;
+    let action = BrowserAction::Click {
+        ref_id: input.r#ref,
+        force: input.force,
+    };
+    let result = engine.execute_action(action).await
+        .map_err(|e| ErrorData::internal_error(format!("Click failed: {e}"), None))?;
+    Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
+}
+```
+
+### Error Handling
+
+Errors are propagated as JSON-RPC error responses using `ErrorData`:
+
+- **`invalid_params`** — The agent provided malformed arguments (wrong types, missing
+  required fields). Generated by the `parse_args()` helper when `serde_json::from_value`
+  fails.
+- **`internal_error`** — The operation failed at the engine level (network error, element
+  not found, navigation timeout). The error message from the `BrowserError` is passed
+  through to the agent.
+
+Agents receive structured error responses they can reason about:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "error": {
+    "code": -32603,
+    "message": "Click failed: element @e99 not found in current snapshot"
+  }
+}
+```
+
+## CDP Auto-Fallback
+
+When compiled with the `cdp` feature, the dispatch model includes an automatic fallback
+mechanism in the `browse_navigate` handler:
+
+1. Navigate using the primary engine (typically SevroEngine).
+2. Take a snapshot.
+3. If the snapshot contains **fewer than 5 interactive elements**, suspect a JS-heavy SPA
+   that did not render properly.
+4. Automatically re-navigate using CdpEngine (Chrome).
+5. Return the CDP snapshot instead, prefixed with a notice:
+   `[Full browser fallback — native had 3 elements]`
+
+This means agents get correct results from SPAs without needing to explicitly choose an
+engine. The fallback is transparent — the agent sees a normal snapshot response.
+
+## Session Management
+
+The MCP server supports named parallel sessions when CDP is enabled. Each session is an
+independent browser engine instance with its own page state, cookies, and history.
+
+- **`browse_session_create`** — Create a new named session with a specified engine type.
+- **`browse_session_switch`** — Switch the active session (subsequent commands route to it).
+- **`browse_session_list`** — List all sessions and their current URLs.
+- **`browse_session_close`** — Close a session and release its resources.
+
+The default session is called `"native"` and uses the primary engine. An agent might create
+a `"chrome"` session for JS-heavy pages:
+
+```json
+{ "tool": "browse_session_create", "arguments": { "name": "chrome", "engine": "cdp" } }
+{ "tool": "browse_session_switch", "arguments": { "name": "chrome" } }
+{ "tool": "browse_navigate", "arguments": { "url": "https://spa-app.example.com" } }
+```
+
+## Initialization Flow
+
+The complete server startup sequence:
+
+1. **Engine creation** — `create_engine_with_options("auto", opts)` selects the best
+   available engine (Sevro if compiled in, otherwise Native).
+2. **Handler construction** — `WraithHandler::new()` builds the tool registry and wraps
+   the engine.
+3. **Transport setup** — `rmcp::transport::io::stdio()` creates the stdio transport.
+4. **Server start** — `rmcp::serve_server(handler, transport)` performs MCP initialization
+   (capability exchange with the client).
+5. **Request loop** — `service.waiting()` blocks, processing JSON-RPC requests until
+   stdin closes.
+6. **Shutdown** — The engine's `shutdown()` method is called, releasing resources (killing
+   Chrome if CDP was active, cleaning up temp directories).
+
+## Building a Custom MCP Client
+
+Since OpenClaw uses standard MCP over stdio, any MCP-compatible client can connect to it.
+The protocol flow:
+
+1. Spawn the OpenClaw binary with `mcp` as the subcommand.
+2. Send an `initialize` request to negotiate capabilities.
+3. Call `tools/list` to discover available tools.
+4. Call `tools/call` with the desired tool name and arguments.
+5. Close stdin to shut down the server.
+
+The server is stateful — it maintains browser state (current page, cookies, session
+history) across calls within a single process lifecycle. Each new process starts fresh.

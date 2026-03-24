@@ -1,0 +1,71 @@
+{
+  "title": "Fill a Form",
+  "description": "Navigate to a form, inspect fields via snapshot, fill values, and submit.",
+  "steps": [
+    {
+      "type": "command",
+      "content": "browse_navigate url=\"https://httpbin.org/forms/post\"",
+      "delay_ms": 800,
+      "annotation": "Navigate to a demo form page on httpbin.org"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"url\": \"https://httpbin.org/forms/post\",\n  \"title\": \"httpbin.org — HTML form\",\n  \"status\": 200,\n  \"elapsed_ms\": 52\n}",
+      "delay_ms": 600
+    },
+    {
+      "type": "command",
+      "content": "browse_snapshot",
+      "delay_ms": 800,
+      "annotation": "See the form fields and their @ref IDs"
+    },
+    {
+      "type": "output",
+      "content": "[page snapshot]\n  HTML form — httpbin.org\n  ───────────────────────\n  Customer name:  [@ref=1] <input name=\"custname\" type=\"text\">\n  Telephone:      [@ref=2] <input name=\"custtel\" type=\"tel\">\n  E-mail:         [@ref=3] <input name=\"custemail\" type=\"email\">\n  Pizza Size:\n    [@ref=4] <input type=\"radio\" name=\"size\" value=\"small\"> Small\n    [@ref=5] <input type=\"radio\" name=\"size\" value=\"medium\"> Medium\n    [@ref=6] <input type=\"radio\" name=\"size\" value=\"large\"> Large\n  Toppings:\n    [@ref=7] <input type=\"checkbox\" name=\"topping\" value=\"bacon\"> Bacon\n    [@ref=8] <input type=\"checkbox\" name=\"topping\" value=\"cheese\"> Extra Cheese\n  Delivery time:  [@ref=9] <input name=\"delivery\" type=\"time\">\n  [@ref=10] <textarea name=\"comments\"> Special instructions\n  [@ref=11] <button type=\"submit\"> Submit order",
+      "delay_ms": 1000
+    },
+    {
+      "type": "annotation",
+      "content": "Every form element has a @ref ID. Use browse_fill with the @ref to set values — no CSS selectors needed.",
+      "delay_ms": 1200
+    },
+    {
+      "type": "command",
+      "content": "browse_fill ref=1 value=\"Alice Johnson\"",
+      "delay_ms": 600,
+      "annotation": "Fill the customer name field"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"ref\": 1,\n  \"field\": \"custname\",\n  \"value\": \"Alice Johnson\"\n}",
+      "delay_ms": 400
+    },
+    {
+      "type": "command",
+      "content": "browse_fill ref=3 value=\"alice@example.com\"",
+      "delay_ms": 600,
+      "annotation": "Fill the email field"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"ref\": 3,\n  \"field\": \"custemail\",\n  \"value\": \"alice@example.com\"\n}",
+      "delay_ms": 400
+    },
+    {
+      "type": "command",
+      "content": "browse_submit_form ref=11",
+      "delay_ms": 800,
+      "annotation": "Click the submit button to send the form"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"navigated_to\": \"https://httpbin.org/post\",\n  \"status\": 200,\n  \"elapsed_ms\": 89,\n  \"form_data\": {\n    \"custname\": \"Alice Johnson\",\n    \"custemail\": \"alice@example.com\"\n  }\n}",
+      "delay_ms": 600
+    },
+    {
+      "type": "annotation",
+      "content": "Form submitted and the server echoed back our data. No XPath, no CSS selectors — just @ref IDs.",
+      "delay_ms": 1000
+    }
+  ]
+}

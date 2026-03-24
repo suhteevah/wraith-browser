@@ -1,0 +1,111 @@
+{
+  "title": "Build a Knowledge Graph",
+  "description": "Extract content from multiple pages, then search and visualize the knowledge graph.",
+  "steps": [
+    {
+      "type": "command",
+      "content": "browse_navigate url=\"https://en.wikipedia.org/wiki/Rust_(programming_language)\"",
+      "delay_ms": 800,
+      "annotation": "Start with the Rust programming language Wikipedia page"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"url\": \"https://en.wikipedia.org/wiki/Rust_(programming_language)\",\n  \"title\": \"Rust (programming language) - Wikipedia\",\n  \"status\": 200,\n  \"elapsed_ms\": 63\n}",
+      "delay_ms": 600
+    },
+    {
+      "type": "command",
+      "content": "extract_markdown",
+      "delay_ms": 600,
+      "annotation": "Extract and cache the page content — it's automatically indexed"
+    },
+    {
+      "type": "output",
+      "content": "# Rust (programming language)\n\nRust is a general-purpose programming language emphasizing performance,\ntype safety, and concurrency. It enforces memory safety without a\ntraditional garbage collector.\n\n## History\nOriginally designed by Graydon Hoare at Mozilla Research...\n\n[cached: 2847 words, 14 entities extracted]",
+      "delay_ms": 800
+    },
+    {
+      "type": "command",
+      "content": "browse_navigate url=\"https://en.wikipedia.org/wiki/WebAssembly\"",
+      "delay_ms": 600
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"url\": \"https://en.wikipedia.org/wiki/WebAssembly\",\n  \"title\": \"WebAssembly - Wikipedia\",\n  \"status\": 200,\n  \"elapsed_ms\": 58\n}",
+      "delay_ms": 400
+    },
+    {
+      "type": "command",
+      "content": "extract_markdown",
+      "delay_ms": 600
+    },
+    {
+      "type": "output",
+      "content": "# WebAssembly\n\nWebAssembly (Wasm) is a binary instruction format for a stack-based\nvirtual machine. It is designed as a portable compilation target for\nprogramming languages, enabling deployment on the web.\n\n[cached: 1923 words, 11 entities extracted]",
+      "delay_ms": 600
+    },
+    {
+      "type": "command",
+      "content": "browse_navigate url=\"https://en.wikipedia.org/wiki/Mozilla\"",
+      "delay_ms": 600
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"ok\": true,\n  \"url\": \"https://en.wikipedia.org/wiki/Mozilla\",\n  \"title\": \"Mozilla - Wikipedia\",\n  \"status\": 200,\n  \"elapsed_ms\": 51\n}",
+      "delay_ms": 400
+    },
+    {
+      "type": "command",
+      "content": "extract_markdown",
+      "delay_ms": 600
+    },
+    {
+      "type": "output",
+      "content": "# Mozilla\n\nMozilla is a free software community founded in 1998 by members of\nNetscape. The Mozilla community produces the Firefox web browser,\nThunderbird email client, and other projects.\n\n[cached: 2104 words, 9 entities extracted]",
+      "delay_ms": 600
+    },
+    {
+      "type": "annotation",
+      "content": "Three pages extracted and cached. The engine automatically identifies entities and relationships across pages.",
+      "delay_ms": 1200
+    },
+    {
+      "type": "command",
+      "content": "cache_search query=\"Rust compiler target\"",
+      "delay_ms": 800,
+      "annotation": "Search across all cached content using full-text search"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"results\": [\n    {\n      \"url\": \"https://en.wikipedia.org/wiki/Rust_(programming_language)\",\n      \"score\": 0.94,\n      \"snippet\": \"...Rust can compile to WebAssembly as a target platform...\"\n    },\n    {\n      \"url\": \"https://en.wikipedia.org/wiki/WebAssembly\",\n      \"score\": 0.81,\n      \"snippet\": \"...Rust is one of the primary languages targeting Wasm...\"\n    }\n  ],\n  \"total\": 2\n}",
+      "delay_ms": 600
+    },
+    {
+      "type": "command",
+      "content": "entity_query name=\"Rust\"",
+      "delay_ms": 800,
+      "annotation": "Query the knowledge graph for the Rust entity and its connections"
+    },
+    {
+      "type": "output",
+      "content": "{\n  \"entity\": \"Rust\",\n  \"type\": \"ProgrammingLanguage\",\n  \"relations\": [\n    { \"target\": \"Mozilla\", \"relation\": \"created_by\", \"confidence\": 0.97 },\n    { \"target\": \"WebAssembly\", \"relation\": \"compiles_to\", \"confidence\": 0.95 },\n    { \"target\": \"Graydon Hoare\", \"relation\": \"designed_by\", \"confidence\": 0.99 },\n    { \"target\": \"Firefox\", \"relation\": \"used_in\", \"confidence\": 0.88 }\n  ],\n  \"sources\": 3\n}",
+      "delay_ms": 800
+    },
+    {
+      "type": "command",
+      "content": "entity_visualize root=\"Rust\" depth=2",
+      "delay_ms": 800,
+      "annotation": "Visualize the entity graph radiating from Rust"
+    },
+    {
+      "type": "output",
+      "content": "                    ┌──────────────┐\n                    │ Graydon Hoare │\n                    └──────┬───────┘\n                    designed_by\n                           │\n ┌─────────┐    created_by ┌──────┐  compiles_to  ┌─────────────┐\n │ Mozilla  │──────────────│ Rust │───────────────│ WebAssembly  │\n └────┬────┘               └──┬───┘               └──────┬──────┘\n      │                       │                          │\n   produces              used_in                    targets\n      │                       │                          │\n ┌────┴────┐             ┌────┴────┐             ┌───────┴───────┐\n │ Firefox  │             │  Servo  │             │   Browsers    │\n └─────────┘             └─────────┘             └───────────────┘",
+      "delay_ms": 600
+    },
+    {
+      "type": "annotation",
+      "content": "The knowledge graph connects entities across all your browsing sessions. Search, query, and visualize relationships — all running locally.",
+      "delay_ms": 1000
+    }
+  ]
+}
