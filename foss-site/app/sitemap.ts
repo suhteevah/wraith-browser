@@ -3,7 +3,7 @@ import { source } from '@/lib/source';
 import { getAllPosts } from '@/lib/blog';
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = 'https://wraith-docs-suhteevahs-projects.vercel.app';
+  const baseUrl = 'https://wraith-browser.vercel.app';
   const docs = source.getPages().map((page) => ({
     url: `${baseUrl}${page.url}`,
     lastModified: new Date(),

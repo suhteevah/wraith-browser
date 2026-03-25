@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import './global.css';
 
 export const metadata = {
-  metadataBase: new URL('https://wraith-docs-suhteevahs-projects.vercel.app'),
+  metadataBase: new URL('https://wraith-browser.vercel.app'),
   title: {
     default: 'Wraith Browser — AI-Agent-First Browser Engine',
     template: '%s — Wraith Browser',
