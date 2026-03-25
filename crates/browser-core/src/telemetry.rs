@@ -50,7 +50,7 @@ impl Default for TelemetryConfig {
         Self {
             enabled: false,
             endpoint: "http://localhost:4317".to_string(),
-            service_name: "openclaw-browser".to_string(),
+            service_name: "wraith-browser".to_string(),
             sample_rate: 1.0,
             export_format: ExportFormat::Otlp,
         }
@@ -428,7 +428,7 @@ mod tests {
         let config = TelemetryConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.endpoint, "http://localhost:4317");
-        assert_eq!(config.service_name, "openclaw-browser");
+        assert_eq!(config.service_name, "wraith-browser");
         assert_eq!(config.sample_rate, 1.0);
         assert_eq!(config.export_format, ExportFormat::Otlp);
     }

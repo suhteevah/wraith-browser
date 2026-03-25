@@ -1,27 +1,27 @@
 [package]
-name = "openclaw-browser"
+name = "wraith-browser"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "OpenClaw Browser — an AI-agent-first web browser written in Rust"
+description = "Wraith Browser — an AI-agent-first web browser written in Rust"
 
 [[bin]]
-name = "openclaw-browser"
+name = "wraith-browser"
 path = "src/main.rs"
 
 [features]
 default = ["sevro", "cdp"]
-sevro = ["openclaw-browser-core/sevro", "openclaw-mcp-server/sevro"]
-cdp = ["openclaw-browser-core/cdp", "openclaw-mcp-server/cdp"]
+sevro = ["wraith-browser-core/sevro", "wraith-mcp-server/sevro"]
+cdp = ["wraith-browser-core/cdp", "wraith-mcp-server/cdp"]
 
 [dependencies]
-openclaw-browser-core = { path = "../browser-core", default-features = false }
-openclaw-content-extract = { path = "../content-extract" }
-openclaw-identity = { path = "../identity" }
-openclaw-search = { path = "../search-engine" }
-openclaw-agent-loop = { path = "../agent-loop" }
-openclaw-cache = { path = "../cache" }
-openclaw-mcp-server = { path = "../mcp-server" }
+wraith-browser-core = { path = "../browser-core", default-features = false }
+wraith-content-extract = { path = "../content-extract" }
+wraith-identity = { path = "../identity" }
+wraith-search = { path = "../search-engine" }
+wraith-agent-loop = { path = "../agent-loop" }
+wraith-cache = { path = "../cache" }
+wraith-mcp-server = { path = "../mcp-server" }
 secrecy = { workspace = true }
 dirs.workspace = true
 tokio.workspace = true

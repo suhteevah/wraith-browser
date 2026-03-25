@@ -351,13 +351,13 @@ pub struct CookieSetInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CookieSaveInput {
-    /// File path to save cookies to. Default: ~/.openclaw/cookies.json.
+    /// File path to save cookies to. Default: ~/.wraith/cookies.json.
     pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CookieLoadInput {
-    /// File path to load cookies from. Default: ~/.openclaw/cookies.json.
+    /// File path to load cookies from. Default: ~/.wraith/cookies.json.
     pub path: Option<String>,
 }
 

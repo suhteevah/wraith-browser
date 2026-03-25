@@ -1,6 +1,6 @@
-//! # openclaw-cache
+//! # wraith-cache
 //!
-//! The persistent AI knowledge store for OpenClaw Browser.
+//! The persistent AI knowledge store for Wraith Browser.
 //!
 //! Every URL the agent visits, every page it extracts, every search it runs,
 //! every DOM snapshot it takes — all cached, indexed, and instantly retrievable.

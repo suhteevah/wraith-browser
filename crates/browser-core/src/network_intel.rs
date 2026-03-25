@@ -8,7 +8,7 @@
 //! ## Usage
 //!
 //! ```rust,no_run
-//! use openclaw_browser_core::network_intel::{NetworkCapture, ApiRequest};
+//! use wraith_browser_core::network_intel::{NetworkCapture, ApiRequest};
 //!
 //! let mut capture = NetworkCapture::new();
 //! // ... record requests as they come in via CDP event listeners ...

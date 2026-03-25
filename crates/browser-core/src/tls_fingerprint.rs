@@ -12,7 +12,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use openclaw_browser_core::tls_fingerprint::{chrome_131_profile, apply_profile_headers};
+//! use wraith_browser_core::tls_fingerprint::{chrome_131_profile, apply_profile_headers};
 //!
 //! let profile = chrome_131_profile();
 //! let headers = apply_profile_headers(&profile);

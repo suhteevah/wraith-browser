@@ -1,6 +1,6 @@
-//! # openclaw-search
+//! # wraith-search
 //!
-//! Dual-mode search engine for OpenClaw Browser:
+//! Dual-mode search engine for Wraith Browser:
 //!
 //! 1. **Web Metasearch** — Aggregates results from DuckDuckGo (HTML scraping,
 //!    no API key) and Brave Search (API key via `BRAVE_SEARCH_API_KEY`).

@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════
--- OpenClaw Browser Knowledge Store Schema
+-- Wraith Browser Knowledge Store Schema
 -- SQLite with WAL mode, FTS5 for full-text search backup
 -- ═══════════════════════════════════════════════════════════════════
 

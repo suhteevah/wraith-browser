@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════
--- OpenClaw Credential Vault Schema
+-- Wraith Credential Vault Schema
 -- Encrypted at rest — each secret blob is AES-256-GCM encrypted
 -- ═══════════════════════════════════════════════════════════════════
 

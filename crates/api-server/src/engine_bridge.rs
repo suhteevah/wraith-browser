@@ -9,8 +9,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use openclaw_browser_core::actions::{ActionResult, BrowserAction};
-use openclaw_browser_core::engine::{create_engine, BrowserEngine};
+use wraith_browser_core::actions::{ActionResult, BrowserAction};
+use wraith_browser_core::engine::{create_engine, BrowserEngine};
 
 use crate::error::AppError;
 use crate::routes::sessions::{EngineActionResult, EngineSnapshot};

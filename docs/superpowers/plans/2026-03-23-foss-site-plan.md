@@ -1,8 +1,8 @@
-# OpenClaw FOSS Site Implementation Plan
+# Wraith FOSS Site Implementation Plan
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the open-source documentation, homepage, and playground site for OpenClaw Browser using Geistdocs, deployed to Vercel via CLI.
+**Goal:** Build the open-source documentation, homepage, and playground site for Wraith Browser using Geistdocs, deployed to Vercel via CLI.
 
 **Architecture:** Geistdocs (Next.js 16 + Fumadocs) in `foss-site/` at repo root. Content in MDX under `content/docs/`. MCP tool reference auto-generated from a committed tools manifest. Interactive playground uses pre-recorded session replays. Blog via custom app routes. Deployed to Vercel via CLI.
 
@@ -104,7 +104,7 @@ Task 12 (polish) → depends on all previous tasks
 - Create: `foss-site/app/blog/page.tsx`
 - Create: `foss-site/app/blog/[slug]/page.tsx`
 - Create: `foss-site/lib/blog.ts`
-- Create: `foss-site/content/blog/introducing-openclaw.mdx`
+- Create: `foss-site/content/blog/introducing-wraith.mdx`
 
 ### Community Page (Task 11)
 - Create: `foss-site/app/community/page.tsx`
@@ -134,7 +134,7 @@ Task 12 (polish) → depends on all previous tasks
 - [ ] **Step 1: Create the foss-site directory and initialize Geistdocs**
 
 ```bash
-cd J:/openclaw-browser
+cd J:/wraith-browser
 mkdir foss-site && cd foss-site
 pnpm create geistdocs@latest .
 ```
@@ -157,10 +157,10 @@ Geistdocs uses named exports, not `defineConfig()`. Read `data/tool-count.json` 
 // foss-site/geistdocs.tsx
 import toolCount from './data/tool-count.json';
 
-export const title = 'OpenClaw Browser';
+export const title = 'Wraith Browser';
 
 export function Logo() {
-  return <span className="font-semibold">OpenClaw Browser</span>;
+  return <span className="font-semibold">Wraith Browser</span>;
 }
 
 export const nav = [
@@ -172,13 +172,13 @@ export const nav = [
 
 export const github = {
   owner: 'suhteevah',
-  repo: 'openclaw-browser',
+  repo: 'wraith-browser',
 };
 
-export const prompt = `You are the OpenClaw Browser documentation assistant. Help developers use Wraith — a native, AI-agent-first browser with ${toolCount.count} MCP tools. Answer questions about installation, MCP tool usage, the knowledge graph, vault, scripting, and self-hosting. You only know about the open-source version. Do not reference enterprise features, pricing, or managed hosting.`;
+export const prompt = `You are the Wraith Browser documentation assistant. Help developers use Wraith — a native, AI-agent-first browser with ${toolCount.count} MCP tools. Answer questions about installation, MCP tool usage, the knowledge graph, vault, scripting, and self-hosting. You only know about the open-source version. Do not reference enterprise features, pricing, or managed hosting.`;
 
 export const suggestions = [
-  'How do I install OpenClaw Browser?',
+  'How do I install Wraith Browser?',
   'How do I scrape a website with MCP tools?',
   'How does the knowledge graph work?',
   'How do I store credentials in the vault?',
@@ -239,10 +239,10 @@ import './global.css';
 // import { GeistdocsProvider } from 'geistdocs'; // or fumadocs-ui equivalent
 
 export const metadata = {
-  title: 'OpenClaw Browser — AI-Agent-First Browser Engine',
+  title: 'Wraith Browser — AI-Agent-First Browser Engine',
   description: 'A native browser engine for AI agents. 143+ MCP tools. No Chrome. ~50ms per page.',
   openGraph: {
-    title: 'OpenClaw Browser',
+    title: 'Wraith Browser',
     description: 'A native browser engine for AI agents. 143+ MCP tools. No Chrome. ~50ms per page.',
     images: ['/og-image.png'],
   },
@@ -285,7 +285,7 @@ Expected: Next.js dev server starts on localhost:3000 with Geistdocs chrome (hea
 - [ ] **Step 7: Commit**
 
 ```bash
-cd J:/openclaw-browser
+cd J:/wraith-browser
 git add foss-site/
 git commit -m "feat(foss-site): scaffold Geistdocs project"
 ```
@@ -311,9 +311,9 @@ A copy-to-clipboard install command component.
 import { useState } from 'react';
 
 const methods = [
-  { label: 'Cargo', command: 'cargo install openclaw-browser' },
-  { label: 'Docker', command: 'docker pull openclaw/browser:latest' },
-  { label: 'Binary', command: 'curl -sSL https://get.openclaw.dev | sh' },
+  { label: 'Cargo', command: 'cargo install wraith-browser' },
+  { label: 'Docker', command: 'docker pull wraith/browser:latest' },
+  { label: 'Binary', command: 'curl -sSL https://get.wraith.dev | sh' },
 ];
 
 export function InstallBlock() {
@@ -403,7 +403,7 @@ export default function HomePage() {
             Read the docs
           </a>
           <a
-            href="https://github.com/suhteevah/openclaw-browser"
+            href="https://github.com/suhteevah/wraith-browser"
             className="px-6 py-2 rounded-lg border border-zinc-700 hover:border-zinc-500 text-zinc-300 font-medium transition-colors"
           >
             GitHub
@@ -431,7 +431,7 @@ export default function HomePage() {
             <div className="text-4xl font-bold text-emerald-500 mb-3">2</div>
             <h3 className="text-lg font-semibold mb-2">Connect via MCP</h3>
             <p className="text-zinc-400 text-sm">
-              <code className="text-xs bg-zinc-800 px-1.5 py-0.5 rounded">openclaw-browser serve --transport stdio</code>
+              <code className="text-xs bg-zinc-800 px-1.5 py-0.5 rounded">wraith-browser serve --transport stdio</code>
               {' '}— works with Claude Code, Cursor, and any MCP client.
             </p>
           </div>
@@ -536,7 +536,7 @@ export default function HomePage() {
 
       {/* Footer */}
       <footer className="border-t border-zinc-800 px-6 py-12 text-center text-sm text-zinc-500">
-        <p>OpenClaw Browser — AGPL-3.0 — Free and open source, forever.</p>
+        <p>Wraith Browser — AGPL-3.0 — Free and open source, forever.</p>
         <p className="mt-2">
           Need managed hosting &amp; team features?{' '}
           <a href="https://wraith.dev/enterprise" className="text-zinc-400 hover:text-zinc-200 underline">
@@ -616,7 +616,7 @@ cd foss-site && pnpm dev
 - [ ] **Step 5: Commit**
 
 ```bash
-cd J:/openclaw-browser
+cd J:/wraith-browser
 git add foss-site/app/page.tsx foss-site/components/install-block.tsx foss-site/app/not-found.tsx
 git commit -m "feat(foss-site): add homepage with install block and comparison table"
 ```
@@ -662,12 +662,12 @@ git commit -m "feat(foss-site): add homepage with install block and comparison t
 
 - [ ] **Step 3: Write `installation.mdx`**
 
-Cover: cargo install, Docker pull, binary download, verify with `openclaw-browser --version`. Reference the existing `docs/api/quickstart.md` for accuracy but rewrite for FOSS context (no API keys, no enterprise endpoints).
+Cover: cargo install, Docker pull, binary download, verify with `wraith-browser --version`. Reference the existing `docs/api/quickstart.md` for accuracy but rewrite for FOSS context (no API keys, no enterprise endpoints).
 
 ```mdx
 ---
 title: Installation
-description: Install OpenClaw Browser in under a minute
+description: Install Wraith Browser in under a minute
 ---
 
 # Installation
@@ -675,7 +675,7 @@ description: Install OpenClaw Browser in under a minute
 ## Cargo (recommended)
 
 \`\`\`bash
-cargo install openclaw-browser
+cargo install wraith-browser
 \`\`\`
 
 Requires Rust 1.78+. The binary is ~15MB.
@@ -683,26 +683,26 @@ Requires Rust 1.78+. The binary is ~15MB.
 ## Docker
 
 \`\`\`bash
-docker pull openclaw/browser:latest
-docker run --rm openclaw/browser:latest --version
+docker pull wraith/browser:latest
+docker run --rm wraith/browser:latest --version
 \`\`\`
 
 ## Binary download
 
-Download pre-built binaries from the [GitHub releases page](https://github.com/suhteevah/openclaw-browser/releases).
+Download pre-built binaries from the [GitHub releases page](https://github.com/suhteevah/wraith-browser/releases).
 
 | Platform | Architecture | Download |
 |----------|-------------|----------|
-| Linux | x86_64 | `openclaw-browser-linux-amd64` |
-| macOS | Apple Silicon | `openclaw-browser-darwin-arm64` |
-| macOS | Intel | `openclaw-browser-darwin-amd64` |
-| Windows | x86_64 | `openclaw-browser-windows-amd64.exe` |
+| Linux | x86_64 | `wraith-browser-linux-amd64` |
+| macOS | Apple Silicon | `wraith-browser-darwin-arm64` |
+| macOS | Intel | `wraith-browser-darwin-amd64` |
+| Windows | x86_64 | `wraith-browser-windows-amd64.exe` |
 
 ## Verify
 
 \`\`\`bash
-openclaw-browser --version
-# OpenClaw Browser v0.1.0
+wraith-browser --version
+# Wraith Browser v0.1.0
 \`\`\`
 
 ## Next steps
@@ -712,7 +712,7 @@ openclaw-browser --version
 
 - [ ] **Step 4: Write `first-session.mdx`**
 
-Cover: starting the MCP server (`openclaw-browser serve --transport stdio`), connecting from Claude Code, connecting from Cursor. Reference `docs/api/mcp-tools-reference.md` for architecture diagram.
+Cover: starting the MCP server (`wraith-browser serve --transport stdio`), connecting from Claude Code, connecting from Cursor. Reference `docs/api/mcp-tools-reference.md` for architecture diagram.
 
 - [ ] **Step 5: Write `hello-world-scrape.mdx`**
 
@@ -728,7 +728,7 @@ cd foss-site && pnpm dev
 - [ ] **Step 7: Commit**
 
 ```bash
-cd J:/openclaw-browser
+cd J:/wraith-browser
 git add foss-site/content/
 git commit -m "feat(foss-site): add getting started docs"
 ```
@@ -1009,7 +1009,7 @@ Cover: all environment variables for the FOSS binary, feature flags, engine sele
 
 - [ ] **Step 4: Write `commands.mdx`**
 
-Cover: `openclaw-browser serve`, `openclaw-browser --version`, any other CLI subcommands. Parse from `crates/cli/src/` for accuracy.
+Cover: `wraith-browser serve`, `wraith-browser --version`, any other CLI subcommands. Parse from `crates/cli/src/` for accuracy.
 
 - [ ] **Step 5: Write `transport-modes.mdx`**
 
@@ -1125,7 +1125,7 @@ git commit -m "feat(foss-site): add interactive playground with 4 tutorials"
 - Create: `foss-site/lib/blog.ts`
 - Create: `foss-site/app/blog/page.tsx`
 - Create: `foss-site/app/blog/[slug]/page.tsx`
-- Create: `foss-site/content/blog/introducing-openclaw.mdx`
+- Create: `foss-site/content/blog/introducing-wraith.mdx`
 
 Blog is a custom app route, not part of the Fumadocs docs tree.
 
@@ -1161,7 +1161,7 @@ export function getAllPosts(): BlogPost[] {
         title: data.title,
         date: data.date,
         description: data.description,
-        author: data.author || 'OpenClaw Team',
+        author: data.author || 'Wraith Team',
         content,
       };
     })
@@ -1189,19 +1189,19 @@ export function generateStaticParams() {
 }
 ```
 
-- [ ] **Step 4: Write `introducing-openclaw.mdx`**
+- [ ] **Step 4: Write `introducing-wraith.mdx`**
 
 ```mdx
 ---
-title: Introducing OpenClaw Browser
+title: Introducing Wraith Browser
 date: "2026-03-23"
 description: "An open-source, AI-agent-first browser engine with 143 MCP tools."
 author: Matt Gates
 ---
 
-# Introducing OpenClaw Browser
+# Introducing Wraith Browser
 
-Today we're open-sourcing OpenClaw Browser (Wraith) — a native browser engine built from scratch for AI agents.
+Today we're open-sourcing Wraith Browser (Wraith) — a native browser engine built from scratch for AI agents.
 
 ## Why we built it
 
@@ -1244,7 +1244,7 @@ export default function CommunityPage() {
       <div className="max-w-3xl mx-auto">
         <h1 className="text-4xl font-bold mb-4">Community</h1>
         <p className="text-zinc-400 text-lg mb-12">
-          Join the OpenClaw community. Ask questions, share what you're building, and help shape the future of AI-native browsing.
+          Join the Wraith community. Ask questions, share what you're building, and help shape the future of AI-native browsing.
         </p>
 
         <div className="space-y-6">
@@ -1259,19 +1259,19 @@ export default function CommunityPage() {
             <p className="text-zinc-400">Bridged to Discord. Coming soon.</p>
           </a>
 
-          <a href="https://github.com/suhteevah/openclaw-browser" className="block bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-600 transition-colors">
+          <a href="https://github.com/suhteevah/wraith-browser" className="block bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-600 transition-colors">
             <h2 className="text-xl font-semibold mb-2">GitHub</h2>
             <p className="text-zinc-400">Star the repo, file issues, and submit pull requests.</p>
             <span className="text-emerald-400 text-sm mt-2 inline-block">View on GitHub →</span>
           </a>
 
-          <a href="https://github.com/suhteevah/openclaw-browser/blob/main/CONTRIBUTING.md" className="block bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-600 transition-colors">
+          <a href="https://github.com/suhteevah/wraith-browser/blob/main/CONTRIBUTING.md" className="block bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-600 transition-colors">
             <h2 className="text-xl font-semibold mb-2">Contributing</h2>
             <p className="text-zinc-400">Read the contributing guide and start building.</p>
             <span className="text-emerald-400 text-sm mt-2 inline-block">Contributing guide →</span>
           </a>
 
-          <a href="https://github.com/suhteevah/openclaw-browser/blob/main/CODE_OF_CONDUCT.md" className="block bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-600 transition-colors">
+          <a href="https://github.com/suhteevah/wraith-browser/blob/main/CODE_OF_CONDUCT.md" className="block bg-zinc-900 border border-zinc-800 rounded-xl p-6 hover:border-zinc-600 transition-colors">
             <h2 className="text-xl font-semibold mb-2">Code of Conduct</h2>
             <p className="text-zinc-400">Our commitment to a welcoming, inclusive community.</p>
             <span className="text-emerald-400 text-sm mt-2 inline-block">Read the code of conduct →</span>
@@ -1281,8 +1281,8 @@ export default function CommunityPage() {
         <div className="mt-16">
           <h2 className="text-2xl font-bold mb-4">Built with Wraith</h2>
           <p className="text-zinc-500">
-            Showcase coming soon. Built something with OpenClaw Browser?{' '}
-            <a href="https://github.com/suhteevah/openclaw-browser/discussions" className="text-zinc-400 hover:text-zinc-200 underline">
+            Showcase coming soon. Built something with Wraith Browser?{' '}
+            <a href="https://github.com/suhteevah/wraith-browser/discussions" className="text-zinc-400 hover:text-zinc-200 underline">
               Share it on GitHub Discussions
             </a>.
           </p>
@@ -1320,11 +1320,11 @@ out/
 
 - [ ] **Step 2: Generate OG image**
 
-Create a simple OG image (1200x630) with: "OpenClaw Browser" title, "AI-Agent-First Browser Engine" subtitle, dark background. Can use any image tool or generate with Satori at build time later.
+Create a simple OG image (1200x630) with: "Wraith Browser" title, "AI-Agent-First Browser Engine" subtitle, dark background. Can use any image tool or generate with Satori at build time later.
 
 - [ ] **Step 3: Add favicon**
 
-Use the OpenClaw logo or a simple placeholder favicon.
+Use the Wraith logo or a simple placeholder favicon.
 
 - [ ] **Step 4: Full site smoke test**
 
@@ -1366,7 +1366,7 @@ vercel --prod  # production deployment
 - [ ] **Step 7: Final commit**
 
 ```bash
-cd J:/openclaw-browser
+cd J:/wraith-browser
 git add foss-site/
 git commit -m "feat(foss-site): polish and deploy to Vercel"
 ```

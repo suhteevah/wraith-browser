@@ -1,4 +1,4 @@
-//! # openclaw-content-extract
+//! # wraith-content-extract
 //!
 //! Extracts readable content from HTML and converts it to markdown
 //! optimized for LLM context windows. Implements a pipeline:

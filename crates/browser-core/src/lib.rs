@@ -1,4 +1,4 @@
-//! # openclaw-browser-core
+//! # wraith-browser-core
 //!
 //! Core browser control layer for Wraith Browser.
 //! Provides a unified `BrowserEngine` trait with multiple backends:

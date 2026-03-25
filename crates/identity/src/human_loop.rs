@@ -220,7 +220,7 @@ impl HumanCallback for TerminalHumanCallback {
             Urgency::High => "🔔",
             Urgency::Critical => "🚨",
         };
-        eprintln!("{} [OpenClaw] {}", icon, message);
+        eprintln!("{} [Wraith] {}", icon, message);
         Box::pin(async {})
     }
 }
@@ -233,8 +233,8 @@ impl HumanCallback for TerminalHumanCallback {
 /// response file when the human answers.
 ///
 /// Protocol:
-/// 1. Write `~/.openclaw/human_requests/{id}.request.json`
-/// 2. Poll for `~/.openclaw/human_requests/{id}.response.json`
+/// 1. Write `~/.wraith/human_requests/{id}.request.json`
+/// 2. Poll for `~/.wraith/human_requests/{id}.response.json`
 /// 3. Parse response and return
 pub struct McpHumanCallback {
     /// Directory for request/response exchange
@@ -251,7 +251,7 @@ impl McpHumanCallback {
     pub fn new() -> Self {
         let exchange_dir = dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".openclaw")
+            .join(".wraith")
             .join("human_requests");
         let _ = std::fs::create_dir_all(&exchange_dir);
         Self { exchange_dir }

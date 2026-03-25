@@ -1,4 +1,4 @@
-# Contributing to OpenClaw Browser
+# Contributing to Wraith Browser
 
 Thanks for your interest! This project is in early development.
 

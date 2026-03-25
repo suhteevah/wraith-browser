@@ -1,5 +1,5 @@
 [package]
-name = "openclaw-content-extract"
+name = "wraith-content-extract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

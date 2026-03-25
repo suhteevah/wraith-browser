@@ -3756,17 +3756,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
-name = "openclaw-agent-loop"
+name = "wraith-agent-loop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "blake3",
  "chrono",
- "openclaw-browser-core",
- "openclaw-cache",
- "openclaw-content-extract",
- "openclaw-search",
+ "wraith-browser-core",
+ "wraith-cache",
+ "wraith-content-extract",
+ "wraith-search",
  "regex",
  "reqwest",
  "rusqlite",
@@ -3781,19 +3781,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-browser"
+name = "wraith-browser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "dirs",
- "openclaw-agent-loop",
- "openclaw-browser-core",
- "openclaw-cache",
- "openclaw-content-extract",
- "openclaw-identity",
- "openclaw-mcp-server",
- "openclaw-search",
+ "wraith-agent-loop",
+ "wraith-browser-core",
+ "wraith-cache",
+ "wraith-content-extract",
+ "wraith-identity",
+ "wraith-mcp-server",
+ "wraith-search",
  "secrecy",
  "serde",
  "serde_json",
@@ -3804,7 +3804,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-browser-core"
+name = "wraith-browser-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3813,7 +3813,7 @@ dependencies = [
  "base64",
  "chrono",
  "futures",
- "openclaw-scripting",
+ "wraith-scripting",
  "ort",
  "rand 0.8.5",
  "regex",
@@ -3835,7 +3835,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-cache"
+name = "wraith-cache"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3860,7 +3860,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-content-extract"
+name = "wraith-content-extract"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3879,7 +3879,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-identity"
+name = "wraith-identity"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
@@ -3909,7 +3909,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-mcp-server"
+name = "wraith-mcp-server"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
@@ -3920,12 +3920,12 @@ dependencies = [
  "clap",
  "dirs",
  "futures",
- "openclaw-agent-loop",
- "openclaw-browser-core",
- "openclaw-cache",
- "openclaw-content-extract",
- "openclaw-identity",
- "openclaw-search",
+ "wraith-agent-loop",
+ "wraith-browser-core",
+ "wraith-cache",
+ "wraith-content-extract",
+ "wraith-identity",
+ "wraith-search",
  "reqwest",
  "rmcp",
  "rusqlite",
@@ -3947,7 +3947,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-scripting"
+name = "wraith-scripting"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3962,7 +3962,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openclaw-search"
+name = "wraith-search"
 version = "0.1.0"
 dependencies = [
  "anyhow",

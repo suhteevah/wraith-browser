@@ -4,8 +4,8 @@ use tracing::info;
 
 #[derive(Parser)]
 #[command(
-    name = "openclaw-browser",
-    about = "OpenClaw Browser — an AI-agent-first web browser written in Rust",
+    name = "wraith-browser",
+    about = "Wraith Browser — an AI-agent-first web browser written in Rust",
     version,
     long_about = "A native Rust web browser designed for AI agent control, not humans.\n\
                    Supports MCP for Claude Code integration, autonomous browsing tasks,\n\
@@ -193,11 +193,11 @@ enum FingerprintAction {
     List,
 }
 
-/// Get the default vault path: ~/.openclaw/vault.db
+/// Get the default vault path: ~/.wraith/vault.db
 fn default_vault_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".openclaw")
+        .join(".wraith")
         .join("vault.db")
 }
 
@@ -221,15 +221,15 @@ fn read_secret(prompt: &str) -> anyhow::Result<SecretString> {
     Ok(SecretString::from(input.trim().to_string()))
 }
 
-fn parse_credential_kind(s: &str) -> openclaw_identity::CredentialKind {
+fn parse_credential_kind(s: &str) -> wraith_identity::CredentialKind {
     match s.to_lowercase().as_str() {
-        "password" => openclaw_identity::CredentialKind::Password,
-        "api_key" | "apikey" => openclaw_identity::CredentialKind::ApiKey,
-        "oauth_token" | "oauth" => openclaw_identity::CredentialKind::OAuthToken,
-        "totp_seed" | "totp" => openclaw_identity::CredentialKind::TotpSeed,
-        "session_cookie" | "cookie" => openclaw_identity::CredentialKind::SessionCookie,
-        "ssh_key" | "ssh" => openclaw_identity::CredentialKind::SshKey,
-        _ => openclaw_identity::CredentialKind::Generic,
+        "password" => wraith_identity::CredentialKind::Password,
+        "api_key" | "apikey" => wraith_identity::CredentialKind::ApiKey,
+        "oauth_token" | "oauth" => wraith_identity::CredentialKind::OAuthToken,
+        "totp_seed" | "totp" => wraith_identity::CredentialKind::TotpSeed,
+        "session_cookie" | "cookie" => wraith_identity::CredentialKind::SessionCookie,
+        "ssh_key" | "ssh" => wraith_identity::CredentialKind::SshKey,
+        _ => wraith_identity::CredentialKind::Generic,
     }
 }
 
@@ -239,9 +239,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing
     let filter = if cli.verbose {
-        "openclaw=trace,tower_http=debug"
+        "wraith=trace,tower_http=debug"
     } else {
-        "openclaw=info,tower_http=warn"
+        "wraith=info,tower_http=warn"
     };
 
     tracing_subscriber::fmt()
@@ -257,31 +257,31 @@ async fn main() -> anyhow::Result<()> {
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        "OpenClaw Browser starting"
+        "Wraith Browser starting"
     );
 
     match cli.command {
         Commands::Serve { transport, host: _, port: _ } => {
             let transport = match transport.as_str() {
-                "stdio" => openclaw_mcp_server::Transport::Stdio,
+                "stdio" => wraith_mcp_server::Transport::Stdio,
                 other => anyhow::bail!("Unknown transport: {} (only 'stdio' is currently supported)", other),
             };
-            let engine = openclaw_browser_core::engine::create_engine_with_options(
+            let engine = wraith_browser_core::engine::create_engine_with_options(
                 &cli.engine,
-                openclaw_browser_core::engine::EngineOptions {
+                wraith_browser_core::engine::EngineOptions {
                     proxy_url: cli.proxy.clone(),
                     flaresolverr_url: cli.flaresolverr.clone(),
                     fallback_proxy_url: cli.fallback_proxy.clone(),
                 },
             ).await?;
-            openclaw_mcp_server::run_with_engine(transport, Some(engine)).await?;
+            wraith_mcp_server::run_with_engine(transport, Some(engine)).await?;
         }
 
         Commands::Navigate { url, format } => {
             info!(url = %url, format = %format, "Navigating");
-            let engine = openclaw_browser_core::engine::create_engine_with_options(
+            let engine = wraith_browser_core::engine::create_engine_with_options(
                 &cli.engine,
-                openclaw_browser_core::engine::EngineOptions {
+                wraith_browser_core::engine::EngineOptions {
                     proxy_url: cli.proxy.clone(),
                     flaresolverr_url: cli.flaresolverr.clone(),
                     fallback_proxy_url: cli.fallback_proxy.clone(),
@@ -298,7 +298,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     "markdown" => {
                         let html = eng.page_source().await?;
-                        let content = openclaw_content_extract::extract(&html, &url)?;
+                        let content = wraith_content_extract::extract(&html, &url)?;
                         println!("{}", content.markdown);
                     }
                     "json" => {
@@ -316,32 +316,32 @@ async fn main() -> anyhow::Result<()> {
             info!(task = %description, max_steps, "Running autonomous task");
 
             // Determine LLM backend from environment
-            let use_ollama = std::env::var("OPENCLAW_LLM").ok()
+            let use_ollama = std::env::var("WRAITH_LLM").ok()
                 .map(|v| v.to_lowercase() == "ollama")
                 .unwrap_or(false);
 
-            let engine = openclaw_browser_core::engine::create_engine_with_options(
+            let engine = wraith_browser_core::engine::create_engine_with_options(
                 &cli.engine,
-                openclaw_browser_core::engine::EngineOptions {
+                wraith_browser_core::engine::EngineOptions {
                     proxy_url: cli.proxy.clone(),
                     flaresolverr_url: cli.flaresolverr.clone(),
                     fallback_proxy_url: cli.fallback_proxy.clone(),
                 },
             ).await?;
 
-            let task = openclaw_agent_loop::BrowsingTask {
+            let task = wraith_agent_loop::BrowsingTask {
                 description: description.clone(),
                 start_url: url,
                 timeout_secs: None,
                 context: None,
             };
 
-            let model_override = std::env::var("OPENCLAW_MODEL").ok();
+            let model_override = std::env::var("WRAITH_MODEL").ok();
 
-            let agent_config = openclaw_agent_loop::AgentConfig {
+            let agent_config = wraith_agent_loop::AgentConfig {
                 max_steps,
                 model: model_override.clone().unwrap_or_else(|| {
-                    openclaw_agent_loop::AgentConfig::default().model
+                    wraith_agent_loop::AgentConfig::default().model
                 }),
                 ..Default::default()
             };
@@ -349,22 +349,22 @@ async fn main() -> anyhow::Result<()> {
             // Open knowledge store for auto-caching
             let cache_dir = dirs::home_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".openclaw")
+                .join(".wraith")
                 .join("knowledge");
-            let cache = openclaw_cache::KnowledgeStore::open(&cache_dir)
+            let cache = wraith_cache::KnowledgeStore::open(&cache_dir)
                 .map(std::sync::Arc::new)
                 .ok();
 
             let result = if use_ollama {
                 let ollama_url = std::env::var("OLLAMA_URL")
                     .unwrap_or_else(|_| "http://localhost:11434".to_string());
-                let agent_config = openclaw_agent_loop::AgentConfig {
+                let agent_config = wraith_agent_loop::AgentConfig {
                     model: model_override.unwrap_or_else(|| "llama3.1".to_string()),
                     ..agent_config
                 };
-                let backend = openclaw_agent_loop::llm::OllamaBackend::new()
+                let backend = wraith_agent_loop::llm::OllamaBackend::new()
                     .with_base_url(ollama_url);
-                let mut agent = openclaw_agent_loop::Agent::new(agent_config, engine.clone(), backend);
+                let mut agent = wraith_agent_loop::Agent::new(agent_config, engine.clone(), backend);
                 if let Some(c) = cache { agent = agent.with_cache(c); }
                 agent.run(task).await
             } else {
@@ -372,10 +372,10 @@ async fn main() -> anyhow::Result<()> {
                     .or_else(|_| std::env::var("CLAUDE_API_KEY"))
                     .map_err(|_| anyhow::anyhow!(
                         "No API key found. Set ANTHROPIC_API_KEY or CLAUDE_API_KEY, \
-                         or use OPENCLAW_LLM=ollama for local models."
+                         or use WRAITH_LLM=ollama for local models."
                     ))?;
-                let backend = openclaw_agent_loop::llm::ClaudeBackend::new(api_key);
-                let mut agent = openclaw_agent_loop::Agent::new(agent_config, engine.clone(), backend);
+                let backend = wraith_agent_loop::llm::ClaudeBackend::new(api_key);
+                let mut agent = wraith_agent_loop::Agent::new(agent_config, engine.clone(), backend);
                 if let Some(c) = cache { agent = agent.with_cache(c); }
                 agent.run(task).await
             };
@@ -394,7 +394,7 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Search { query, max_results } => {
             info!(query = %query, "Searching");
-            let results = openclaw_search::search(&query, max_results).await?;
+            let results = wraith_search::search(&query, max_results).await?;
             for (i, result) in results.iter().enumerate() {
                 println!("{}. {} — {}", i + 1, result.title, result.url);
                 println!("   {}\n", result.snippet);
@@ -406,9 +406,9 @@ async fn main() -> anyhow::Result<()> {
 
         Commands::Extract { url, max_tokens } => {
             info!(url = %url, "Extracting content");
-            let engine = openclaw_browser_core::engine::create_engine_with_options(
+            let engine = wraith_browser_core::engine::create_engine_with_options(
                 &cli.engine,
-                openclaw_browser_core::engine::EngineOptions {
+                wraith_browser_core::engine::EngineOptions {
                     proxy_url: cli.proxy.clone(),
                     flaresolverr_url: cli.flaresolverr.clone(),
                     fallback_proxy_url: cli.fallback_proxy.clone(),
@@ -417,7 +417,7 @@ async fn main() -> anyhow::Result<()> {
             let mut eng = engine.lock().await;
             eng.navigate(&url).await?;
             let html = eng.page_source().await?;
-            let content = openclaw_content_extract::extract_budgeted(&html, &url, max_tokens)?;
+            let content = wraith_content_extract::extract_budgeted(&html, &url, max_tokens)?;
             println!("# {}\n", content.title);
             println!("{}", content.markdown);
             println!("\n---\nTokens: ~{} | Links: {} | Confidence: {:.0}%",
@@ -434,7 +434,7 @@ async fn main() -> anyhow::Result<()> {
 
             match action {
                 VaultAction::Unlock => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let passphrase = read_passphrase("Enter vault passphrase: ")?;
                     vault.unlock(&passphrase)?;
                     let creds = vault.list_credentials()?;
@@ -442,20 +442,20 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::Lock => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     vault.lock();
                     println!("Vault locked. Master key zeroized from memory.");
                 }
 
                 VaultAction::Store { domain, kind, identity, label, auto_use } => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let passphrase = read_passphrase("Enter vault passphrase: ")?;
                     vault.unlock(&passphrase)?;
 
                     let secret = read_secret("Enter secret value: ")?;
                     let cred_kind = parse_credential_kind(&kind);
 
-                    let request = openclaw_identity::credential::StoreCredentialRequest {
+                    let request = wraith_identity::credential::StoreCredentialRequest {
                         domain: domain.clone(),
                         kind: cred_kind,
                         identity: identity.clone(),
@@ -471,7 +471,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::List => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let creds = vault.list_credentials()?;
 
                     if creds.is_empty() {
@@ -488,7 +488,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::Delete { id } => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let passphrase = read_passphrase("Enter vault passphrase: ")?;
                     vault.unlock(&passphrase)?;
                     vault.delete(&id)?;
@@ -496,7 +496,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::Totp { domain } => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let passphrase = read_passphrase("Enter vault passphrase: ")?;
                     vault.unlock(&passphrase)?;
                     let code = vault.generate_totp(&domain)?;
@@ -504,7 +504,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::Audit { limit } => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let entries = vault.audit_history(limit)?;
 
                     if entries.is_empty() {
@@ -525,7 +525,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::Approve { credential_id, domain } => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let passphrase = read_passphrase("Enter vault passphrase: ")?;
                     vault.unlock(&passphrase)?;
                     vault.approve_domain(&credential_id, &domain)?;
@@ -533,7 +533,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 VaultAction::Rotate { id } => {
-                    let vault = openclaw_identity::CredentialVault::open(&vault_path)?;
+                    let vault = wraith_identity::CredentialVault::open(&vault_path)?;
                     let passphrase = read_passphrase("Enter vault passphrase: ")?;
                     vault.unlock(&passphrase)?;
                     let new_secret = read_secret("Enter new secret value: ")?;
@@ -555,7 +555,7 @@ async fn main() -> anyhow::Result<()> {
                         anyhow::bail!("File not found: {}", file);
                     }
 
-                    let mut mgr = openclaw_identity::FingerprintManager::new();
+                    let mut mgr = wraith_identity::FingerprintManager::new();
                     let fp = mgr.load_from_file(path)?;
 
                     println!("Fingerprint imported:");
@@ -575,10 +575,10 @@ async fn main() -> anyhow::Result<()> {
                     println!("  WebDriver:   {} (should be false)", fp.webdriver);
                     println!();
 
-                    // Save to ~/.openclaw/fingerprints/
+                    // Save to ~/.wraith/fingerprints/
                     let fp_dir = dirs::home_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".openclaw")
+                        .join(".wraith")
                         .join("fingerprints");
                     std::fs::create_dir_all(&fp_dir)?;
                     let fp_path = fp_dir.join(format!("{}.json", fp.id));
@@ -589,11 +589,11 @@ async fn main() -> anyhow::Result<()> {
                 FingerprintAction::List => {
                     let fp_dir = dirs::home_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".openclaw")
+                        .join(".wraith")
                         .join("fingerprints");
 
                     if !fp_dir.exists() {
-                        println!("No fingerprint profiles. Run 'openclaw-browser fingerprint capture' first.");
+                        println!("No fingerprint profiles. Run 'wraith-browser fingerprint capture' first.");
                         return Ok(());
                     }
 
@@ -602,7 +602,7 @@ async fn main() -> anyhow::Result<()> {
                         let entry = entry?;
                         if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
                             let data = std::fs::read_to_string(entry.path())?;
-                            if let Ok(fp) = serde_json::from_str::<openclaw_identity::BrowserFingerprint>(&data) {
+                            if let Ok(fp) = serde_json::from_str::<wraith_identity::BrowserFingerprint>(&data) {
                                 println!("[{}] {} — {} ({}x{}, {})",
                                     fp.id.get(..8).unwrap_or(&fp.id),
                                     fp.name,
@@ -626,6 +626,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    info!("OpenClaw Browser shutting down cleanly");
+    info!("Wraith Browser shutting down cleanly");
     Ok(())
 }

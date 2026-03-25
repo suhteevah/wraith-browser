@@ -17,8 +17,8 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::{info, warn, debug};
 
-use openclaw_browser_core::engine::BrowserEngine;
-use openclaw_browser_core::actions::{BrowserAction, ActionResult};
+use wraith_browser_core::engine::BrowserEngine;
+use wraith_browser_core::actions::{BrowserAction, ActionResult};
 
 use crate::tools::*;
 
@@ -138,7 +138,7 @@ pub struct WraithHandler {
     #[cfg(feature = "cdp")]
     active_session_name: Arc<tokio::sync::Mutex<String>>,
     /// Application dedup tracker — prevents duplicate applications.
-    dedup_tracker: Arc<openclaw_cache::dedup::ApplicationTracker>,
+    dedup_tracker: Arc<wraith_cache::dedup::ApplicationTracker>,
 }
 
 impl Default for WraithHandler {
@@ -439,13 +439,13 @@ impl WraithHandler {
         // Initialize the application dedup tracker (SQLite-backed)
         let dedup_db_path = dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".openclaw")
+            .join(".wraith")
             .join("dedup.db");
         // Ensure the parent directory exists
         if let Some(parent) = dedup_db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let dedup_tracker = Arc::new(openclaw_cache::dedup::ApplicationTracker::new(
+        let dedup_tracker = Arc::new(wraith_cache::dedup::ApplicationTracker::new(
             &dedup_db_path.to_string_lossy(),
         ));
 
@@ -566,12 +566,12 @@ impl WraithHandler {
         // Initialize the application dedup tracker (SQLite-backed)
         let dedup_db_path = dirs::home_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".openclaw")
+            .join(".wraith")
             .join("dedup.db");
         if let Some(parent) = dedup_db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let dedup_tracker = Arc::new(openclaw_cache::dedup::ApplicationTracker::new(
+        let dedup_tracker = Arc::new(wraith_cache::dedup::ApplicationTracker::new(
             &dedup_db_path.to_string_lossy(),
         ));
 
@@ -610,7 +610,7 @@ impl WraithHandler {
             }
 
             // Use the engine factory which handles SevroConfig internally
-            let opts = openclaw_browser_core::engine::EngineOptions {
+            let opts = wraith_browser_core::engine::EngineOptions {
                 proxy_url: proxy,
                 flaresolverr_url: flaresolverr,
                 fallback_proxy_url: fallback_proxy,
@@ -619,18 +619,18 @@ impl WraithHandler {
             info!("Using Sevro engine (default)");
             // create_engine_with_options is async but we need sync here;
             // construct directly instead
-            let mut config = openclaw_browser_core::config::BrowserConfig::default();
+            let mut config = wraith_browser_core::config::BrowserConfig::default();
             let _ = config; // suppress unused
 
             // Direct construction via SevroEngineBackend
-            use openclaw_browser_core::engine_sevro::SevroEngineBackend;
+            use wraith_browser_core::engine_sevro::SevroEngineBackend;
             return Arc::new(Mutex::new(SevroEngineBackend::new_with_options(opts)));
         }
         #[cfg(not(feature = "sevro"))]
         {
             info!("Sevro not available, using native engine");
             Arc::new(Mutex::new(
-                openclaw_browser_core::engine_native::NativeEngine::new()
+                wraith_browser_core::engine_native::NativeEngine::new()
             ))
         }
     }
@@ -744,7 +744,7 @@ impl WraithHandler {
                             drop(engine); // release native engine lock
 
                             // Lazily launch CDP engine for SPA rendering
-                            use openclaw_browser_core::engine_cdp::CdpEngine;
+                            use wraith_browser_core::engine_cdp::CdpEngine;
                             match CdpEngine::new().await {
                                 Ok(mut cdp_eng) => {
                                     if let Ok(()) = cdp_eng.navigate(&input.url).await {
@@ -776,7 +776,7 @@ impl WraithHandler {
                 info!(url = %input.url, "Navigating via CDP");
 
                 // Lazily create CDP engine on first use
-                use openclaw_browser_core::engine_cdp::CdpEngine;
+                use wraith_browser_core::engine_cdp::CdpEngine;
                 let cdp_engine = CdpEngine::new().await
                     .map_err(|e| ErrorData::internal_error(
                         format!("CDP engine launch failed: {e}. Ensure Chrome is installed."), None
@@ -880,9 +880,9 @@ impl WraithHandler {
                 let url = engine.current_url().await.unwrap_or_default();
 
                 let result = if let Some(max_tokens) = input.max_tokens {
-                    openclaw_content_extract::extract_budgeted(&html, &url, max_tokens)
+                    wraith_content_extract::extract_budgeted(&html, &url, max_tokens)
                 } else {
-                    openclaw_content_extract::extract(&html, &url)
+                    wraith_content_extract::extract(&html, &url)
                 };
 
                 match result {
@@ -934,7 +934,7 @@ impl WraithHandler {
                 let max = input.max_results.unwrap_or(10);
                 info!(query = %input.query, max_results = max, "Searching web");
 
-                let results = openclaw_search::search(&input.query, max).await
+                let results = wraith_search::search(&input.query, max).await
                     .map_err(|e| ErrorData::internal_error(format!("Search failed: {e}"), None))?;
 
                 if results.is_empty() {
@@ -1040,10 +1040,10 @@ impl WraithHandler {
             "browse_scroll" => {
                 let input: ScrollInput = parse_args(args)?;
                 let direction = match input.direction.to_lowercase().as_str() {
-                    "up" => openclaw_browser_core::actions::ScrollDirection::Up,
-                    "left" => openclaw_browser_core::actions::ScrollDirection::Left,
-                    "right" => openclaw_browser_core::actions::ScrollDirection::Right,
-                    _ => openclaw_browser_core::actions::ScrollDirection::Down,
+                    "up" => wraith_browser_core::actions::ScrollDirection::Up,
+                    "left" => wraith_browser_core::actions::ScrollDirection::Left,
+                    "right" => wraith_browser_core::actions::ScrollDirection::Right,
+                    _ => wraith_browser_core::actions::ScrollDirection::Down,
                 };
                 let amount = input.amount.unwrap_or(500);
 
@@ -1072,15 +1072,15 @@ impl WraithHandler {
                 let vault = open_vault()?;
 
                 let kind = match input.kind.to_lowercase().as_str() {
-                    "password" => openclaw_identity::CredentialKind::Password,
-                    "api_key" | "apikey" => openclaw_identity::CredentialKind::ApiKey,
-                    "oauth_token" | "oauth" => openclaw_identity::CredentialKind::OAuthToken,
-                    "totp_seed" | "totp" => openclaw_identity::CredentialKind::TotpSeed,
-                    "session_cookie" | "cookie" => openclaw_identity::CredentialKind::SessionCookie,
-                    _ => openclaw_identity::CredentialKind::Generic,
+                    "password" => wraith_identity::CredentialKind::Password,
+                    "api_key" | "apikey" => wraith_identity::CredentialKind::ApiKey,
+                    "oauth_token" | "oauth" => wraith_identity::CredentialKind::OAuthToken,
+                    "totp_seed" | "totp" => wraith_identity::CredentialKind::TotpSeed,
+                    "session_cookie" | "cookie" => wraith_identity::CredentialKind::SessionCookie,
+                    _ => wraith_identity::CredentialKind::Generic,
                 };
 
-                let request = openclaw_identity::credential::StoreCredentialRequest {
+                let request = wraith_identity::credential::StoreCredentialRequest {
                     domain: input.domain.clone(),
                     kind,
                     identity: input.identity.clone(),
@@ -1112,11 +1112,11 @@ impl WraithHandler {
                 let vault = open_vault()?;
 
                 let kind = input.kind.as_deref().map(|k| match k.to_lowercase().as_str() {
-                    "password" => openclaw_identity::CredentialKind::Password,
-                    "api_key" | "apikey" => openclaw_identity::CredentialKind::ApiKey,
-                    "oauth_token" | "oauth" => openclaw_identity::CredentialKind::OAuthToken,
-                    "session_cookie" | "cookie" => openclaw_identity::CredentialKind::SessionCookie,
-                    _ => openclaw_identity::CredentialKind::Generic,
+                    "password" => wraith_identity::CredentialKind::Password,
+                    "api_key" | "apikey" => wraith_identity::CredentialKind::ApiKey,
+                    "oauth_token" | "oauth" => wraith_identity::CredentialKind::OAuthToken,
+                    "session_cookie" | "cookie" => wraith_identity::CredentialKind::SessionCookie,
+                    _ => wraith_identity::CredentialKind::Generic,
                 });
 
                 match vault.get(&input.domain, kind) {
@@ -1290,13 +1290,13 @@ impl WraithHandler {
                         "No API key — set ANTHROPIC_API_KEY or CLAUDE_API_KEY", None
                     ))?;
 
-                let backend = openclaw_agent_loop::llm::ClaudeBackend::new(api_key);
-                let config = openclaw_agent_loop::AgentConfig {
+                let backend = wraith_agent_loop::llm::ClaudeBackend::new(api_key);
+                let config = wraith_agent_loop::AgentConfig {
                     max_steps: input.max_steps.unwrap_or(50),
                     ..Default::default()
                 };
 
-                let task = openclaw_agent_loop::BrowsingTask {
+                let task = wraith_agent_loop::BrowsingTask {
                     description: input.description,
                     start_url: input.url,
                     timeout_secs: None,
@@ -1304,7 +1304,7 @@ impl WraithHandler {
                 };
 
                 let active_engine = self.active_engine_async().await;
-                let mut agent = openclaw_agent_loop::Agent::new(config, active_engine, backend);
+                let mut agent = wraith_agent_loop::Agent::new(config, active_engine, backend);
                 match agent.run(task).await {
                     Ok(output) => Ok(CallToolResult::success(vec![Content::text(output)])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Task failed: {e}"))]))
@@ -1317,9 +1317,9 @@ impl WraithHandler {
                 let input: CacheSearchInput = parse_args(args)?;
                 let cache_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw").join("knowledge");
+                    .join(".wraith").join("knowledge");
 
-                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                match wraith_cache::KnowledgeStore::open(&cache_dir) {
                     Ok(store) => {
                         let max = input.max_results.unwrap_or(10);
                         match store.search_knowledge(&input.query, max) {
@@ -1346,9 +1346,9 @@ impl WraithHandler {
                 let input: CacheGetInput = parse_args(args)?;
                 let cache_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw").join("knowledge");
+                    .join(".wraith").join("knowledge");
 
-                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                match wraith_cache::KnowledgeStore::open(&cache_dir) {
                     Ok(store) => {
                         match store.get_page(&input.url) {
                             Ok(Some(page)) => {
@@ -1436,7 +1436,7 @@ impl WraithHandler {
             // === Fingerprints ===
 
             "fingerprint_list" => {
-                let profiles = openclaw_browser_core::tls_fingerprint::all_profiles();
+                let profiles = wraith_browser_core::tls_fingerprint::all_profiles();
                 let mut out = format!("{} TLS fingerprint profiles:\n\n", profiles.len());
                 for p in &profiles {
                     out.push_str(&format!("  {} — JA3: {}...\n    UA: {}...\n\n",
@@ -1449,7 +1449,7 @@ impl WraithHandler {
             // === TLS Profiles ===
 
             "tls_profiles" => {
-                let profiles = openclaw_browser_core::tls_fingerprint::all_profiles();
+                let profiles = wraith_browser_core::tls_fingerprint::all_profiles();
                 let mut out = format!("{} profiles available:\n\n", profiles.len());
                 for p in &profiles {
                     out.push_str(&format!("  Name: {}\n  JA3: {}\n  JA4: {}\n  HTTP/2 Window: {}\n  Headers: {}\n\n",
@@ -1465,7 +1465,7 @@ impl WraithHandler {
 
             "entity_query" => {
                 let input: EntityQueryInput = parse_args(args)?;
-                let mut graph = openclaw_cache::entity_graph::EntityGraph::new();
+                let mut graph = wraith_cache::entity_graph::EntityGraph::new();
                 // Search the graph for the entity mentioned in the question
                 let results = graph.search_entities(&input.question);
                 if results.is_empty() {
@@ -1483,8 +1483,8 @@ impl WraithHandler {
             "cache_stats" => {
                 let cache_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    .join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&cache_dir) {
                     Ok(store) => {
                         match store.stats() {
                             Ok(stats) => Ok(CallToolResult::success(vec![Content::text(
@@ -1502,8 +1502,8 @@ impl WraithHandler {
             "cache_purge" => {
                 let cache_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                    .join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&cache_dir) {
                     Ok(store) => {
                         match store.purge_stale() {
                             Ok(count) => Ok(CallToolResult::success(vec![Content::text(
@@ -1520,7 +1520,7 @@ impl WraithHandler {
 
             "network_discover" => {
                 // NetworkCapture is per-session; create a fresh one and report
-                let capture = openclaw_browser_core::network_intel::NetworkCapture::new();
+                let capture = wraith_browser_core::network_intel::NetworkCapture::new();
                 let endpoints = capture.discover_endpoints();
                 if endpoints.is_empty() {
                     Ok(CallToolResult::success(vec![Content::text(
@@ -1547,8 +1547,8 @@ impl WraithHandler {
                     .map(|u| u.host_str().unwrap_or("").to_string())
                     .unwrap_or_default();
 
-                let cap = openclaw_cache::site_capability::fingerprint_site(&domain, &html, &url);
-                let techs = openclaw_cache::site_capability::detect_technology(&html);
+                let cap = wraith_cache::site_capability::fingerprint_site(&domain, &html, &url);
+                let techs = wraith_cache::site_capability::detect_technology(&html);
 
                 let mut out = format!("Site: {}\n", domain);
                 out.push_str(&format!("  Has login: {}\n", cap.has_login));
@@ -1573,13 +1573,13 @@ impl WraithHandler {
 
                 let cache_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join(".openclaw").join("knowledge");
+                    .join(".wraith").join("knowledge");
 
-                match openclaw_cache::KnowledgeStore::open(&cache_dir) {
+                match wraith_cache::KnowledgeStore::open(&cache_dir) {
                     Ok(store) => {
                         match store.get_page(&url) {
                             Ok(Some(cached)) => {
-                                let diff = openclaw_cache::diffing::diff_pages(&url, &cached.plain_text, &current_html);
+                                let diff = wraith_cache::diffing::diff_pages(&url, &cached.plain_text, &current_html);
                                 Ok(CallToolResult::success(vec![Content::text(
                                     format!("Page diff for {}:\nSimilarity: {:.0}%\nChanges: {}\n\n{}",
                                         url, diff.similarity_score * 100.0, diff.changes.len(), diff.summary)
@@ -1650,7 +1650,7 @@ impl WraithHandler {
             }
             "cookie_save" => {
                 let input: CookieSaveInput = parse_args(args)?;
-                let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".openclaw").join("cookies.json").to_string_lossy().to_string());
+                let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".wraith").join("cookies.json").to_string_lossy().to_string());
                 let engine_arc = self.active_engine_async().await;
                 let engine = engine_arc.lock().await;
                 match engine.eval_js("__wraith_get_cookies()").await {
@@ -1663,7 +1663,7 @@ impl WraithHandler {
             }
             "cookie_load" => {
                 let input: CookieLoadInput = parse_args(args)?;
-                let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".openclaw").join("cookies.json").to_string_lossy().to_string());
+                let path = input.path.unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".wraith").join("cookies.json").to_string_lossy().to_string());
                 match std::fs::read_to_string(&path) {
                     Ok(json) => {
                         let engine_arc = self.active_engine_async().await;
@@ -1678,8 +1678,8 @@ impl WraithHandler {
             }
             "cache_pin" => {
                 let input: CachePinInput = parse_args(args)?;
-                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&dir) {
+                let dir = dirs::home_dir().unwrap_or_default().join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&dir) {
                     Ok(store) => match store.pin_page(&input.url, input.notes.as_deref()) {
                         Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Pinned: {}", input.url))])),
                         Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Pin failed: {e}"))]))
@@ -1689,8 +1689,8 @@ impl WraithHandler {
             }
             "cache_tag" => {
                 let input: CacheTagInput = parse_args(args)?;
-                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&dir) {
+                let dir = dirs::home_dir().unwrap_or_default().join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&dir) {
                     Ok(store) => {
                         let tag_refs: Vec<&str> = input.tags.iter().map(|s| s.as_str()).collect();
                         match store.tag_page(&input.url, &tag_refs) {
@@ -1703,8 +1703,8 @@ impl WraithHandler {
             }
             "cache_domain_profile" => {
                 let input: CacheDomainProfileInput = parse_args(args)?;
-                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&dir) {
+                let dir = dirs::home_dir().unwrap_or_default().join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&dir) {
                     Ok(store) => match store.get_domain_profile(&input.domain) {
                         Ok(Some(p)) => Ok(CallToolResult::success(vec![Content::text(format!("Domain: {}\n  Pages cached: {}\n  Avg change interval: {}s\n  TTL: {}s", p.domain, p.pages_cached, p.avg_change_interval_secs.unwrap_or(0), p.computed_ttl_secs))])),
                         Ok(None) => Ok(CallToolResult::success(vec![Content::text(format!("No profile for {}", input.domain))])),
@@ -1715,9 +1715,9 @@ impl WraithHandler {
             }
             "cache_find_similar" => {
                 let input: CacheFindSimilarInput = parse_args(args)?;
-                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
+                let dir = dirs::home_dir().unwrap_or_default().join(".wraith").join("knowledge");
                 let max = input.max_results.unwrap_or(5);
-                match openclaw_cache::KnowledgeStore::open(&dir) {
+                match wraith_cache::KnowledgeStore::open(&dir) {
                     Ok(store) => match store.find_similar(&input.url, max) {
                         Ok(results) if results.is_empty() => Ok(CallToolResult::success(vec![Content::text("No similar pages found.")])),
                         Ok(results) => {
@@ -1731,8 +1731,8 @@ impl WraithHandler {
             }
             "cache_evict" => {
                 let input: CacheEvictInput = parse_args(args)?;
-                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&dir) {
+                let dir = dirs::home_dir().unwrap_or_default().join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&dir) {
                     Ok(store) => match store.evict_to_budget(input.max_bytes) {
                         Ok(evicted) => Ok(CallToolResult::success(vec![Content::text(format!("Evicted {} bytes", evicted))])),
                         Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Evict failed: {e}"))]))
@@ -1742,10 +1742,10 @@ impl WraithHandler {
             }
             "cache_raw_html" => {
                 let input: CacheRawHtmlInput = parse_args(args)?;
-                let dir = dirs::home_dir().unwrap_or_default().join(".openclaw").join("knowledge");
-                match openclaw_cache::KnowledgeStore::open(&dir) {
+                let dir = dirs::home_dir().unwrap_or_default().join(".wraith").join("knowledge");
+                match wraith_cache::KnowledgeStore::open(&dir) {
                     Ok(store) => {
-                        let hash = openclaw_cache::KnowledgeStore::hash_url(&input.url);
+                        let hash = wraith_cache::KnowledgeStore::hash_url(&input.url);
                         match store.get_raw_html(&hash) {
                             Ok(Some(html)) => Ok(CallToolResult::success(vec![Content::text(html.chars().take(5000).collect::<String>())])),
                             Ok(None) => Ok(CallToolResult::success(vec![Content::text("Not in cache.")])),
@@ -1798,9 +1798,9 @@ impl WraithHandler {
                 let input: ExtractPdfInput = parse_args(args)?;
                 match reqwest::Client::new().get(&input.url).send().await {
                     Ok(resp) => match resp.bytes().await {
-                        Ok(bytes) => match openclaw_content_extract::pdf::extract_pdf_text(&bytes) {
+                        Ok(bytes) => match wraith_content_extract::pdf::extract_pdf_text(&bytes) {
                             Ok(content) => {
-                                let md = openclaw_content_extract::pdf::pdf_to_markdown(&content);
+                                let md = wraith_content_extract::pdf::pdf_to_markdown(&content);
                                 Ok(CallToolResult::success(vec![Content::text(format!("PDF: {} pages\n\n{}", content.pages.len(), md))]))
                             }
                             Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("PDF parse failed: {e}"))]))
@@ -1815,7 +1815,7 @@ impl WraithHandler {
                 let engine = engine_arc.lock().await;
                 let html = engine.page_source().await.unwrap_or_default();
                 let url = engine.current_url().await.unwrap_or_default();
-                match openclaw_content_extract::readability::extract_article(&html, &url) {
+                match wraith_content_extract::readability::extract_article(&html, &url) {
                     Ok(article) => Ok(CallToolResult::success(vec![Content::text(format!("# {}\n\n{}\n\n---\n{} images, {} links", article.title, article.content, article.images.len(), article.links.len()))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Article extraction failed: {e}"))]))
                 }
@@ -1823,7 +1823,7 @@ impl WraithHandler {
             "extract_markdown" => {
                 let input: ExtractMarkdownInput = parse_args(args)?;
                 let html = if let Some(h) = input.html { h } else { let ea = self.active_engine_async().await; let e = ea.lock().await; e.page_source().await.unwrap_or_default() };
-                match openclaw_content_extract::markdown::html_to_markdown(&html) {
+                match wraith_content_extract::markdown::html_to_markdown(&html) {
                     Ok(md) => Ok(CallToolResult::success(vec![Content::text(md)])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Markdown failed: {e}"))]))
                 }
@@ -1831,13 +1831,13 @@ impl WraithHandler {
             "extract_plain_text" => {
                 let input: ExtractPlainTextInput = parse_args(args)?;
                 let html = if let Some(h) = input.html { h } else { let ea = self.active_engine_async().await; let e = ea.lock().await; e.page_source().await.unwrap_or_default() };
-                match openclaw_content_extract::markdown::html_to_plain_text(&html) {
+                match wraith_content_extract::markdown::html_to_plain_text(&html) {
                     Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Plain text failed: {e}"))]))
                 }
             }
             "extract_ocr" => {
-                let result = openclaw_content_extract::ocr::basic_image_text_detection(&[]);
+                let result = wraith_content_extract::ocr::basic_image_text_detection(&[]);
                 Ok(CallToolResult::success(vec![Content::text(format!("OCR: {} regions, language: {}", result.regions.len(), result.language))]))
             }
             "auth_detect" => {
@@ -1855,7 +1855,7 @@ impl WraithHandler {
             }
             "fingerprint_import" => {
                 let input: FingerprintImportInput = parse_args(args)?;
-                let mut mgr = openclaw_identity::FingerprintManager::new();
+                let mut mgr = wraith_identity::FingerprintManager::new();
                 match mgr.load_from_file(std::path::Path::new(&input.path)) {
                     Ok(fp) => Ok(CallToolResult::success(vec![Content::text(format!("Imported: {} ({}x{}, {})", fp.id, fp.screen_width, fp.screen_height, fp.platform))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Import failed: {e}"))]))
@@ -1868,20 +1868,20 @@ impl WraithHandler {
             }
             "dns_resolve" => {
                 let input: DnsResolveInput = parse_args(args)?;
-                match openclaw_browser_core::tor::DnsOverHttps::resolve(&input.domain, "https://cloudflare-dns.com/dns-query").await {
+                match wraith_browser_core::tor::DnsOverHttps::resolve(&input.domain, "https://cloudflare-dns.com/dns-query").await {
                     Ok(ips) => Ok(CallToolResult::success(vec![Content::text(format!("{} -> {}", input.domain, ips.join(", ")))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("DNS failed: {e}"))]))
                 }
             }
             "stealth_status" => {
-                let tls = openclaw_browser_core::stealth_http::has_stealth_tls();
-                let evasions = openclaw_browser_core::stealth_evasions::StealthEvasions::all().evasion_count();
+                let tls = wraith_browser_core::stealth_http::has_stealth_tls();
+                let evasions = wraith_browser_core::stealth_evasions::StealthEvasions::all().evasion_count();
                 Ok(CallToolResult::success(vec![Content::text(format!("Compatible TLS: {}\nEvasions: {}", if tls { "ACTIVE (BoringSSL)" } else { "INACTIVE (rustls)" }, evasions))]))
             }
             "plugin_register" => {
                 let input: PluginRegisterInput = parse_args(args)?;
-                let manifest = openclaw_browser_core::wasm_plugins::PluginManifest { name: input.name.clone(), version: "1.0.0".to_string(), description: input.description.unwrap_or_default(), author: None, entry_point: input.wasm_path, domains: input.domains.unwrap_or_default(), capabilities: vec![] };
-                let mut reg = openclaw_browser_core::wasm_plugins::PluginRegistry::new();
+                let manifest = wraith_browser_core::wasm_plugins::PluginManifest { name: input.name.clone(), version: "1.0.0".to_string(), description: input.description.unwrap_or_default(), author: None, entry_point: input.wasm_path, domains: input.domains.unwrap_or_default(), capabilities: vec![] };
+                let mut reg = wraith_browser_core::wasm_plugins::PluginRegistry::new();
                 match reg.register(manifest) {
                     Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!("Plugin '{}' registered.", input.name))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Register failed: {e}"))]))
@@ -1892,22 +1892,22 @@ impl WraithHandler {
                 Ok(CallToolResult::success(vec![Content::text(format!("Plugin '{}' requires --features wasm.", input.name))]))
             }
             "plugin_list" => {
-                let reg = openclaw_browser_core::wasm_plugins::PluginRegistry::new();
+                let reg = wraith_browser_core::wasm_plugins::PluginRegistry::new();
                 let plugins = reg.list();
                 if plugins.is_empty() { Ok(CallToolResult::success(vec![Content::text("No plugins registered.")])) }
                 else { Ok(CallToolResult::success(vec![Content::text(plugins.iter().map(|p| format!("  {} v{}", p.name, p.version)).collect::<Vec<_>>().join("\n"))])) }
             }
             "plugin_remove" => {
                 let input: PluginRemoveInput = parse_args(args)?;
-                let mut reg = openclaw_browser_core::wasm_plugins::PluginRegistry::new();
+                let mut reg = wraith_browser_core::wasm_plugins::PluginRegistry::new();
                 Ok(CallToolResult::success(vec![Content::text(if reg.remove(&input.name) { format!("Removed '{}'", input.name) } else { format!("'{}' not found", input.name) })]))
             }
             "telemetry_metrics" => {
-                let c = openclaw_browser_core::telemetry::MetricsCollector::new();
+                let c = wraith_browser_core::telemetry::MetricsCollector::new();
                 Ok(CallToolResult::success(vec![Content::text(c.to_json())]))
             }
             "telemetry_spans" => {
-                let t = openclaw_browser_core::telemetry::SpanTracker::new();
+                let t = wraith_browser_core::telemetry::SpanTracker::new();
                 Ok(CallToolResult::success(vec![Content::text(t.export_json())]))
             }
             "workflow_start_recording" => {
@@ -1924,15 +1924,15 @@ impl WraithHandler {
                 Ok(CallToolResult::success(vec![Content::text(format!("Replaying '{}' with {} variables.", input.name, n))]))
             }
             "workflow_list" => {
-                Ok(CallToolResult::success(vec![Content::text("Workflows stored at ~/.openclaw/workflows/")]))
+                Ok(CallToolResult::success(vec![Content::text("Workflows stored at ~/.wraith/workflows/")]))
             }
             "timetravel_summary" => {
-                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let t = wraith_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
                 Ok(CallToolResult::success(vec![Content::text(t.summary())]))
             }
             "timetravel_branch" => {
                 let input: TimeTravelBranchInput = parse_args(args)?;
-                let mut t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let mut t = wraith_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
                 match t.branch_from(input.step, &input.name) {
                     Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!("Branch '{}' created: {}", input.name, id))])),
                     Err(e) => Ok(CallToolResult::success(vec![Content::text(format!("Branch failed: {e}"))]))
@@ -1940,34 +1940,34 @@ impl WraithHandler {
             }
             "timetravel_replay" => {
                 let input: TimeTravelReplayInput = parse_args(args)?;
-                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let t = wraith_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
                 let steps = t.replay_to(input.step);
                 Ok(CallToolResult::success(vec![Content::text(format!("Replay to step {}: {} steps", input.step, steps.len()))]))
             }
             "timetravel_diff" => {
                 let input: TimeTravelDiffInput = parse_args(args)?;
-                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let t = wraith_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
                 let diffs = t.diff_branches(&input.branch_a, &input.branch_b);
                 Ok(CallToolResult::success(vec![Content::text(format!("{} vs {}: {} divergences", input.branch_a, input.branch_b, diffs.len()))]))
             }
             "timetravel_export" => {
-                let t = openclaw_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
+                let t = wraith_agent_loop::timetravel::TimelineRecorder::new("mcp".to_string());
                 Ok(CallToolResult::success(vec![Content::text(t.export_timeline())]))
             }
             "dag_create" => {
                 let input: DagCreateInput = parse_args(args)?;
-                let _d = openclaw_agent_loop::task_dag::TaskDag::new(&input.name);
+                let _d = wraith_agent_loop::task_dag::TaskDag::new(&input.name);
                 Ok(CallToolResult::success(vec![Content::text(format!("DAG '{}' created.", input.name))]))
             }
             "dag_add_task" => {
                 let input: DagAddTaskInput = parse_args(args)?;
                 let action = match input.action_type.as_str() {
-                    "navigate" => openclaw_agent_loop::task_dag::TaskAction::Navigate(input.target.clone().unwrap_or_default()),
-                    "click" => openclaw_agent_loop::task_dag::TaskAction::Click(input.target.clone().unwrap_or_default()),
-                    "extract" => openclaw_agent_loop::task_dag::TaskAction::Extract(input.target.clone().unwrap_or_default()),
-                    _ => openclaw_agent_loop::task_dag::TaskAction::Custom(input.target.clone().unwrap_or_default()),
+                    "navigate" => wraith_agent_loop::task_dag::TaskAction::Navigate(input.target.clone().unwrap_or_default()),
+                    "click" => wraith_agent_loop::task_dag::TaskAction::Click(input.target.clone().unwrap_or_default()),
+                    "extract" => wraith_agent_loop::task_dag::TaskAction::Extract(input.target.clone().unwrap_or_default()),
+                    _ => wraith_agent_loop::task_dag::TaskAction::Custom(input.target.clone().unwrap_or_default()),
                 };
-                let _n = openclaw_agent_loop::task_dag::TaskNode::new(&input.task_id, &input.description, action);
+                let _n = wraith_agent_loop::task_dag::TaskNode::new(&input.task_id, &input.description, action);
                 Ok(CallToolResult::success(vec![Content::text(format!("Task '{}' added: {}", input.task_id, input.description))]))
             }
             "dag_add_dependency" => {
@@ -1983,9 +1983,9 @@ impl WraithHandler {
             "dag_visualize" => { Ok(CallToolResult::success(vec![Content::text("No active DAG. Create one first.")])) }
             "mcts_plan" => {
                 let input: MctsPlanInput = parse_args(args)?;
-                let config = openclaw_agent_loop::mcts::MctsConfig { max_simulations: input.simulations.unwrap_or(100), exploration_constant: 1.41, max_depth: 10, discount_factor: 0.95 };
-                let mut planner = openclaw_agent_loop::mcts::MctsPlanner::new(config);
-                let candidates: Vec<openclaw_agent_loop::mcts::ActionCandidate> = input.actions.iter().map(|a| openclaw_agent_loop::mcts::ActionCandidate { action: a.clone(), description: a.clone(), estimated_reward: 0.5 }).collect();
+                let config = wraith_agent_loop::mcts::MctsConfig { max_simulations: input.simulations.unwrap_or(100), exploration_constant: 1.41, max_depth: 10, discount_factor: 0.95 };
+                let mut planner = wraith_agent_loop::mcts::MctsPlanner::new(config);
+                let candidates: Vec<wraith_agent_loop::mcts::ActionCandidate> = input.actions.iter().map(|a| wraith_agent_loop::mcts::ActionCandidate { action: a.clone(), description: a.clone(), estimated_reward: 0.5 }).collect();
                 match planner.plan_action(&input.state, candidates) {
                     Some(action) => Ok(CallToolResult::success(vec![Content::text(format!("MCTS recommends: {}", action))])),
                     None => Ok(CallToolResult::success(vec![Content::text("MCTS could not determine best action.")]))
@@ -1996,7 +1996,7 @@ impl WraithHandler {
             }
             "prefetch_predict" => {
                 let input: PrefetchPredictInput = parse_args(args)?;
-                let predictor = openclaw_agent_loop::prefetch::PrefetchPredictor::new(openclaw_agent_loop::prefetch::PrefetchConfig::default());
+                let predictor = wraith_agent_loop::prefetch::PrefetchPredictor::new(wraith_agent_loop::prefetch::PrefetchConfig::default());
                 let engine_arc = self.active_engine_async().await;
                 let engine = engine_arc.lock().await;
                 let snapshot = engine.snapshot().await.ok();
@@ -2020,9 +2020,9 @@ impl WraithHandler {
             "swarm_collect" => { Ok(CallToolResult::success(vec![Content::text("Use swarm_fan_out to browse multiple URLs.")])) }
             "entity_add" => {
                 let input: EntityAddInput = parse_args(args)?;
-                let etype = match input.entity_type.as_str() { "company" => openclaw_cache::entity_graph::EntityType::Organization, "person" => openclaw_cache::entity_graph::EntityType::Person, "technology" => openclaw_cache::entity_graph::EntityType::Technology, "product" => openclaw_cache::entity_graph::EntityType::Product, "location" => openclaw_cache::entity_graph::EntityType::Location, _ => openclaw_cache::entity_graph::EntityType::Unknown };
-                let entity = openclaw_cache::entity_graph::Entity { id: uuid::Uuid::new_v4().to_string(), canonical_name: input.name.to_lowercase(), display_name: input.name.clone(), entity_type: etype, attributes: input.attributes.unwrap_or_default(), sources: vec![], first_seen: chrono::Utc::now(), last_seen: chrono::Utc::now() };
-                let mut g = openclaw_cache::entity_graph::EntityGraph::new();
+                let etype = match input.entity_type.as_str() { "company" => wraith_cache::entity_graph::EntityType::Organization, "person" => wraith_cache::entity_graph::EntityType::Person, "technology" => wraith_cache::entity_graph::EntityType::Technology, "product" => wraith_cache::entity_graph::EntityType::Product, "location" => wraith_cache::entity_graph::EntityType::Location, _ => wraith_cache::entity_graph::EntityType::Unknown };
+                let entity = wraith_cache::entity_graph::Entity { id: uuid::Uuid::new_v4().to_string(), canonical_name: input.name.to_lowercase(), display_name: input.name.clone(), entity_type: etype, attributes: input.attributes.unwrap_or_default(), sources: vec![], first_seen: chrono::Utc::now(), last_seen: chrono::Utc::now() };
+                let mut g = wraith_cache::entity_graph::EntityGraph::new();
                 g.add_entity(entity);
                 Ok(CallToolResult::success(vec![Content::text(format!("Entity '{}' added as {}", input.name, input.entity_type))]))
             }
@@ -2036,20 +2036,20 @@ impl WraithHandler {
             }
             "entity_find_related" => {
                 let input: EntityFindRelatedInput = parse_args(args)?;
-                let g = openclaw_cache::entity_graph::EntityGraph::new();
+                let g = wraith_cache::entity_graph::EntityGraph::new();
                 let related = g.find_related(&input.name);
                 if related.is_empty() { Ok(CallToolResult::success(vec![Content::text(format!("No relations for '{}'", input.name))])) }
                 else { Ok(CallToolResult::success(vec![Content::text(related.iter().map(|(e, r)| format!("  --[{}]--> {} ({:?})", r.kind, e.display_name, e.entity_type)).collect::<Vec<_>>().join("\n"))])) }
             }
             "entity_search" => {
                 let input: EntitySearchInput = parse_args(args)?;
-                let g = openclaw_cache::entity_graph::EntityGraph::new();
+                let g = wraith_cache::entity_graph::EntityGraph::new();
                 let results = g.search_entities(&input.query);
                 if results.is_empty() { Ok(CallToolResult::success(vec![Content::text(format!("No entities matching '{}'", input.query))])) }
                 else { Ok(CallToolResult::success(vec![Content::text(results.iter().map(|e| format!("  {} ({:?})", e.display_name, e.entity_type)).collect::<Vec<_>>().join("\n"))])) }
             }
             "entity_visualize" => {
-                let g = openclaw_cache::entity_graph::EntityGraph::new();
+                let g = wraith_cache::entity_graph::EntityGraph::new();
                 Ok(CallToolResult::success(vec![Content::text(format!("```mermaid\n{}\n```\n{} entities", g.to_mermaid(), g.entity_count()))]))
             }
             "embedding_search" => {
@@ -2814,7 +2814,7 @@ impl WraithHandler {
                 // Use the same stealth HTTP stack the engine uses for navigation
                 let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                            (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
-                let (status, body, _final_url) = openclaw_browser_core::stealth_http::stealth_fetch(
+                let (status, body, _final_url) = wraith_browser_core::stealth_http::stealth_fetch(
                     service_url, ua, "en-US,en;q=0.9",
                 ).await.map_err(|e| ErrorData::internal_error(
                     format!("TLS verification fetch failed: {e}"), None))?;
@@ -2900,7 +2900,7 @@ impl WraithHandler {
                 let ext_match = obs_extension_count == ref_extension_count;
                 let h2_match = obs_h2_window == ref_h2_window || obs_h2_window == 0;
 
-                let stealth_active = openclaw_browser_core::stealth_http::has_stealth_tls();
+                let stealth_active = wraith_browser_core::stealth_http::has_stealth_tls();
 
                 // Determine overall verdict
                 let critical_pass = ja3_match && tls_match;
@@ -3139,7 +3139,7 @@ impl WraithHandler {
                         Self::default_engine()
                     }
                     "cdp" | "chrome" => {
-                        use openclaw_browser_core::engine_cdp::CdpEngine;
+                        use wraith_browser_core::engine_cdp::CdpEngine;
                         let cdp_engine = CdpEngine::new().await
                             .map_err(|e| ErrorData::internal_error(
                                 format!("CDP engine launch failed: {e}. Ensure Chrome is installed."), None
@@ -3368,7 +3368,7 @@ impl WraithHandler {
                 #[allow(unused_variables)]
                 let wants_cdp = {
                     // Try parsing as a Playbook struct to check engine field
-                    let maybe_pb: Result<openclaw_browser_core::playbook::Playbook, _> =
+                    let maybe_pb: Result<wraith_browser_core::playbook::Playbook, _> =
                         serde_yaml::from_str(&resolved);
                     match maybe_pb {
                         Ok(pb) => pb.engine.eq_ignore_ascii_case("cdp"),
@@ -3384,7 +3384,7 @@ impl WraithHandler {
                 #[cfg(feature = "cdp")]
                 let engine_arc = if wants_cdp {
                     info!("Playbook requests CDP engine — auto-switching");
-                    use openclaw_browser_core::engine_cdp::CdpEngine;
+                    use wraith_browser_core::engine_cdp::CdpEngine;
                     match CdpEngine::new().await {
                         Ok(cdp_eng) => {
                             let cdp_arc: Arc<Mutex<dyn BrowserEngine>> = Arc::new(Mutex::new(cdp_eng));
@@ -3857,7 +3857,7 @@ impl WraithHandler {
                             let eng = engine_arc.lock().await;
                             let html = eng.page_source().await.unwrap_or_default();
                             let url = eng.current_url().await.unwrap_or_default();
-                            match openclaw_content_extract::extract(&html, &url) {
+                            match wraith_content_extract::extract(&html, &url) {
                                 Ok(content) => json!({
                                     "step": idx + 1,
                                     "name": step_name,
@@ -4293,13 +4293,13 @@ impl ServerHandler for WraithHandler {
 }
 
 /// Open and auto-unlock the vault for MCP operations.
-fn open_vault() -> Result<openclaw_identity::CredentialVault, ErrorData> {
+fn open_vault() -> Result<wraith_identity::CredentialVault, ErrorData> {
     let vault_path = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".openclaw")
+        .join(".wraith")
         .join("vault.db");
 
-    let vault = openclaw_identity::CredentialVault::open(&vault_path)
+    let vault = wraith_identity::CredentialVault::open(&vault_path)
         .map_err(|e| ErrorData::internal_error(format!("Vault open failed: {e}"), None))?;
 
     let _ = vault.unlock(&secrecy::SecretString::from("".to_string()));
@@ -4552,7 +4552,7 @@ fn parse_css_tag(selector: &str) -> &str {
 /// - Stored selector path (exact + substring match)
 /// - Role name match for bare tag selectors
 fn element_matches_selector(
-    elem: &openclaw_browser_core::dom::DomElement,
+    elem: &wraith_browser_core::dom::DomElement,
     selector: &str,
 ) -> bool {
     // Parse the tag from the selector

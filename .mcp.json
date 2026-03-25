@@ -1,9 +1,9 @@
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "J:\\openclaw-browser\\target\\release\\openclaw-browser.exe",
+    "wraith-browser": {
+      "command": "J:\\wraith-browser\\target\\release\\wraith-browser.exe",
       "args": ["serve", "--transport", "stdio"],
-      "description": "OpenClaw Browser — AI-agent-first web browser with DOM snapshots, content extraction, credential vault, and web search"
+      "description": "Wraith Browser — AI-agent-first web browser with DOM snapshots, content extraction, credential vault, and web search"
     }
   }
 }

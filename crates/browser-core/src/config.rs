@@ -50,7 +50,7 @@ impl Default for BrowserConfig {
             navigation_timeout_ms: 30_000,
             action_timeout_ms: 10_000,
             user_agent: Some(
-                "OpenClaw-Browser/0.1.0 (AI Agent; +https://github.com/suhteevah/openclaw-browser)"
+                "Wraith-Browser/0.1.0 (AI Agent; +https://github.com/suhteevah/wraith-browser)"
                     .to_string(),
             ),
             extra_args: vec![

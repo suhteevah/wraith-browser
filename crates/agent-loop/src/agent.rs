@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 use crate::{AgentConfig, BrowsingTask, error::AgentError, history::StepHistory, llm::LlmBackend};
-use openclaw_browser_core::engine::BrowserEngine;
-use openclaw_browser_core::actions::{BrowserAction, ScrollDirection};
+use wraith_browser_core::engine::BrowserEngine;
+use wraith_browser_core::actions::{BrowserAction, ScrollDirection};
 use tracing::{info, warn, debug, instrument};
 
 /// A parsed action from the LLM response.
@@ -31,7 +31,7 @@ pub struct Agent<L: LlmBackend> {
     pub llm: L,
     pub history: StepHistory,
     /// Optional knowledge store for auto-caching visited pages.
-    pub cache: Option<Arc<openclaw_cache::KnowledgeStore>>,
+    pub cache: Option<Arc<wraith_cache::KnowledgeStore>>,
 }
 
 impl<L: LlmBackend> Agent<L> {
@@ -46,7 +46,7 @@ impl<L: LlmBackend> Agent<L> {
     }
 
     /// Attach a KnowledgeStore for auto-caching every visited page.
-    pub fn with_cache(mut self, cache: Arc<openclaw_cache::KnowledgeStore>) -> Self {
+    pub fn with_cache(mut self, cache: Arc<wraith_cache::KnowledgeStore>) -> Self {
         self.cache = Some(cache);
         self
     }
@@ -65,7 +65,7 @@ impl<L: LlmBackend> Agent<L> {
         };
 
         // Extract content
-        let extracted = match openclaw_content_extract::extract(&html, url) {
+        let extracted = match wraith_content_extract::extract(&html, url) {
             Ok(e) => e,
             Err(e) => {
                 debug!(error = %e, "Auto-cache: extraction failed");
@@ -85,7 +85,7 @@ impl<L: LlmBackend> Agent<L> {
             .trim()
             .to_string();
 
-        let page = openclaw_cache::CachedPage {
+        let page = wraith_cache::CachedPage {
             url_hash,
             url: url.to_string(),
             domain,
@@ -95,7 +95,7 @@ impl<L: LlmBackend> Agent<L> {
             snippet,
             token_count: extracted.estimated_tokens,
             links: extracted.links,
-            content_type: openclaw_cache::ContentType::Generic,
+            content_type: wraith_cache::ContentType::Generic,
             content_hash,
             first_seen: chrono::Utc::now(),
             last_fetched: chrono::Utc::now(),
@@ -118,7 +118,7 @@ impl<L: LlmBackend> Agent<L> {
         }
 
         // Also index in the local search index
-        if let Err(e) = openclaw_search::local::index_page(url, title, &page.plain_text) {
+        if let Err(e) = wraith_search::local::index_page(url, title, &page.plain_text) {
             debug!(error = %e, "Auto-cache: local index failed");
         }
     }

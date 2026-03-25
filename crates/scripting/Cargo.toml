@@ -1,5 +1,5 @@
 [package]
-name = "openclaw-scripting"
+name = "wraith-scripting"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

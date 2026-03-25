@@ -11,7 +11,7 @@ Wraith Browser implements the [Model Context Protocol (MCP)](https://modelcontex
 wraith-browser serve --transport stdio
 ```
 
-This launches Wraith as a JSON-RPC server communicating over stdin/stdout. The server initializes the browser engine (Sevro with QuickJS by default, falling back to the pure-Rust native engine), creates the knowledge cache at `~/.openclaw/knowledge/`, and waits for MCP requests.
+This launches Wraith as a JSON-RPC server communicating over stdin/stdout. The server initializes the browser engine (Sevro with QuickJS by default, falling back to the pure-Rust native engine), creates the knowledge cache at `~/.wraith/knowledge/`, and waits for MCP requests.
 
 You will not see any output in your terminal -- that is expected. All communication happens over stdin/stdout using the MCP wire protocol. Diagnostic logs go to stderr when `--verbose` is enabled.
 

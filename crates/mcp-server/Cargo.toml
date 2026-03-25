@@ -1,23 +1,23 @@
 [package]
-name = "openclaw-mcp-server"
+name = "wraith-mcp-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "MCP server exposing OpenClaw Browser tools to Claude Code and other LLM agents"
+description = "MCP server exposing Wraith Browser tools to Claude Code and other LLM agents"
 
 [features]
 default = ["sevro"]
-sevro = ["openclaw-browser-core/sevro"]
-cdp = ["openclaw-browser-core/cdp"]
+sevro = ["wraith-browser-core/sevro"]
+cdp = ["wraith-browser-core/cdp"]
 
 [dependencies]
-openclaw-browser-core = { path = "../browser-core", default-features = false }
+wraith-browser-core = { path = "../browser-core", default-features = false }
 base64.workspace = true
-openclaw-content-extract = { path = "../content-extract" }
-openclaw-identity = { path = "../identity" }
-openclaw-cache = { path = "../cache" }
-openclaw-search = { path = "../search-engine" }
-openclaw-agent-loop = { path = "../agent-loop" }
+wraith-content-extract = { path = "../content-extract" }
+wraith-identity = { path = "../identity" }
+wraith-cache = { path = "../cache" }
+wraith-search = { path = "../search-engine" }
+wraith-agent-loop = { path = "../agent-loop" }
 secrecy = { workspace = true }
 rmcp.workspace = true
 schemars.workspace = true

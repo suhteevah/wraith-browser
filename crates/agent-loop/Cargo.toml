@@ -1,15 +1,15 @@
 [package]
-name = "openclaw-agent-loop"
+name = "wraith-agent-loop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "AI agent decision loop — observe, think, act cycle for autonomous browsing"
 
 [dependencies]
-openclaw-browser-core = { path = "../browser-core" }
-openclaw-content-extract = { path = "../content-extract" }
-openclaw-search = { path = "../search-engine" }
-openclaw-cache = { path = "../cache" }
+wraith-browser-core = { path = "../browser-core" }
+wraith-content-extract = { path = "../content-extract" }
+wraith-search = { path = "../search-engine" }
+wraith-cache = { path = "../cache" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,4 +1,4 @@
-# OpenClaw FOSS Site — Design Spec
+# Wraith FOSS Site — Design Spec
 
 **Date:** 2026-03-23
 **Status:** Approved
@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-A documentation, homepage, and playground site for the open-source OpenClaw Browser (Wraith) project. Fully isolated from all enterprise code and artifacts. Deployed to Vercel via CLI.
+A documentation, homepage, and playground site for the open-source Wraith Browser (Wraith) project. Fully isolated from all enterprise code and artifacts. Deployed to Vercel via CLI.
 
 ### Goals
 - Provide comprehensive docs for the FOSS browser engine and its 140+ MCP tools (exact count derived from source at build time)
@@ -78,7 +78,7 @@ One tasteful outbound link allowed: "Need managed hosting & team features?" poin
 ### Deployment
 - **Target:** Vercel
 - **Method:** `vercel deploy` from CLI (GitHub Actions not available)
-- **Domain:** TBD (e.g., `openclaw.dev` or `wraith.dev`)
+- **Domain:** TBD (e.g., `wraith.dev` or `wraith.dev`)
 - **Output:** SSG where possible, SSR only if needed for AI chat
 
 ### Directory Structure
@@ -142,7 +142,7 @@ foss-site/
 │   │       ├── commands.mdx
 │   │       └── transport-modes.mdx
 │   ├── blog/
-│   │   └── introducing-openclaw.mdx  # Launch announcement
+│   │   └── introducing-wraith.mdx  # Launch announcement
 │   └── playground/
 │       ├── first-scrape.json         # Session recording
 │       ├── fill-a-form.json
@@ -171,7 +171,7 @@ Adapted from the existing `website/page.tsx` content, enterprise references stri
 ### Sections (top to bottom)
 1. **Hero** — "Run 7,000 browser sessions on a single machine"
    - Subtext: "A native browser engine for AI agents. No Chrome. No Selenium. ~50ms per page."
-   - Primary CTA: Install command block (`cargo install openclaw-browser`)
+   - Primary CTA: Install command block (`cargo install wraith-browser`)
    - Secondary CTA: "Read the docs"
 
 2. **Terminal demo** — Embedded `<PlaygroundReplay />` showing the "first scrape" tutorial auto-playing
@@ -185,12 +185,12 @@ Adapted from the existing `website/page.tsx` content, enterprise references stri
 
 5. **How it works** — 3-step sequence rewritten for local/MCP usage (NOT the enterprise API flow):
    1. Install the binary (`cargo install` / Docker / download)
-   2. Connect via MCP (`openclaw-browser serve --transport stdio`) or use the CLI
+   2. Connect via MCP (`wraith-browser serve --transport stdio`) or use the CLI
    3. Automate: navigate, extract, build knowledge graphs
 
 6. **Install methods:**
-   - Cargo: `cargo install openclaw-browser`
-   - Docker: `docker pull openclaw/browser`
+   - Cargo: `cargo install wraith-browser`
+   - Docker: `docker pull wraith/browser`
    - Binary: download links per platform
 
 7. **Footer:**
@@ -251,7 +251,7 @@ JSON files in `content/playground/`. Captured from real Wraith MCP sessions, the
 The MCP tool count (140+) should be derived from source at build time, never hardcoded.
 
 ### Strategy
-- **Pre-build script** (`scripts/generate-tool-docs.ts`): a Node.js script that runs `openclaw-browser serve --transport stdio --list-tools` (or parses `make_tool()` calls from `crates/mcp-server/src/server.rs`) to extract tool names, descriptions, and parameter schemas
+- **Pre-build script** (`scripts/generate-tool-docs.ts`): a Node.js script that runs `wraith-browser serve --transport stdio --list-tools` (or parses `make_tool()` calls from `crates/mcp-server/src/server.rs`) to extract tool names, descriptions, and parameter schemas
 - Output: one MDX file per category in `content/docs/mcp-tools/`, auto-generated with a `<!-- AUTO-GENERATED -->` header
 - Hand-written category intros and usage notes in separate MDX files that import/wrap the generated content
 - The script also emits a `tool-count.json` used by the homepage and AI chat prompt so the count is always accurate
@@ -292,7 +292,7 @@ The MCP server ships with built-in playbooks (`greenhouse-apply`, `ashby-apply`,
 MDX files in `content/blog/`. Blog routing is handled via a custom `app/blog/` route (not the Fumadocs docs source). Fumadocs routes `content/docs/` automatically, but blog content needs its own `app/blog/page.tsx` (listing) and `app/blog/[slug]/page.tsx` (individual posts) that load MDX from `content/blog/` using `next-mdx-remote` or Fumadocs' `createMDXSource` with a separate content source config.
 
 ### Launch content
-- **"Introducing OpenClaw Browser"** — what it is, why we built it, how to get started
+- **"Introducing Wraith Browser"** — what it is, why we built it, how to get started
 - First entry in a changelog series for version releases
 
 ### Ongoing
@@ -321,7 +321,7 @@ Geistdocs built-in "Ask AI" feature.
 ### Prompt
 Configured in `geistdocs.tsx`. The tool count is injected from `tool-count.json` at build time:
 ```
-You are the OpenClaw Browser documentation assistant. Help developers use
+You are the Wraith Browser documentation assistant. Help developers use
 Wraith — a native, AI-agent-first browser with {toolCount} MCP tools. Answer
 questions about installation, MCP tool usage, the knowledge graph, vault,
 scripting, and self-hosting. You only know about the open-source version.
@@ -416,7 +416,7 @@ Minimal — only what Geistdocs AI chat needs (AI Gateway OIDC if using Vercel A
 
 ## 15. Open Questions
 
-1. **Domain:** `openclaw.dev`, `wraith.dev`, or something else? — TBD
+1. **Domain:** `wraith.dev`, `wraith.dev`, or something else? — TBD
 2. **Discord server:** Needs to be created before launch
 3. **Auto-generation pipeline:** Pre-build script to parse MCP tools from Rust source — either invoke the binary with `--list-tools` or parse `make_tool()` calls from `server.rs`. The binary approach is cleaner but requires the binary to be available at build time on Vercel (could use a pre-built tools manifest committed to the repo instead).
 4. **Session recordings:** Need to capture 4 real MCP sessions for playground content

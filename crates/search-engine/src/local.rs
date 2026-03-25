@@ -1,7 +1,7 @@
 //! Local Tantivy index for browsing history and extracted content.
 //! Enables RAG-style retrieval: "search my browsing history for..."
 //!
-//! This module provides a standalone Tantivy index at `~/.openclaw/local_index/`.
+//! This module provides a standalone Tantivy index at `~/.wraith/local_index/`.
 //! It is also the entry point for the KnowledgeStore's fulltext search — when a
 //! KnowledgeStore exists, `search_local` queries both the standalone index AND
 //! the cache's Tantivy index for maximum recall.
@@ -28,7 +28,7 @@ struct LocalIndex {
 fn default_index_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".openclaw")
+        .join(".wraith")
         .join("local_index")
 }
 
@@ -36,7 +36,7 @@ fn default_index_path() -> std::path::PathBuf {
 fn knowledge_store_index_path() -> std::path::PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".openclaw")
+        .join(".wraith")
         .join("knowledge")
         .join("index")
 }

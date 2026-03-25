@@ -1,6 +1,6 @@
-//! # openclaw-agent-loop
+//! # wraith-agent-loop
 //!
-//! The core AI agent decision loop for OpenClaw Browser.
+//! The core AI agent decision loop for Wraith Browser.
 //! Implements an observe → think → act cycle where:
 //!
 //! 1. **Observe**: Take a DOM snapshot, extract content, gather page state
@@ -9,7 +9,7 @@
 //! 4. **Repeat** until task is complete or max_steps reached
 //!
 //! The "think" step is pluggable — it calls out to any LLM via a trait,
-//! so OpenClaw can use Claude, local Ollama models, or any MCP-connected LLM.
+//! so Wraith can use Claude, local Ollama models, or any MCP-connected LLM.
 
 pub mod agent;
 pub mod llm;

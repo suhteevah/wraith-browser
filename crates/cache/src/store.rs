@@ -1114,8 +1114,8 @@ mod tests {
             query: "rust web browser".to_string(),
             query_normalized: "rust web browser".to_string(),
             results: vec![SearchResultEntry {
-                title: "OpenClaw".to_string(),
-                url: "https://openclaw.dev".to_string(),
+                title: "Wraith".to_string(),
+                url: "https://wraith.dev".to_string(),
                 snippet: "AI browser in Rust".to_string(),
                 provider: "test".to_string(),
                 rank: 1,
@@ -1134,7 +1134,7 @@ mod tests {
         assert!(cached.is_some());
         let cached = cached.unwrap();
         assert_eq!(cached.results.len(), 1);
-        assert_eq!(cached.results[0].title, "OpenClaw");
+        assert_eq!(cached.results[0].title, "Wraith");
     }
 
     #[test]

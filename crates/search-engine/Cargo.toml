@@ -1,5 +1,5 @@
 [package]
-name = "openclaw-search"
+name = "wraith-search"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

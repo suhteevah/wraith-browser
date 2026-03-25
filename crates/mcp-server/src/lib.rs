@@ -1,6 +1,6 @@
-//! # openclaw-mcp-server
+//! # wraith-mcp-server
 //!
-//! MCP (Model Context Protocol) server that exposes OpenClaw Browser
+//! MCP (Model Context Protocol) server that exposes Wraith Browser
 //! capabilities as tools for Claude Code, Cursor, and other AI agents.
 //!
 //! ## Tools Exposed
@@ -34,7 +34,7 @@ use tracing::info;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use openclaw_browser_core::engine::BrowserEngine;
+use wraith_browser_core::engine::BrowserEngine;
 
 /// Start the MCP server with the given transport mode and default engine.
 pub async fn run(transport: Transport) -> anyhow::Result<()> {

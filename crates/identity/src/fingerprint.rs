@@ -308,7 +308,7 @@ impl FingerprintManager {
     /// Build the JavaScript that overrides navigator/screen/webgl properties.
     fn build_injection_script(fp: &BrowserFingerprint) -> String {
         format!(r#"
-// ═══ OpenClaw Fingerprint Injection ═══
+// ═══ Wraith Fingerprint Injection ═══
 // Runs before any page JavaScript via CDP Page.addScriptToEvaluateOnNewDocument
 
 (() => {{
@@ -420,7 +420,7 @@ impl FingerprintManager {
         configurable: true,
     }});
 
-    console.debug('[OpenClaw] Fingerprint injection complete');
+    console.debug('[Wraith] Fingerprint injection complete');
 }})();
 "#,
             platform = serde_json::to_string(&fp.platform).unwrap_or_default(),
@@ -478,7 +478,7 @@ impl FingerprintManager {
             Ok(first)
         } else {
             Err(crate::error::IdentityError::FingerprintFailed(
-                "No fingerprint profiles available — run 'openclaw-browser fingerprint capture' first".to_string()
+                "No fingerprint profiles available — run 'wraith-browser fingerprint capture' first".to_string()
             ))
         }
     }
@@ -579,9 +579,9 @@ pub const CAPTURE_SCRIPT: &str = r#"
         ctx.fillStyle = '#f60';
         ctx.fillRect(125, 1, 62, 20);
         ctx.fillStyle = '#069';
-        ctx.fillText('OpenClaw FP', 2, 15);
+        ctx.fillText('Wraith FP', 2, 15);
         ctx.fillStyle = 'rgba(102, 204, 0, 0.7)';
-        ctx.fillText('OpenClaw FP', 4, 17);
+        ctx.fillText('Wraith FP', 4, 17);
         fp.canvasHash = canvas.toDataURL();
     } catch(e) {}
 

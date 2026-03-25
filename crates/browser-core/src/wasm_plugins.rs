@@ -12,14 +12,14 @@
 //! ## Usage
 //!
 //! ```rust
-//! use openclaw_browser_core::wasm_plugins::{PluginManifest, PluginCapability, PluginRegistry};
+//! use wraith_browser_core::wasm_plugins::{PluginManifest, PluginCapability, PluginRegistry};
 //!
 //! let mut registry = PluginRegistry::new();
 //! let manifest = PluginManifest {
 //!     name: "example-extractor".into(),
 //!     version: "0.1.0".into(),
 //!     description: "Extracts product data from example.com".into(),
-//!     author: Some("OpenClaw Contributors".into()),
+//!     author: Some("Wraith Contributors".into()),
 //!     domains: vec!["example.com".into()],
 //!     capabilities: vec![PluginCapability::Extract],
 //!     entry_point: "extract".into(),

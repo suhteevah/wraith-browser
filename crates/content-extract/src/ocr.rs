@@ -130,7 +130,7 @@ impl OcrBackend for MockOcrBackend {
 
 /// PaddleOCR backend using ONNX Runtime for inference.
 ///
-/// Requires `--features ocr` and ONNX model files at `~/.openclaw/models/paddleocr/`.
+/// Requires `--features ocr` and ONNX model files at `~/.wraith/models/paddleocr/`.
 /// Without the feature flag, this backend reports as unavailable.
 pub struct PaddleOcrBackend {
     _model_dir: String,

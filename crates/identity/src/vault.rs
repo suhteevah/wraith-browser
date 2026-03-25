@@ -20,7 +20,7 @@
 //!
 //! ## File Security
 //!
-//! - Vault file: `~/.openclaw/vault.db` with 0600 permissions
+//! - Vault file: `~/.wraith/vault.db` with 0600 permissions
 //! - Salt stored alongside vault (not secret, just unique per vault)
 //! - Master key NEVER written to disk — derived at unlock, held in memory
 //! - On lock: master key zeroized, all decrypted credentials dropped
@@ -122,7 +122,7 @@ impl CredentialVault {
 
         // Store a verification token — encrypt a known value so we can
         // verify the passphrase is correct on unlock
-        let verification = b"OPENCLAW_VAULT_V1";
+        let verification = b"WRAITH_VAULT_V1";
         let encrypted = self.encrypt_bytes(&key, verification)?;
 
         let conn = self.db.lock();
@@ -160,7 +160,7 @@ impl CredentialVault {
                 .map_err(|e| IdentityError::DecryptionFailed(e.to_string()))?;
 
             let decrypted = self.decrypt_bytes(&key, &encrypted)?;
-            if decrypted != b"OPENCLAW_VAULT_V1" {
+            if decrypted != b"WRAITH_VAULT_V1" {
                 warn!("Vault unlock failed — wrong passphrase");
                 return Err(IdentityError::WrongPassphrase);
             }

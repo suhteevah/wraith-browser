@@ -313,7 +313,7 @@ impl VisionBackend for MockVisionBackend {
 // ---------------------------------------------------------------------------
 
 /// OmniParser v2 backend (YOLOv8 + Florence-2) via ONNX Runtime.
-/// Requires `--features vision-ml` and model files at `~/.openclaw/models/omniparser/`.
+/// Requires `--features vision-ml` and model files at `~/.wraith/models/omniparser/`.
 ///
 /// Expected model files:
 /// - `detector.onnx` — YOLOv8 object detection model
@@ -419,7 +419,7 @@ impl VisionBackend for OmniParserBackend {
 }
 
 /// Moondream 0.5B backend — lightweight VLM, runs on CPU in sub-second.
-/// Requires `--features vision-ml` and model file at `~/.openclaw/models/moondream/model.onnx`.
+/// Requires `--features vision-ml` and model file at `~/.wraith/models/moondream/model.onnx`.
 pub struct MoondreamBackend {
     #[allow(dead_code)]
     model_dir: String,

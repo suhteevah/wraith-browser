@@ -256,7 +256,7 @@ impl StealthEvasions {
 
         let body = parts.join("\n\n");
         let script = format!(
-            "// OpenClaw Stealth Evasions — generated script\n\
+            "// Wraith Stealth Evasions — generated script\n\
              (function() {{\n\
              'use strict';\n\n\
              {body}\n\n\
@@ -279,7 +279,7 @@ impl StealthEvasions {
 
 /// Delete `navigator.webdriver` and related properties.
 fn js_webdriver_hide() -> String {
-    r#"// [OpenClaw Stealth: webdriver_hide]
+    r#"// [Wraith Stealth: webdriver_hide]
 (function() {
     Object.defineProperty(navigator, 'webdriver', {
         get: () => undefined,
@@ -293,7 +293,7 @@ fn js_webdriver_hide() -> String {
 
 /// Add a convincing `window.chrome` object with `runtime`, `loadTimes`, `csi`.
 fn js_chrome_runtime() -> String {
-    r#"// [OpenClaw Stealth: chrome_runtime]
+    r#"// [Wraith Stealth: chrome_runtime]
 (function() {
     if (!window.chrome) {
         window.chrome = {};
@@ -345,7 +345,7 @@ fn js_chrome_runtime() -> String {
 
 /// Spoof `navigator.plugins` with realistic Chrome plugin entries.
 fn js_plugin_array() -> String {
-    r#"// [OpenClaw Stealth: plugin_array]
+    r#"// [Wraith Stealth: plugin_array]
 (function() {
     const pluginData = [
         { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format',
@@ -409,7 +409,7 @@ fn js_plugin_array() -> String {
 
 /// Spoof `navigator.mimeTypes`.
 fn js_mime_type_array() -> String {
-    r#"// [OpenClaw Stealth: mime_type_array]
+    r#"// [Wraith Stealth: mime_type_array]
 (function() {
     const mimeData = [
         { type: 'application/pdf', suffixes: 'pdf', description: '' },
@@ -455,7 +455,7 @@ fn js_language_consistency(languages: &[String]) -> String {
     let primary = languages.first().map(|s| s.as_str()).unwrap_or("en-US");
 
     format!(
-        r#"// [OpenClaw Stealth: language_consistency]
+        r#"// [Wraith Stealth: language_consistency]
 (function() {{
     Object.defineProperty(navigator, 'language', {{
         get: () => "{primary}",
@@ -471,7 +471,7 @@ fn js_language_consistency(languages: &[String]) -> String {
 
 /// Override `Permissions.prototype.query` to return realistic results.
 fn js_permissions_query() -> String {
-    r#"// [OpenClaw Stealth: permissions_query]
+    r#"// [Wraith Stealth: permissions_query]
 (function() {
     const originalQuery = window.Permissions && Permissions.prototype.query;
     if (!originalQuery) return;
@@ -489,7 +489,7 @@ fn js_permissions_query() -> String {
 /// Override WebGL `getParameter` for vendor/renderer and add noise to `readPixels`.
 fn js_webgl_noise(vendor: &str, renderer: &str) -> String {
     format!(
-        r#"// [OpenClaw Stealth: webgl_noise]
+        r#"// [Wraith Stealth: webgl_noise]
 (function() {{
     const VENDOR = "{vendor}";
     const RENDERER = "{renderer}";
@@ -534,7 +534,7 @@ fn js_webgl_noise(vendor: &str, renderer: &str) -> String {
 /// imperceptible pixel noise before fingerprinting.
 fn js_canvas_noise(strength: f64) -> String {
     format!(
-        r#"// [OpenClaw Stealth: canvas_noise]
+        r#"// [Wraith Stealth: canvas_noise]
 (function() {{
     const NOISE_STRENGTH = {strength};
 
@@ -583,7 +583,7 @@ fn js_canvas_noise(strength: f64) -> String {
 /// Add noise to `AudioContext` methods used for audio fingerprinting.
 fn js_audio_noise(strength: f64) -> String {
     format!(
-        r#"// [OpenClaw Stealth: audio_noise]
+        r#"// [Wraith Stealth: audio_noise]
 (function() {{
     const NOISE = {strength};
     const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -631,7 +631,7 @@ fn js_audio_noise(strength: f64) -> String {
 
 /// Spoof `navigator.mediaDevices.enumerateDevices`.
 fn js_media_devices() -> String {
-    r#"// [OpenClaw Stealth: media_devices]
+    r#"// [Wraith Stealth: media_devices]
 (function() {
     if (!navigator.mediaDevices) return;
 
@@ -656,7 +656,7 @@ fn js_media_devices() -> String {
 /// Override `navigator.hardwareConcurrency` and `navigator.deviceMemory`.
 fn js_hardware_props(concurrency: u32, memory: f64) -> String {
     format!(
-        r#"// [OpenClaw Stealth: hardware_props]
+        r#"// [Wraith Stealth: hardware_props]
 (function() {{
     Object.defineProperty(navigator, 'hardwareConcurrency', {{
         get: () => {concurrency},
@@ -673,7 +673,7 @@ fn js_hardware_props(concurrency: u32, memory: f64) -> String {
 /// Override `screen.width`, `screen.height`, and `screen.colorDepth`.
 fn js_screen_props(width: u32, height: u32, depth: u32) -> String {
     format!(
-        r#"// [OpenClaw Stealth: screen_props]
+        r#"// [Wraith Stealth: screen_props]
 (function() {{
     Object.defineProperty(screen, 'width', {{
         get: () => {width},
@@ -705,7 +705,7 @@ fn js_screen_props(width: u32, height: u32, depth: u32) -> String {
 
 /// Remove `cdc_adoQpoasnfa76pfcZLmcfl_*` and similar Chrome DevTools variables.
 fn js_cdc_cleanup() -> String {
-    r#"// [OpenClaw Stealth: cdc_cleanup]
+    r#"// [Wraith Stealth: cdc_cleanup]
 (function() {
     // Remove cdc_ variables that Chrome DevTools Protocol leaves behind
     const props = Object.getOwnPropertyNames(window);
@@ -733,7 +733,7 @@ fn js_cdc_cleanup() -> String {
 
 /// Fix `iframe.contentWindow` so that cross-origin checks match parent context.
 fn js_iframe_fix() -> String {
-    r#"// [OpenClaw Stealth: iframe_fix]
+    r#"// [Wraith Stealth: iframe_fix]
 (function() {
     // Ensure iframe contentWindow exposes the same navigator/chrome properties
     const origCreateElement = document.createElement.bind(document);
@@ -782,7 +782,7 @@ fn js_ua_override(ua: &str) -> String {
         .unwrap_or("5.0 (Windows NT 10.0; Win64; x64)");
 
     format!(
-        r#"// [OpenClaw Stealth: ua_override]
+        r#"// [Wraith Stealth: ua_override]
 (function() {{
     const UA = "{ua}";
     const APP_VERSION = "{app_version}";
@@ -829,7 +829,7 @@ fn js_ua_override(ua: &str) -> String {
 
 /// Normalize font metrics to prevent font-based fingerprinting.
 fn js_font_normalize() -> String {
-    r#"// [OpenClaw Stealth: font_normalize]
+    r#"// [Wraith Stealth: font_normalize]
 (function() {
     // Slightly randomise measureText to defeat font enumeration fingerprinting
     const origMeasureText = CanvasRenderingContext2D.prototype.measureText;
@@ -854,7 +854,7 @@ fn js_font_normalize() -> String {
 
 /// Prevent detection of automation via shadow DOM inspection.
 fn js_shadow_dom_fix() -> String {
-    r#"// [OpenClaw Stealth: shadow_dom_fix]
+    r#"// [Wraith Stealth: shadow_dom_fix]
 (function() {
     // Prevent detection of CDP-injected shadow roots
     const origAttachShadow = Element.prototype.attachShadow;
@@ -952,15 +952,15 @@ mod tests {
         let script = stealth.generate_script(&config);
 
         assert!(
-            script.contains("[OpenClaw Stealth: canvas_noise]"),
+            script.contains("[Wraith Stealth: canvas_noise]"),
             "all-evasions script should include canvas_noise"
         );
         assert!(
-            script.contains("[OpenClaw Stealth: webgl_noise]"),
+            script.contains("[Wraith Stealth: webgl_noise]"),
             "all-evasions script should include webgl_noise"
         );
         assert!(
-            script.contains("[OpenClaw Stealth: audio_noise]"),
+            script.contains("[Wraith Stealth: audio_noise]"),
             "all-evasions script should include audio_noise"
         );
     }
@@ -998,7 +998,7 @@ mod tests {
                 enabled_evasions: vec![evasion.clone()],
             };
             let script = stealth.generate_script(&config);
-            let marker = format!("[OpenClaw Stealth: {}]", tag);
+            let marker = format!("[Wraith Stealth: {}]", tag);
             assert!(
                 script.contains(&marker),
                 "evasion {:?} should produce marker '{}' in output, got:\n{}",

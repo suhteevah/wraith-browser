@@ -17,7 +17,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0"
-repository = "https://github.com/suhteevah/openclaw-browser"
+repository = "https://github.com/suhteevah/wraith-browser"
 description = "An AI-agent-first web browser written in Rust — designed for LLM control, not humans"
 
 [workspace.dependencies]

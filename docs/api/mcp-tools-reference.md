@@ -1,4 +1,4 @@
-# OpenClaw Browser — MCP Tools Reference
+# Wraith Browser — MCP Tools Reference
 
 > Complete reference for all MCP (Model Context Protocol) tools exposed by the Wraith Browser server.
 > Generated from source: `crates/mcp-server/src/server.rs` and `crates/mcp-server/src/tools.rs`
@@ -61,12 +61,12 @@ The Wraith MCP server exposes browser automation capabilities through the [Model
 │  └── CdpEngine    — Chrome DevTools Protocol            │
 ├─────────────────────────────────────────────────────────┤
 │  Supporting Crates                                      │
-│  ├── openclaw-identity    — AES-256-GCM encrypted vault │
-│  ├── openclaw-cache       — Knowledge cache + dedup DB  │
-│  ├── openclaw-search      — Web metasearch engine       │
-│  ├── openclaw-content-extract — HTML→Markdown           │
-│  ├── openclaw-scripting   — Rhai script engine          │
-│  └── openclaw-agent-loop  — Autonomous agent execution  │
+│  ├── wraith-identity    — AES-256-GCM encrypted vault │
+│  ├── wraith-cache       — Knowledge cache + dedup DB  │
+│  ├── wraith-search      — Web metasearch engine       │
+│  ├── wraith-content-extract — HTML→Markdown           │
+│  ├── wraith-scripting   — Rhai script engine          │
+│  └── wraith-agent-loop  — Autonomous agent execution  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +84,7 @@ pub struct WraithHandler {
     sessions: Arc<tokio::sync::Mutex<HashMap<String, Arc<Mutex<dyn BrowserEngine>>>>>,
     #[cfg(feature = "cdp")]
     active_session_name: Arc<tokio::sync::Mutex<String>>,
-    dedup_tracker: Arc<openclaw_cache::dedup::ApplicationTracker>,
+    dedup_tracker: Arc<wraith_cache::dedup::ApplicationTracker>,
 }
 ```
 
@@ -97,10 +97,10 @@ pub struct WraithHandler {
 ```json
 {
   "mcpServers": {
-    "openclaw-browser": {
-      "command": "path/to/openclaw-browser.exe",
+    "wraith-browser": {
+      "command": "path/to/wraith-browser.exe",
       "args": ["serve", "--transport", "stdio"],
-      "description": "OpenClaw Browser — AI-agent-first web browser"
+      "description": "Wraith Browser — AI-agent-first web browser"
     }
   }
 }
@@ -579,7 +579,7 @@ Extract the current page's content as clean markdown optimized for LLM context w
 42 links | ~1500 tokens
 ```
 
-**Implementation:** Uses `openclaw_content_extract::extract()` or `::extract_budgeted()` for token-limited extraction.
+**Implementation:** Uses `wraith_content_extract::extract()` or `::extract_budgeted()` for token-limited extraction.
 
 ---
 
@@ -759,7 +759,7 @@ Focus an element by `@ref` ID.
 
 ## 5. Credential Vault
 
-The vault uses AES-256-GCM encryption backed by an SQLite database at `~/.openclaw/vault.db`. All secrets are encrypted at rest. The vault auto-unlocks with an empty passphrase by default in MCP mode.
+The vault uses AES-256-GCM encryption backed by an SQLite database at `~/.wraith/vault.db`. All secrets are encrypted at rest. The vault auto-unlocks with an empty passphrase by default in MCP mode.
 
 ### `browse_vault_store`
 
@@ -972,7 +972,7 @@ Save browser cookies to a JSON file for persistence across sessions.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | string | no | `~/.openclaw/cookies.json` | File path to save cookies to |
+| `path` | string | no | `~/.wraith/cookies.json` | File path to save cookies to |
 
 **Annotations:** `rw_closed`
 
@@ -984,7 +984,7 @@ Load cookies from a JSON file into the browser.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `path` | string | no | `~/.openclaw/cookies.json` | File path to load cookies from |
+| `path` | string | no | `~/.wraith/cookies.json` | File path to load cookies from |
 
 **Annotations:** `rw_closed`
 
@@ -2120,7 +2120,7 @@ The `active_engine_async()` method resolves the current engine:
 
 ### Dedup Database
 
-SQLite database at `~/.openclaw/dedup.db` tracks processed URLs to prevent duplicates. Created automatically on handler initialization.
+SQLite database at `~/.wraith/dedup.db` tracks processed URLs to prevent duplicates. Created automatically on handler initialization.
 
 ---
 

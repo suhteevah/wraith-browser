@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Example output for an agent:
 /// ```text
-/// Page: "GitHub - openclaw-browser" (https://github.com/suhteevah/openclaw-browser)
+/// Page: "GitHub - wraith-browser" (https://github.com/suhteevah/wraith-browser)
 ///
 /// @e1  [link]      "Code"                    
 /// @e2  [link]      "Issues (3)"              

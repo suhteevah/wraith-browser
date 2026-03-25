@@ -13,7 +13,7 @@ pub enum AgentError {
     #[error("Task aborted by user")]
     Aborted,
     #[error("Browser error: {0}")]
-    Browser(#[from] openclaw_browser_core::BrowserError),
+    Browser(#[from] wraith_browser_core::BrowserError),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }

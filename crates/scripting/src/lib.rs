@@ -1,6 +1,6 @@
-//! # openclaw-scripting
+//! # wraith-scripting
 //!
-//! Rhai-based scripting engine for OpenClaw that lets users write
+//! Rhai-based scripting engine for Wraith that lets users write
 //! extraction rules, page transforms, and automation scripts.
 //!
 //! ```text
@@ -540,7 +540,7 @@ mod tests {
                 ("About".to_string(), "https://example.com/about".to_string()),
             ],
             custom_vars: HashMap::from([
-                ("user_agent".to_string(), "openclaw/0.1".to_string()),
+                ("user_agent".to_string(), "wraith/0.1".to_string()),
             ]),
         }
     }

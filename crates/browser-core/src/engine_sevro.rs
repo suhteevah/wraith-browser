@@ -149,7 +149,7 @@ fn greenhouse_slug_candidates(domain: &str) -> Vec<String> {
 pub struct SevroEngineBackend {
     engine: sevro_headless::SevroEngine,
     /// Rhai scripting engine for userscripts
-    scripts: openclaw_scripting::ScriptEngine,
+    scripts: wraith_scripting::ScriptEngine,
     /// Synthetic DOM elements injected by API hydration (e.g. Greenhouse listing).
     /// When `Some`, `snapshot()` returns these instead of the engine's DOM.
     synthetic_snapshot: Option<(String, String, Vec<DomElement>)>, // (url, title, elements)
@@ -161,7 +161,7 @@ impl SevroEngineBackend {
     pub fn new() -> Self {
         Self {
             engine: sevro_headless::SevroEngine::default(),
-            scripts: openclaw_scripting::ScriptEngine::new(),
+            scripts: wraith_scripting::ScriptEngine::new(),
             synthetic_snapshot: None,
             scroll_position: (0, 0),
         }
@@ -170,7 +170,7 @@ impl SevroEngineBackend {
     pub fn with_config(config: sevro_headless::SevroConfig) -> Self {
         Self {
             engine: sevro_headless::SevroEngine::new(config),
-            scripts: openclaw_scripting::ScriptEngine::new(),
+            scripts: wraith_scripting::ScriptEngine::new(),
             synthetic_snapshot: None,
             scroll_position: (0, 0),
         }
@@ -186,7 +186,7 @@ impl SevroEngineBackend {
     }
 
     /// Access the scripting engine to load/manage Rhai scripts.
-    pub fn scripting(&mut self) -> &mut openclaw_scripting::ScriptEngine {
+    pub fn scripting(&mut self) -> &mut wraith_scripting::ScriptEngine {
         &mut self.scripts
     }
 
@@ -517,7 +517,7 @@ impl SevroEngineBackend {
 
     /// Run triggered scripts for the current page.
     fn run_page_scripts(&self, url: &str, title: &str) {
-        let context = openclaw_scripting::ScriptContext {
+        let context = wraith_scripting::ScriptContext {
             url: url.to_string(),
             domain: url::Url::parse(url)
                 .map(|u| u.host_str().unwrap_or("").to_string())
@@ -529,7 +529,7 @@ impl SevroEngineBackend {
             custom_vars: std::collections::HashMap::new(),
         };
 
-        let trigger = openclaw_scripting::ScriptTrigger::OnNavigate {
+        let trigger = wraith_scripting::ScriptTrigger::OnNavigate {
             url_pattern: url.to_string(),
         };
 

@@ -157,7 +157,7 @@ impl LlmBackend for ClaudeBackend {
 // Ollama backend (local inference)
 // ═══════════════════════════════════════════════════════════════
 
-/// Local Ollama backend for OpenClaw fleet inference.
+/// Local Ollama backend for Wraith fleet inference.
 pub struct OllamaBackend {
     pub base_url: String,
     client: reqwest::Client,

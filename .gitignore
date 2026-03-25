@@ -17,7 +17,7 @@ Thumbs.db
 # Tantivy index (local dev)
 /data/
 # Build artifacts
-openclaw-browser.zip
+wraith-browser.zip
 # Broken directory name artifact
 {crates/
 # SQLite databases
