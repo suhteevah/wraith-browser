@@ -3,25 +3,99 @@ title: Extraction
 description: Content extraction tools -- snapshots, markdown, PDF, article readability, screenshots, OCR, and web search
 ---
 
-Extraction tools pull structured content from pages. Use `browse_snapshot` to see the interactive DOM, `browse_extract` to get clean markdown for LLM context windows, and specialized extractors for PDFs, articles, and OCR. The `browse_search` tool provides web metasearch without navigating.
+Extraction tools pull structured content from pages. Use `browse_snapshot` to see the interactive DOM with `@ref` IDs, `browse_extract` to get clean markdown for LLM context windows, and specialized extractors for PDFs, articles, and OCR. The `browse_search` tool provides web metasearch without navigating.
 
-## Tools
+## browse_snapshot
 
-| Tool | Description | Key Parameters |
-|------|-------------|----------------|
-| `browse_snapshot` | Get the DOM snapshot with all @ref-tagged interactive elements | *(none)* |
-| `browse_extract` | Extract page content as clean LLM-optimized markdown | `max_tokens` |
-| `browse_screenshot` | Capture a PNG screenshot | `full_page` |
-| `browse_search` | Search the web via metasearch (DuckDuckGo + Brave) | `query` (required), `max_results` |
-| `extract_pdf` | Fetch a PDF from a URL and extract text as markdown | `url` (required) |
-| `extract_article` | Extract main article body using readability algorithms | `readability` |
-| `extract_markdown` | Convert HTML to clean markdown | `html` |
-| `extract_plain_text` | Convert HTML to plain text with no formatting | `html` |
-| `extract_ocr` | Run OCR text detection on page screenshot | `description` |
+Get the current page's DOM as an agent-readable snapshot. Shows all interactive elements with `@e` reference IDs that can be used with `browse_click`, `browse_fill`, and other interaction tools.
 
-## Examples
+Walks the full DOM tree, assigns sequential `@e` ref IDs to visible elements, queries QuickJS for current `.value` properties on form inputs (reflects values set by `browse_fill`), and formats as compact text.
 
-### Extract page content for LLM processing
+### Parameters
+
+None.
+
+### Request
+
+```json
+{
+  "tool": "browse_snapshot",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Job Application\" (https://example.com/apply)\n\n@e1   [text]     \"Jane\" value=\"Jane\" placeholder=\"First Name\"\n@e2   [text]     \"\" placeholder=\"Last Name\"\n@e3   [email]    \"\" placeholder=\"Email\"\n@e4   [file]     \"\"\n@e5   [select]   \"\" options=[\"US\",\"UK\",\"CA\",\"DE\"]\n@e6   [textarea] \"\" placeholder=\"Cover Letter\"\n@e7   [button]   \"Submit Application\"\n\n7 interactive elements"
+    }
+  ]
+}
+```
+
+---
+
+## browse_screenshot
+
+Capture a PNG screenshot of the current page. Returns a base64-encoded PNG image. Useful for visual verification, OCR input, or debugging layout issues.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `full_page` | boolean | no | `false` | `true` captures the entire scrollable page. `false` captures only the visible viewport |
+
+### Request — viewport only
+
+```json
+{
+  "tool": "browse_screenshot",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "image",
+      "data": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "mimeType": "image/png"
+    }
+  ]
+}
+```
+
+### Request — full page
+
+```json
+{
+  "tool": "browse_screenshot",
+  "arguments": {
+    "full_page": true
+  }
+}
+```
+
+---
+
+## browse_extract
+
+Extract the current page's content as clean LLM-optimized markdown. Strips navigation, ads, and boilerplate using the `wraith_content_extract` engine. The `max_tokens` parameter ensures the output fits your context window budget.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `max_tokens` | integer | no | unlimited | Token budget for extracted content. Output is truncated to fit within this limit |
+
+### Request
 
 ```json
 {
@@ -32,54 +106,279 @@ Extraction tools pull structured content from pages. Use `browse_snapshot` to se
 }
 ```
 
-Returns clean markdown with a token budget:
-
-```markdown
-# Page Title
-
-[markdown content...]
-
----
-42 links | ~1500 tokens
-```
-
-Uses `wraith_content_extract` to strip navigation, ads, and boilerplate. The `max_tokens` parameter ensures the output fits your context window budget.
-
-### Search the web
+### Response
 
 ```json
 {
-  "tool": "browse_search",
+  "content": [
+    {
+      "type": "text",
+      "text": "# Software Engineer — Remote\n\n**Company:** Acme Corp\n**Location:** Remote (US)\n**Salary:** $150,000 - $200,000\n\n## About the Role\n\nWe are looking for a software engineer with experience in Rust and distributed systems...\n\n## Requirements\n\n- 3+ years of Rust experience\n- Familiarity with async runtimes (Tokio)\n- Experience with PostgreSQL\n\n## Benefits\n\n- Fully remote\n- Unlimited PTO\n- Health, dental, vision\n\n---\n42 links | ~1500 tokens"
+    }
+  ]
+}
+```
+
+---
+
+## extract_markdown
+
+Convert HTML to clean markdown. If `html` is provided, converts that HTML string directly. If omitted, converts the current page's full HTML source.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `html` | string | no | -- | Raw HTML string to convert. If omitted, uses the current page's HTML source |
+
+### Request — convert current page
+
+```json
+{
+  "tool": "extract_markdown",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "# Welcome to Acme Corp\n\nWe build tools for developers.\n\n## Products\n\n- **Acme CLI** — Command-line interface for managing deployments\n- **Acme SDK** — Client libraries for Python, Rust, and Go\n\n## Getting Started\n\n```bash\nnpm install @acme/sdk\n```\n\nSee our [documentation](https://docs.acme.com) for more details."
+    }
+  ]
+}
+```
+
+### Request — convert an HTML string
+
+```json
+{
+  "tool": "extract_markdown",
   "arguments": {
-    "query": "rust async runtime comparison",
-    "max_results": 5
+    "html": "<h1>Hello</h1><p>This is a <strong>test</strong> paragraph with a <a href='https://example.com'>link</a>.</p>"
   }
 }
 ```
 
-Returns ranked results from DuckDuckGo and Brave without navigating to any page:
+### Response
 
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "# Hello\n\nThis is a **test** paragraph with a [link](https://example.com)."
+    }
+  ]
+}
 ```
-Search results for: rust async runtime comparison
 
-1. **Tokio - An asynchronous Rust runtime**
-   https://tokio.rs/
-   Tokio is an async runtime for Rust...
+---
 
-2. **async-std - Async version of the Rust standard library**
-   https://async.rs/
-   ...
+## extract_article
+
+Extract the main article body from the current page using readability analysis. Removes navigation, sidebars, ads, and other non-content elements. Ideal for extracting blog posts, news articles, and documentation pages.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `readability` | boolean | no | `true` | If `true`, uses the readability extraction algorithm to isolate the main content. If `false`, returns all text content |
+
+### Request
+
+```json
+{
+  "tool": "extract_article",
+  "arguments": {
+    "readability": true
+  }
+}
 ```
 
-### Extract a PDF
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "# Understanding Rust Lifetimes\n\nBy Jane Doe | Published March 15, 2025\n\nLifetimes are one of Rust's most distinctive features. They ensure that references are always valid, preventing dangling pointers and use-after-free bugs at compile time.\n\n## The Borrow Checker\n\nRust's borrow checker enforces two rules:\n\n1. At any given time, you can have either one mutable reference or any number of immutable references.\n2. References must always be valid.\n\n## Lifetime Annotations\n\nWhen the compiler can't infer lifetimes automatically, you annotate them:\n\n```rust\nfn longest<'a>(x: &'a str, y: &'a str) -> &'a str {\n    if x.len() > y.len() { x } else { y }\n}\n```\n\n---\nExtracted 1,247 words | Reading time: ~5 min"
+    }
+  ]
+}
+```
+
+---
+
+## extract_plain_text
+
+Convert HTML to plain text with no formatting. Strips all tags, attributes, and styles, returning only the text content. Useful for word counting, NLP processing, or plain-text comparison.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `html` | string | no | -- | Raw HTML string to convert. If omitted, uses the current page's HTML source |
+
+### Request
+
+```json
+{
+  "tool": "extract_plain_text",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Welcome to Acme Corp\n\nWe build tools for developers.\n\nProducts\n\nAcme CLI — Command-line interface for managing deployments\nAcme SDK — Client libraries for Python, Rust, and Go\n\nGetting Started\n\nnpm install @acme/sdk\n\nSee our documentation for more details."
+    }
+  ]
+}
+```
+
+### Request — convert an HTML string
+
+```json
+{
+  "tool": "extract_plain_text",
+  "arguments": {
+    "html": "<div><h1>Title</h1><p>Paragraph with <em>emphasis</em> and <a href='/'>a link</a>.</p></div>"
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Title\n\nParagraph with emphasis and a link."
+    }
+  ]
+}
+```
+
+---
+
+## extract_pdf
+
+Fetch a PDF from a URL over HTTP and extract its text content as markdown. Useful for processing research papers, reports, resumes, and documentation that live behind PDF links.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `url` | string | yes | -- | Full URL of the PDF to fetch and extract (e.g., `"https://example.com/report.pdf"`) |
+
+### Request
 
 ```json
 {
   "tool": "extract_pdf",
   "arguments": {
-    "url": "https://example.com/report.pdf"
+    "url": "https://example.com/annual-report-2024.pdf"
   }
 }
 ```
 
-Fetches the PDF over HTTP and extracts text content as markdown. Useful for processing research papers, reports, and documentation that live behind PDF links.
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "# Annual Report 2024\n\n## Executive Summary\n\nRevenue grew 32% year-over-year to $4.2B. Operating margin improved to 18.5% from 15.2% in the prior year.\n\n## Financial Highlights\n\n| Metric | 2024 | 2023 | Change |\n|--------|------|------|--------|\n| Revenue | $4.2B | $3.2B | +32% |\n| Net Income | $780M | $480M | +63% |\n| Employees | 12,400 | 9,800 | +27% |\n\n## Outlook\n\nWe expect continued growth driven by our enterprise platform...\n\n---\nExtracted from PDF: 24 pages, 8,432 words"
+    }
+  ]
+}
+```
+
+---
+
+## extract_ocr
+
+Run OCR text detection on the current page's screenshot. Useful when page content is rendered as images, Canvas elements, or uses custom fonts that resist text extraction.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `description` | string | no | -- | Hint about what to OCR or look for on the page. Helps focus the extraction |
+
+### Request
+
+```json
+{
+  "tool": "extract_ocr",
+  "arguments": {
+    "description": "Extract the pricing table from the page screenshot"
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "OCR Results:\n\nPricing\n\nStarter        Pro           Enterprise\n$9/mo          $29/mo        Custom\n5 projects     Unlimited     Unlimited\n1 GB storage   50 GB         500 GB\nEmail support  Priority      Dedicated\n\nAll plans include SSL, CDN, and CI/CD."
+    }
+  ]
+}
+```
+
+---
+
+## browse_search
+
+Search the web via metasearch without navigating to any page. See the [Navigation reference](/docs/mcp-tools/navigation#browse_search) for full details.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `query` | string | yes | -- | Search query (supports `OR` for multi-variant search) |
+| `max_results` | integer | no | `10` | Maximum number of results |
+
+---
+
+## Additional Extraction Tools
+
+### browse_eval_js
+
+Execute JavaScript on the current page for custom extraction. See the [Interaction reference](/docs/mcp-tools/interaction#browse_eval_js) for details.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `code` | string | yes | -- | JavaScript code to execute in the page's QuickJS context |
+
+### dom_query_selector
+
+Run a CSS selector query against the page DOM and return matching elements with their `@ref` IDs.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `selector` | string | yes | -- | CSS selector (e.g., `"div.job-card"`, `"#main-content"`, `"a[href*='apply']"`) |
+
+### dom_get_attribute
+
+Read an HTML attribute value from an element by its `@ref` ID.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `ref_id` | integer | yes | -- | Element `@e` reference |
+| `name` | string | yes | -- | Attribute name (e.g., `"href"`, `"class"`, `"data-job-id"`, `"aria-label"`) |

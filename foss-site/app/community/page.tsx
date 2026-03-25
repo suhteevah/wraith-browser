@@ -158,8 +158,49 @@ export default function CommunityPage() {
             </a>{' '}
             to submit yours.
           </p>
-          <div className="bg-fd-card border border-fd-border border-dashed rounded-xl p-12 text-center text-fd-muted-foreground text-sm">
-            No showcases yet. Be the first to build something and share it.
+          <div className="grid sm:grid-cols-2 gap-6">
+            <div className="bg-fd-card border border-fd-border rounded-xl p-6">
+              <h3 className="text-lg font-semibold mb-1">LLM Token Savings</h3>
+              <p className="text-fd-muted-foreground text-sm mb-3">
+                Wraith&apos;s snapshot model compresses full-page DOM into compact @ref
+                representations — 95%+ token reduction vs raw HTML. Feed pages to
+                your LLM at a fraction of the cost.
+              </p>
+              <span className="text-xs text-emerald-400">Built-in</span>
+            </div>
+            <a
+              href="/docs/guides/web-scraping"
+              className="block bg-fd-card border border-fd-border rounded-xl p-6 hover:border-fd-foreground/20 transition-colors"
+            >
+              <h3 className="text-lg font-semibold mb-1">Research Assistant</h3>
+              <p className="text-fd-muted-foreground text-sm mb-3">
+                Browse, extract, and build knowledge graphs across news and
+                academic sources. Entities auto-linked across pages.
+              </p>
+              <span className="text-xs text-emerald-400">Example workflow</span>
+            </a>
+            <a
+              href="/docs/knowledge-graph/page-cache"
+              className="block bg-fd-card border border-fd-border rounded-xl p-6 hover:border-fd-foreground/20 transition-colors"
+            >
+              <h3 className="text-lg font-semibold mb-1">Docs Search Index</h3>
+              <p className="text-fd-muted-foreground text-sm mb-3">
+                Crawl documentation sites and index them into Wraith&apos;s knowledge
+                graph with full-text search and vector embeddings.
+              </p>
+              <span className="text-xs text-emerald-400">Example workflow</span>
+            </a>
+            <a
+              href="/docs/guides/web-scraping"
+              className="block bg-fd-card border border-fd-border rounded-xl p-6 hover:border-fd-foreground/20 transition-colors"
+            >
+              <h3 className="text-lg font-semibold mb-1">Price Monitor</h3>
+              <p className="text-fd-muted-foreground text-sm mb-3">
+                Track product prices across e-commerce sites with scheduled
+                scraping, dedup, and change detection.
+              </p>
+              <span className="text-xs text-emerald-400">Example workflow</span>
+            </a>
           </div>
         </section>
       </section>

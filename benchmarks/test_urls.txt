@@ -1,0 +1,23 @@
+# Test URLs for Wraith Browser benchmarks
+# These are public sites unlikely to rate-limit modest benchmark traffic.
+# Grouped by complexity.
+
+# --- Static / minimal pages ---
+http://example.com
+http://example.org
+https://httpbin.org/html
+
+# --- Lightweight dynamic sites (server-rendered, small payloads) ---
+https://books.toscrape.com
+https://books.toscrape.com/catalogue/category/books/mystery_3/index.html
+https://quotes.toscrape.com
+https://quotes.toscrape.com/page/2/
+
+# --- Medium complexity (more HTML, tables, forms) ---
+https://httpbin.org/forms/post
+https://httpbin.org/links/10/0
+https://the-internet.herokuapp.com/tables
+
+# --- Heavier pages (JS-heavy, larger DOM) ---
+https://the-internet.herokuapp.com
+https://the-internet.herokuapp.com/dynamic_loading/1

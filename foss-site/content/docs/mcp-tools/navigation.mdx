@@ -5,73 +5,406 @@ description: Core browsing tools -- navigate, scroll, wait, tabs, history, and e
 
 Navigation tools handle page loading, scrolling, waiting, and browser state inspection. These are the foundation of every browsing session. The native Sevro engine handles most pages at ~100ms; use `browse_navigate_cdp` for JavaScript-heavy SPAs.
 
-## Tools
+## browse_navigate
 
-| Tool | Description | Key Parameters |
-|------|-------------|----------------|
-| `browse_navigate` | Navigate to a URL using the native engine | `url` (required), `wait_for_load` |
-| `browse_navigate_cdp` | Navigate using Chrome DevTools Protocol for JS-heavy pages | `url` (required), `wait_for_load` |
-| `browse_back` | Go back in browser history | *(none)* |
-| `browse_forward` | Go forward in browser history | *(none)* |
-| `browse_reload` | Reload the current page | *(none)* |
-| `browse_scroll` | Scroll the page in a direction | `direction` (required), `amount` |
-| `browse_scroll_to` | Scroll to center a specific element | `ref_id` (required) |
-| `browse_wait` | Wait for a CSS selector or fixed time | `selector`, `ms` |
-| `browse_wait_navigation` | Wait for navigation to complete after a click | `timeout_ms` |
-| `browse_tabs` | Show current page URL and title | *(none)* |
-| `browse_config` | Show engine configuration (type, proxy, TLS) | *(none)* |
-| `browse_engine_status` | Check which engine is active (native or CDP) | *(none)* |
-| `browse_enter_iframe` | Switch context into a cross-origin iframe | `ref_id`, `selector` |
-| `browse_dismiss_overlay` | Auto-dismiss a modal, popup, or cookie banner | `ref_id` |
+Navigate to a URL and return a DOM snapshot with all interactive elements tagged with `@ref` IDs.
 
-## Examples
+Fetches the page via HTTP, parses HTML into a full DOM tree, sets up the QuickJS JavaScript runtime with a DOM bridge, executes inline `<script>` tags, and returns an agent-readable snapshot. Automatically handles ATS URL resolution for supported applicant tracking systems. For pages with fewer than 10 visible elements (SPA indicator), triggers automatic SPA hydration -- fetches dynamically created scripts and executes them.
 
-### Navigate to a page
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `url` | string | yes | -- | Full URL including protocol (e.g., `"https://www.example.com/page"`) |
+| `wait_for_load` | boolean | no | `true` | Wait for page to fully load before returning the snapshot |
+
+### Request
 
 ```json
 {
   "tool": "browse_navigate",
   "arguments": {
-    "url": "https://example.com"
+    "url": "https://example.com/careers/apply/12345"
   }
 }
 ```
 
-Returns a DOM snapshot with interactive elements tagged as `@e1`, `@e2`, etc.:
+### Response
 
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Apply — Software Engineer\" (https://example.com/careers/apply/12345)\n\n@e1   [text]     \"\" placeholder=\"First Name\"\n@e2   [text]     \"\" placeholder=\"Last Name\"\n@e3   [email]    \"\" placeholder=\"Email\"\n@e4   [file]     \"\"\n@e5   [button]   \"Submit Application\"\n\n5 interactive elements"
+    }
+  ]
+}
 ```
-Page title: Example
-URL: https://example.com
 
-Interactive elements:
-@e1 [link] "Home" href=/
-@e2 [input:text] placeholder="Search..."
-@e3 [button] "Submit"
+---
+
+## browse_back
+
+Go back to the previous page in browser history.
+
+### Parameters
+
+None.
+
+### Request
+
+```json
+{
+  "tool": "browse_back",
+  "arguments": {}
+}
 ```
 
-### Wait for dynamic content
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Home\" (https://example.com/)\n\n@e1   [link]   \"Careers\" href=/careers\n@e2   [link]   \"About\" href=/about\n@e3   [input:text]   placeholder=\"Search...\"\n@e4   [button]   \"Search\"\n\n4 interactive elements"
+    }
+  ]
+}
+```
+
+---
+
+## browse_forward
+
+Go forward in browser history.
+
+### Parameters
+
+None.
+
+### Request
+
+```json
+{
+  "tool": "browse_forward",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Apply — Software Engineer\" (https://example.com/careers/apply/12345)\n\n@e1   [text]     \"\" placeholder=\"First Name\"\n@e2   [text]     \"\" placeholder=\"Last Name\"\n\n2 interactive elements"
+    }
+  ]
+}
+```
+
+---
+
+## browse_reload
+
+Reload the current page and return a fresh DOM snapshot.
+
+### Parameters
+
+None.
+
+### Request
+
+```json
+{
+  "tool": "browse_reload",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Page: \"Dashboard\" (https://app.example.com/dashboard)\n\n@e1   [link]   \"Settings\" href=/settings\n@e2   [button] \"Refresh Data\"\n\n2 interactive elements"
+    }
+  ]
+}
+```
+
+---
+
+## browse_search
+
+Search the web using metasearch (DuckDuckGo + Brave). Returns titles, URLs, and snippets without navigating to any page. Supports `OR` query splitting for multi-variant searches.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `query` | string | yes | -- | Search query string. Supports `OR` for multi-variant search (e.g., `"QA engineer OR SDET remote"`) |
+| `max_results` | integer | no | `10` | Maximum number of results to return |
+
+### Request
+
+```json
+{
+  "tool": "browse_search",
+  "arguments": {
+    "query": "rust async runtime comparison",
+    "max_results": 5
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Search results for: rust async runtime comparison\n\n1. **Tokio — An asynchronous Rust runtime**\n   https://tokio.rs/\n   Tokio is an event-driven, non-blocking I/O platform for writing asynchronous applications with Rust.\n\n2. **async-std — Async version of the Rust standard library**\n   https://async.rs/\n   async-std provides an async version of the Rust standard library.\n\n3. **Smol — A small and fast async runtime for Rust**\n   https://github.com/smol-rs/smol\n   A small and fast async runtime. Smol is a lightweight async runtime...\n\n4. **Comparing Tokio, async-std, and smol — LogRocket Blog**\n   https://blog.logrocket.com/comparing-tokio-async-std-smol/\n   An in-depth comparison of Rust async runtimes...\n\n5. **Which async runtime to choose? — Rust Forum**\n   https://users.rust-lang.org/t/which-async-runtime/82831\n   Community discussion comparing the trade-offs of Tokio vs async-std..."
+    }
+  ]
+}
+```
+
+---
+
+## browse_wait
+
+Wait for a CSS selector to appear in the DOM or wait for a fixed duration. When a `selector` is provided, polls for the element up to `ms` milliseconds. Without a selector, pauses for the fixed duration.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `selector` | string | no | -- | CSS selector to wait for (e.g., `"#results"`, `".job-card"`) |
+| `ms` | integer | no | `1000` (fixed wait) / `5000` (selector timeout) | Milliseconds to wait or maximum timeout for selector |
+
+### Request — wait for an element
 
 ```json
 {
   "tool": "browse_wait",
   "arguments": {
-    "selector": "#results",
+    "selector": "#search-results",
     "ms": 5000
   }
 }
 ```
 
-If `selector` is provided, waits up to `ms` milliseconds for that CSS selector to appear in the DOM. Without a selector, waits for a fixed duration.
-
-### Navigate a JavaScript SPA with CDP
+### Response
 
 ```json
 {
-  "tool": "browse_navigate_cdp",
+  "content": [
+    {
+      "type": "text",
+      "text": "Selector #search-results found after 320ms"
+    }
+  ]
+}
+```
+
+### Request — fixed delay
+
+```json
+{
+  "tool": "browse_wait",
   "arguments": {
-    "url": "https://app.example.com/dashboard"
+    "ms": 2000
   }
 }
 ```
 
-Launches Chrome via DevTools Protocol for full V8 JavaScript execution. All subsequent `browse_*` commands route through CDP until you call `browse_navigate` (native) again. Requires the `cdp` feature flag and Chrome installed.
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Waited 2000ms"
+    }
+  ]
+}
+```
+
+---
+
+## browse_wait_navigation
+
+Wait for a navigation event to complete after a click or form submission that triggers a page transition.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `timeout_ms` | integer | no | `5000` | Maximum wait time in milliseconds |
+
+### Request
+
+```json
+{
+  "tool": "browse_wait_navigation",
+  "arguments": {
+    "timeout_ms": 10000
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Navigation completed: https://example.com/dashboard (842ms)"
+    }
+  ]
+}
+```
+
+---
+
+## browse_tabs
+
+Show the current page URL and title. Useful for confirming which page the browser is on.
+
+### Parameters
+
+None.
+
+### Request
+
+```json
+{
+  "tool": "browse_tabs",
+  "arguments": {}
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Current tab:\n  Title: Software Engineer — Apply\n  URL:   https://example.com/careers/apply/12345"
+    }
+  ]
+}
+```
+
+---
+
+## browse_scroll
+
+Scroll the page viewport in a given direction by a specified number of pixels.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `direction` | string | yes | -- | Scroll direction: `"up"`, `"down"`, `"left"`, or `"right"` |
+| `amount` | integer | no | `500` | Number of pixels to scroll |
+
+### Request
+
+```json
+{
+  "tool": "browse_scroll",
+  "arguments": {
+    "direction": "down",
+    "amount": 800
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Scrolled down 800px. Viewport at y=800"
+    }
+  ]
+}
+```
+
+---
+
+## browse_scroll_to
+
+Scroll the viewport to center a specific element by its `@ref` ID. Use this to bring off-screen elements into view before interacting with them.
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `ref_id` | integer | yes | -- | The `@e` reference number of the element to scroll into view |
+
+### Request
+
+```json
+{
+  "tool": "browse_scroll_to",
+  "arguments": {
+    "ref_id": 42
+  }
+}
+```
+
+### Response
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "Scrolled to @e42 (button \"Submit Application\"). Viewport centered at y=2340"
+    }
+  ]
+}
+```
+
+---
+
+## Additional Navigation Tools
+
+### browse_navigate_cdp
+
+Navigate using Chrome DevTools Protocol for JavaScript-heavy SPAs. Launches Chrome for full V8 JavaScript execution. All subsequent `browse_*` commands route through CDP until you call `browse_navigate` (native) again. Requires the `cdp` feature flag and Chrome installed.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `url` | string | yes | -- | Full URL including protocol |
+| `wait_for_load` | boolean | no | `true` | Wait for page load before returning |
+
+### browse_config
+
+Show engine configuration (engine type, proxy, TLS profile). No parameters.
+
+### browse_engine_status
+
+Check which engine is active (native Sevro or CDP Chrome). No parameters.
+
+### browse_enter_iframe
+
+Switch the DOM context into a cross-origin iframe so you can interact with its elements. After entering, `browse_snapshot` shows the iframe's content. Use `browse_back` to return to the parent page.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `ref_id` | integer | yes | -- | The `@e` reference of the iframe element from the snapshot |
