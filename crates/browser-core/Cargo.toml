@@ -1,5 +1,6 @@
 [package]
 name = "wraith-browser-core"
+description = "Core browser engine crate — BrowserEngine trait, html5ever + QuickJS (SevroEngine), native HTTP (NativeEngine), and CDP (CdpEngine)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
