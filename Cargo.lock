@@ -3756,230 +3756,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
-name = "wraith-agent-loop"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "blake3",
- "chrono",
- "wraith-browser-core",
- "wraith-cache",
- "wraith-content-extract",
- "wraith-search",
- "regex",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "wraith-browser"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "wraith-agent-loop",
- "wraith-browser-core",
- "wraith-cache",
- "wraith-content-extract",
- "wraith-identity",
- "wraith-mcp-server",
- "wraith-search",
- "secrecy",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "wraith-browser-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arti-client",
- "async-trait",
- "base64",
- "chrono",
- "futures",
- "wraith-scripting",
- "ort",
- "rand 0.8.5",
- "regex",
- "reqwest",
- "rquest",
- "scraper",
- "serde",
- "serde_json",
- "serde_yaml",
- "sevro-headless",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tor-rtcompat",
- "tracing",
- "url",
- "uuid",
- "wasmtime",
-]
-
-[[package]]
-name = "wraith-cache"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "chrono",
- "flate2",
- "parking_lot",
- "petgraph 0.8.3",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tantivy",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "zstd",
-]
-
-[[package]]
-name = "wraith-content-extract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ego-tree",
- "html5ever 0.39.0",
- "lol_html",
- "markup5ever_rcdom",
- "regex",
- "reqwest",
- "scraper",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "wraith-identity"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "argon2",
- "base64",
- "blake3",
- "chrono",
- "dirs",
- "futures",
- "parking_lot",
- "rand 0.8.5",
- "regex",
- "rusqlite",
- "secrecy",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "totp-rs",
- "tracing",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "wraith-mcp-server"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "axum",
- "base64",
- "chrono",
- "clap",
- "dirs",
- "futures",
- "wraith-agent-loop",
- "wraith-browser-core",
- "wraith-cache",
- "wraith-content-extract",
- "wraith-identity",
- "wraith-search",
- "reqwest",
- "rmcp",
- "rusqlite",
- "schemars 0.8.22",
- "scraper",
- "secrecy",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "wraith-scripting"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "regex",
- "rhai",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "wraith-search"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "regex",
- "reqwest",
- "scraper",
- "serde",
- "serde_json",
- "tantivy",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
 name = "openssl"
 version = "0.10.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8926,6 +8702,231 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.244.0",
+]
+
+[[package]]
+name = "wraith-agent-loop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "chrono",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "wraith-browser-core",
+ "wraith-cache",
+ "wraith-content-extract",
+ "wraith-search",
+]
+
+[[package]]
+name = "wraith-browser"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wraith-agent-loop",
+ "wraith-browser-core",
+ "wraith-cache",
+ "wraith-content-extract",
+ "wraith-identity",
+ "wraith-mcp-server",
+ "wraith-search",
+]
+
+[[package]]
+name = "wraith-browser-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arti-client",
+ "async-trait",
+ "base64",
+ "chrono",
+ "futures",
+ "ort",
+ "rand 0.8.5",
+ "regex",
+ "reqwest",
+ "rquest",
+ "rquest-util",
+ "scraper",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sevro-headless",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tor-rtcompat",
+ "tracing",
+ "url",
+ "uuid",
+ "wasmtime",
+ "wraith-scripting",
+]
+
+[[package]]
+name = "wraith-cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chrono",
+ "flate2",
+ "parking_lot",
+ "petgraph 0.8.3",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "wraith-content-extract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ego-tree",
+ "html5ever 0.39.0",
+ "lol_html",
+ "markup5ever_rcdom",
+ "regex",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "wraith-identity"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "argon2",
+ "base64",
+ "blake3",
+ "chrono",
+ "dirs",
+ "futures",
+ "parking_lot",
+ "rand 0.8.5",
+ "regex",
+ "rusqlite",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "totp-rs",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "wraith-mcp-server"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures",
+ "reqwest",
+ "rmcp",
+ "rusqlite",
+ "schemars 0.8.22",
+ "scraper",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wraith-agent-loop",
+ "wraith-browser-core",
+ "wraith-cache",
+ "wraith-content-extract",
+ "wraith-identity",
+ "wraith-search",
+]
+
+[[package]]
+name = "wraith-scripting"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "regex",
+ "rhai",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "wraith-search"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "regex",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

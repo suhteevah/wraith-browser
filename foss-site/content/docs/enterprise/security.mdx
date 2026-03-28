@@ -1,0 +1,324 @@
+---
+title: Security & Compliance
+description: SOC 2 Type II, GDPR, encryption, audit logging, access control, infrastructure isolation, vulnerability management, and data residency for Wraith Browser Enterprise
+---
+
+## Overview
+
+Security is foundational to Wraith Browser, not an afterthought. The open-source engine ships with AES-256-GCM credential encryption, sandboxed execution, and zero telemetry by default. Wraith Enterprise extends these foundations with the compliance certifications, audit capabilities, and operational controls that regulated organizations require.
+
+This page covers the security posture of Wraith Browser across both the open-source and Enterprise editions. For feature-level details on RBAC, SSO, and credential management, see the [Enterprise Features](/docs/enterprise/features) page.
+
+---
+
+## SOC 2 Type II
+
+Wraith is pursuing SOC 2 Type II certification covering the **Security**, **Availability**, and **Confidentiality** trust service criteria. The audit is conducted by an independent third-party firm.
+
+### Timeline
+
+| Milestone | Status |
+|---|---|
+| Control design and documentation | Complete |
+| SOC 2 Type I report | Complete |
+| SOC 2 Type II observation window (6 months) | In progress — started Q4 2025 |
+| SOC 2 Type II report expected | Q2 2026 |
+| Annual re-certification | Ongoing |
+
+### Controls overview
+
+The following controls are implemented and under continuous monitoring:
+
+| Control area | Implementation |
+|---|---|
+| Access control | RBAC with four roles (Owner, Admin, Operator, Viewer), SSO/SAML 2.0, SCIM 2.0 provisioning |
+| Encryption at rest | AES-256-GCM for credential vault, AES-256 for all persistent data stores |
+| Encryption in transit | TLS 1.3 enforced on all API, SSE, and webhook connections |
+| Key derivation | Argon2id with tuned memory/iteration parameters for password-derived keys |
+| Audit logging | Immutable, tamper-evident logs with configurable retention up to 7 years |
+| Vulnerability management | Automated dependency scanning, 72-hour patch SLA for critical CVEs |
+| Incident response | Documented runbooks, 24/7 on-call rotation, post-incident reviews |
+| Change management | CI/CD with mandatory code review, signed commits, staged rollouts |
+| Business continuity | Region-locked backups, tested disaster recovery with 1-hour RTO/RPO |
+| Vendor risk management | Third-party vendor assessments, subprocessor registry, DPA requirements |
+| Penetration testing | Annual third-party assessment by an independent security firm |
+
+### Compliance artifacts
+
+Enterprise customers can request the following under NDA:
+
+- SOC 2 Type I report (available now)
+- SOC 2 Type II report (available upon completion of observation window)
+- Penetration test executive summary
+- Security questionnaire responses (SIG Lite, CAIQ, VSA, or custom)
+- Subprocessor list
+
+Contact [enterprise@wraith-browser.com](mailto:enterprise@wraith-browser.com) to request access.
+
+---
+
+## GDPR Compliance
+
+Wraith Browser Enterprise is designed to support GDPR obligations for organizations that process personal data of EU residents.
+
+### Data processing
+
+- Wraith acts as a **data processor** on behalf of the customer (data controller)
+- Personal data encountered during browser sessions (e.g., scraped content, form submissions, credentials) is processed only as instructed by the customer's configured workflows
+- No personal data is used for model training, analytics, or any purpose beyond the customer's directed operations
+- The open-source edition processes all data locally with zero data transmission to Wraith or any third party
+
+### Data Processing Agreement (DPA)
+
+A GDPR-compliant DPA is available for all Enterprise customers. The DPA covers:
+
+- Scope and purpose of processing
+- Sub-processor obligations and notification procedures
+- Data breach notification within 72 hours
+- Obligations upon termination (data return or deletion)
+- Standard Contractual Clauses (SCCs) for international transfers
+
+### Right to erasure
+
+Wraith Enterprise supports data subject erasure requests:
+
+- **Credential vault** — individual credentials can be permanently deleted via the admin console or API
+- **Knowledge graph** — cached pages, entities, and embeddings associated with a data subject can be purged by domain, URL pattern, or entity identifier
+- **Session recordings** — session history and snapshots can be deleted per-user or per-team
+- **Audit logs** — audit log entries referencing a data subject are redacted (the log entry itself is preserved for integrity, but personally identifiable fields are replaced with a deletion marker)
+
+Erasure operations are logged in the audit trail and propagate to all replicas within the configured data residency region.
+
+### Data minimization
+
+- Session data retention is configurable per-team (default: 90 days, minimum: 1 day)
+- Knowledge graph entries expire via adaptive TTLs — data that is no longer accessed is automatically purged
+- Credential vault entries support expiration dates and automatic rotation schedules
+
+---
+
+## Encryption
+
+Wraith applies defense-in-depth encryption across all layers.
+
+### At rest — AES-256-GCM
+
+All sensitive data at rest is encrypted with AES-256-GCM authenticated encryption:
+
+| Data type | Encryption | Key management |
+|---|---|---|
+| Credential vault | AES-256-GCM per credential (unique DEK) | Envelope encryption — DEKs wrapped by KMS-backed KEK |
+| Knowledge graph | AES-256 | Volume-level encryption with KMS-managed keys |
+| Session recordings | AES-256 | Volume-level encryption with KMS-managed keys |
+| Audit logs | AES-256 | Volume-level encryption with KMS-managed keys |
+| Backups | AES-256-GCM | Separate backup encryption key stored in KMS |
+
+In the open-source edition, the vault master key is derived locally using Argon2id. Enterprise replaces this with a two-layer envelope encryption scheme backed by your cloud KMS (AWS KMS, Google Cloud KMS, or Azure Key Vault). The plaintext key encryption key (KEK) never leaves the KMS boundary.
+
+### In transit — TLS 1.3
+
+All network communication is encrypted with TLS 1.3:
+
+- API requests (REST and JSON-RPC) — TLS 1.3 with forward secrecy
+- Server-Sent Events (SSE) for real-time session streaming — TLS 1.3
+- Webhook deliveries (audit log export, SIEM integration) — TLS 1.3 with certificate pinning
+- Inter-service communication within dedicated infrastructure — mutual TLS (mTLS)
+- Deprecated protocol versions (TLS 1.0, 1.1, 1.2) are disabled by default
+
+### Key derivation — Argon2id
+
+Password-derived keys use Argon2id, the winner of the Password Hashing Competition:
+
+- **Memory cost:** 64 MiB
+- **Iterations:** 3
+- **Parallelism:** 4 threads
+- **Salt:** 16 bytes, cryptographically random per key
+
+These parameters are tuned to resist GPU and ASIC brute-force attacks while remaining practical for server-side derivation. Parameters are reviewed annually and increased as hardware capabilities evolve.
+
+---
+
+## Audit Logging
+
+Every action in Wraith Enterprise is recorded in a tamper-evident audit log. Logs are append-only and immutable — neither users nor administrators can modify or delete entries.
+
+### Tamper evidence
+
+Each log entry includes a cryptographic chain hash:
+
+1. Every entry is hashed with SHA-256, incorporating the previous entry's hash
+2. The hash chain is anchored to a timestamped signature generated by a Hardware Security Module (HSM) at configurable intervals (default: every 60 seconds)
+3. Any modification, insertion, or deletion of entries breaks the chain and is detectable by automated integrity checks that run continuously
+
+### SIEM export
+
+Audit logs can be streamed to your SIEM in real time:
+
+| Export method | Details |
+|---|---|
+| **Webhook** | HTTPS POST with HMAC-SHA256 signature verification |
+| **S3-compatible storage** | Batched delivery to any S3-compatible bucket (AWS S3, GCS, MinIO) |
+| **Syslog** | RFC 5424 format over TLS |
+| **Native integrations** | Splunk HEC, Datadog Logs, Elasticsearch bulk API |
+
+All export channels support backpressure handling and automatic retry with exponential backoff.
+
+### Retention policies
+
+| Plan | Default retention | Maximum retention |
+|---|---|---|
+| Open-source | Local storage (no limit) | Unlimited (self-managed) |
+| Enterprise | 1 year | 7 years |
+
+Retention is configurable at the organization level. Logs beyond the retention window are securely deleted using cryptographic erasure — the encryption key for the expired log segment is destroyed, rendering the data unrecoverable.
+
+---
+
+## Access Control
+
+Wraith Enterprise enforces the principle of least privilege through role-based access control, per-domain vault scoping, and API key restrictions.
+
+### Role-based access control (RBAC)
+
+Four roles operate across a three-level hierarchy (organization, team, user):
+
+| Role | Scope | Key permissions |
+|---|---|---|
+| **Owner** | Organization | Billing, SSO configuration, organization-wide policies, all team access |
+| **Admin** | Team | Manage members, credentials, session policies, domain approvals |
+| **Operator** | Team | Run sessions, access vault credentials for approved domains |
+| **Viewer** | Team | Read-only access to session logs, reports, and dashboards |
+
+Roles are assignable via the admin console, API, or automatically through SCIM group mapping from your identity provider.
+
+### Per-domain vault access
+
+Credential access is scoped to approved domains:
+
+- Exact domain match (`github.com`) or wildcard subdomains (`*.example.com`)
+- Domain deny-lists prevent credential use on unapproved sites
+- Approval workflows require Admin sign-off before Operators can use credentials on a new domain
+- All credential access events are logged with the target domain, actor, and timestamp
+
+### API key scoping
+
+API keys can be restricted by:
+
+- **Permission set** — limit keys to specific MCP tools or API endpoints (e.g., read-only keys that can fetch pages but not submit forms)
+- **IP allowlist** — restrict key usage to specific source IP ranges or CIDR blocks
+- **Rate limits** — per-key rate limits independent of plan-level quotas
+- **Expiration** — keys can be issued with automatic expiration (default: 90 days, configurable)
+- **Team binding** — keys are bound to a specific team and cannot access resources outside that team's tenant
+
+---
+
+## Infrastructure Security
+
+### Isolated compute
+
+Enterprise customers run on dedicated infrastructure that is not shared with any other customer:
+
+- **Single-tenant nodes** — dedicated compute instances with no co-tenancy
+- **Private networking** — VPC peering or AWS PrivateLink for connectivity to your infrastructure
+- **No shared resources** — dedicated load balancers, databases, and storage volumes
+- **Managed upgrades** — new releases are deployed on a schedule you approve, with rollback capability
+
+### Network controls
+
+- All inbound traffic passes through a Web Application Firewall (WAF)
+- Egress filtering restricts outbound connections to customer-approved destinations
+- DDoS mitigation at the network edge
+- Internal services communicate over private subnets with no public IP exposure
+
+### Runtime isolation
+
+Each browser session runs in an isolated execution context:
+
+- Memory isolation between concurrent sessions — no shared heap
+- Filesystem isolation — sessions cannot access each other's temporary files
+- Network isolation — sessions use independent connection pools
+- Session cleanup — all session state (memory, temp files, connections) is destroyed on session close
+
+---
+
+## Vulnerability Management
+
+### Dependency scanning
+
+- **Automated scanning** — every dependency is scanned on each CI build using `cargo audit` for Rust crates and `npm audit` for the documentation site
+- **Continuous monitoring** — dependencies are monitored against the GitHub Advisory Database, RustSec, and NVD for newly disclosed vulnerabilities
+- **Patch SLAs** — critical CVEs are patched within 72 hours; high-severity within 7 days; medium and low within 30 days
+- **SBOM** — a Software Bill of Materials in CycloneDX format is generated for each release and available to Enterprise customers
+
+### Responsible disclosure policy
+
+Wraith Browser operates a responsible disclosure program for security researchers:
+
+- **Scope** — the Wraith Browser engine, Enterprise API, credential vault, and documentation site
+- **Reporting** — send findings to [security@wraith-browser.com](mailto:security@wraith-browser.com) with a description, reproduction steps, and impact assessment
+- **Response** — we acknowledge reports within 48 hours and provide a timeline for remediation within 5 business days
+- **Safe harbor** — researchers acting in good faith are protected from legal action
+- **Credit** — with permission, researchers are credited in our security advisories and changelog
+
+Do not report vulnerabilities through public GitHub issues. Use the email address above or GitHub's private vulnerability reporting feature.
+
+### Static analysis and code review
+
+- All code changes require at least one peer review before merge
+- CI pipeline includes Clippy linting, Miri for undefined behavior detection, and fuzzing for parser components
+- Signed commits are required for all contributors
+
+---
+
+## Data Residency
+
+Enterprise customers choose the geographic region where their data is stored. Once selected, all data at rest — credentials, session recordings, knowledge graph content, and audit logs — remains within that region.
+
+### Available regions
+
+| Region | Location | Identifier |
+|---|---|---|
+| US East | Virginia, USA | `us-east-1` |
+| US West | Oregon, USA | `us-west-2` |
+| EU Central | Frankfurt, Germany | `eu-central-1` |
+| EU West | Ireland | `eu-west-1` |
+| Asia Pacific | Tokyo, Japan | `ap-northeast-1` |
+| Asia Pacific | Sydney, Australia | `ap-southeast-2` |
+
+### Region guarantees
+
+- Data residency is configured at the organization level — all teams inherit the setting
+- No data replication outside the selected region unless cross-region DR is explicitly enabled
+- Cross-region disaster recovery replicates only within the same regulatory boundary (e.g., EU-to-EU)
+- Region selection is auditable and recorded in the audit log
+- Customers can request a data residency attestation letter for regulatory filings
+
+### Planned regions
+
+Additional regions (Canada, United Kingdom, Singapore, Brazil) are on the roadmap. Contact [enterprise@wraith-browser.com](mailto:enterprise@wraith-browser.com) to express interest and influence prioritization.
+
+---
+
+## Summary
+
+| Area | Open-Source | Enterprise |
+|---|---|---|
+| Encryption at rest | AES-256-GCM (local key) | AES-256-GCM (KMS-backed envelope encryption) |
+| Encryption in transit | TLS 1.3 | TLS 1.3 + mTLS between services |
+| Key derivation | Argon2id | Argon2id + cloud KMS |
+| Access control | Single-user | RBAC, SSO/SAML, SCIM, per-domain vault scoping |
+| Audit logging | Local file logs | Tamper-evident, SIEM export, 1-7 year retention |
+| Infrastructure | Self-hosted, shared-nothing | Dedicated single-tenant with WAF and DDoS protection |
+| Compliance | — | SOC 2 Type II (in progress), GDPR, DPA |
+| Vulnerability management | Open-source scanning | Managed patching with SLAs, SBOM, responsible disclosure |
+| Data residency | Local (your infrastructure) | 6 regions with regulatory boundary guarantees |
+
+---
+
+## Contact
+
+For security inquiries, compliance documentation requests, or to report a vulnerability:
+
+- **Security team:** [security@wraith-browser.com](mailto:security@wraith-browser.com)
+- **Enterprise sales:** [enterprise@wraith-browser.com](mailto:enterprise@wraith-browser.com)
+- **DPA and compliance artifacts:** available upon request to Enterprise customers

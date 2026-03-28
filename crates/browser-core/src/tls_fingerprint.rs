@@ -194,14 +194,20 @@ pub fn chrome_131_mac_profile() -> TlsProfile {
     }
 }
 
-/// Returns a [`TlsProfile`] matching Firefox 132.
+/// Returns a [`TlsProfile`] matching Firefox 136 (current default).
+///
+/// Firefox 136 is the preferred emulation target because:
+/// - Firefox TLS fingerprints are less scrutinized by Cloudflare than Chrome
+/// - No `sec-ch-ua` headers (Chromium-only), reducing fingerprint surface
+/// - rquest's `Emulation::Firefox136` handles TLS-level matching automatically
+/// - Camoufox (anti-detect Firefox) validates this approach works at scale
 #[instrument]
-pub fn firefox_132_profile() -> TlsProfile {
-    debug!("building Firefox 132 profile");
+pub fn firefox_136_profile() -> TlsProfile {
+    debug!("building Firefox 136 profile");
     TlsProfile {
-        name: "Firefox 132".into(),
-        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) \
-                      Gecko/20100101 Firefox/132.0"
+        name: "Firefox 136".into(),
+        user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) \
+                      Gecko/20100101 Firefox/136.0"
             .into(),
         ja3_hash: "579ccef312d18482fc42e2b822ca2430".into(),
         ja4_hash: Some("t13d1715h2_5b57614c22b0_3d5424432f57".into()),
@@ -235,6 +241,18 @@ pub fn firefox_132_profile() -> TlsProfile {
         sec_ch_ua: None,
         sec_ch_ua_platform: None,
     }
+}
+
+/// Returns a [`TlsProfile`] matching Firefox 132 (legacy).
+#[instrument]
+pub fn firefox_132_profile() -> TlsProfile {
+    debug!("building Firefox 132 profile (legacy)");
+    let mut profile = firefox_136_profile();
+    profile.name = "Firefox 132".into();
+    profile.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) \
+                           Gecko/20100101 Firefox/132.0"
+        .into();
+    profile
 }
 
 /// Returns a [`TlsProfile`] matching Safari 18 on macOS.
@@ -283,11 +301,21 @@ pub fn safari_18_profile() -> TlsProfile {
 pub fn all_profiles() -> Vec<TlsProfile> {
     info!("loading all built-in TLS profiles");
     vec![
+        firefox_136_profile(),
         chrome_131_profile(),
         chrome_131_mac_profile(),
         firefox_132_profile(),
         safari_18_profile(),
     ]
+}
+
+/// Returns the default TLS profile (Firefox 136).
+///
+/// Firefox is preferred over Chrome for stealth because Cloudflare's bot
+/// detection is more aggressive against Chrome TLS fingerprints.
+#[instrument]
+pub fn default_profile() -> TlsProfile {
+    firefox_136_profile()
 }
 
 /// Picks a random built-in TLS profile.

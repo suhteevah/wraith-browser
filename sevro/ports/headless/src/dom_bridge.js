@@ -295,15 +295,29 @@ window.getComputedStyle = function() { return {}; };
 window.matchMedia = function(q) { return { matches: false, media: q, addListener: function() {}, removeListener: function() {} }; };
 window.requestAnimationFrame = function(cb) { cb(Date.now()); return 1; };
 window.cancelAnimationFrame = function() {};
-window.innerWidth = 1920;
-window.innerHeight = 1080;
+window.innerWidth = {fp_window_innerWidth};
+window.innerHeight = {fp_window_innerHeight};
+window.outerWidth = {fp_window_outerWidth};
+window.outerHeight = {fp_window_outerHeight};
+window.screenX = {fp_window_screenX};
+window.screenY = {fp_window_screenY};
 window.scrollX = 0;
 window.scrollY = 0;
 window.scrollTo = function() {};
 window.scroll = function() {};
 window.pageXOffset = 0;
 window.pageYOffset = 0;
-window.devicePixelRatio = 1;
+window.devicePixelRatio = {fp_window_devicePixelRatio};
+
+// === screen (fingerprint-config driven) ===
+if (typeof screen === 'undefined') var screen = {};
+screen.width = {fp_screen_width};
+screen.height = {fp_screen_height};
+screen.availWidth = {fp_screen_availWidth};
+screen.availHeight = {fp_screen_availHeight};
+screen.colorDepth = {fp_screen_colorDepth};
+screen.pixelDepth = {fp_screen_pixelDepth};
+window.screen = screen;
 
 // === location (populated by Rust with actual URL) ===
 document.location = { href: '', hostname: '', pathname: '/', protocol: 'https:', search: '', hash: '', origin: '', host: '' };
@@ -407,18 +421,22 @@ window.fetch = function(url, options) {
 };
 var fetch = window.fetch;
 
-// === navigator ===
+// === navigator (fingerprint-config driven) ===
 if (typeof navigator === 'undefined') var navigator = {};
-navigator.userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-navigator.language = "en-US";
-navigator.languages = ["en-US", "en"];
-navigator.platform = "Win32";
+navigator.userAgent = "{fp_navigator_userAgent}";
+navigator.language = "{fp_navigator_language}";
+navigator.languages = {fp_navigator_languages};
+navigator.platform = "{fp_navigator_platform}";
 navigator.cookieEnabled = true;
 navigator.onLine = true;
-navigator.hardwareConcurrency = 8;
-navigator.maxTouchPoints = 0;
-navigator.vendor = "Google Inc.";
-navigator.userAgentData = { brands: [], mobile: false, platform: "Windows" };
+navigator.hardwareConcurrency = {fp_navigator_hardwareConcurrency};
+navigator.maxTouchPoints = {fp_navigator_maxTouchPoints};
+navigator.deviceMemory = {fp_navigator_deviceMemory};
+navigator.vendor = "";
+navigator.oscpu = "{fp_navigator_oscpu}";
+navigator.pdfViewerEnabled = true;
+// Firefox does not expose userAgentData
+navigator.userAgentData = undefined;
 navigator.mediaDevices = { enumerateDevices: function() { return { then: function(r) { r([]); } }; } };
 navigator.permissions = { query: function() { return { then: function(r) { r({ state: 'granted' }); } }; } };
 navigator.clipboard = { readText: function() { return { then: function(r) { r(''); } }; } };

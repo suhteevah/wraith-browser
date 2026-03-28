@@ -1,16 +1,15 @@
 [package]
 name = "wraith-browser-core"
-description = "Core browser engine crate — BrowserEngine trait, html5ever + QuickJS (SevroEngine), native HTTP (NativeEngine), and CDP (CdpEngine)"
+description = "Core browser control — unified BrowserEngine trait with multiple backends"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Core browser control — unified BrowserEngine trait with multiple backends"
 
 [features]
 default = ["sevro"]
 sevro = ["dep:sevro-headless"]
 cdp = ["dep:tokio-tungstenite"]
-stealth-tls = ["dep:rquest", "sevro-headless?/stealth-tls"]
+stealth-tls = ["dep:rquest", "dep:rquest-util", "sevro-headless?/stealth-tls"]
 vision-ml = ["dep:ort"]
 tor = ["dep:arti-client", "dep:tor-rtcompat"]
 wasm = ["dep:wasmtime"]
@@ -35,6 +34,7 @@ regex.workspace = true
 rand.workspace = true
 async-trait.workspace = true
 rquest = { workspace = true, optional = true }
+rquest-util = { workspace = true, optional = true }
 ort = { workspace = true, optional = true }
 arti-client = { workspace = true, optional = true }
 tor-rtcompat = { workspace = true, optional = true }

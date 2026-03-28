@@ -1,0 +1,236 @@
+---
+title: Enterprise Features
+description: RBAC, SSO/SAML, audit logging, SOC 2 compliance, data residency, KMS-backed encryption, dedicated infrastructure, and priority support for teams running Wraith at scale
+---
+
+## Overview
+
+Wraith Enterprise extends the open-source browser engine with the access controls, compliance capabilities, and operational guarantees that organizations need to deploy AI-driven browser automation in production. Everything in the open-source edition is included. Enterprise adds the layers required for multi-team environments, regulated industries, and high-availability workloads.
+
+To discuss pricing or start a trial, visit the [pricing page](/pricing) or contact [enterprise@wraith-browser.com](mailto:enterprise@wraith-browser.com).
+
+---
+
+## RBAC and Multi-tenancy
+
+Role-based access control gives you fine-grained permissions across your organization. Wraith Enterprise supports a three-level hierarchy: **organization**, **team**, and **user**.
+
+### Roles
+
+| Role | Scope | Capabilities |
+|---|---|---|
+| **Owner** | Organization | Full administrative control, billing, SSO configuration |
+| **Admin** | Team | Manage team members, credentials, session policies |
+| **Operator** | Team | Run sessions, access vault credentials within approved domains |
+| **Viewer** | Team | Read-only access to session logs and reports |
+
+### Multi-tenancy
+
+Each team operates in an isolated tenant with its own:
+
+- **Credential vault** -- credentials are scoped to the team and never leak across tenant boundaries
+- **Knowledge graph** -- cached pages, entities, and embeddings are partitioned per team
+- **Session history** -- full session recordings and snapshots are tenant-isolated
+- **Usage quotas** -- per-team limits on concurrent sessions, API calls, and storage
+
+Organizations can create unlimited teams. Team membership is managed through the admin console or provisioned automatically via SCIM (see below).
+
+---
+
+## SSO and SAML
+
+Wraith Enterprise supports SAML 2.0 single sign-on and SCIM 2.0 directory synchronization.
+
+### SAML 2.0
+
+Connect your identity provider (Okta, Azure AD, Google Workspace, OneLogin, or any SAML 2.0-compliant IdP) for centralized authentication:
+
+- SP-initiated and IdP-initiated login flows
+- Signed assertions with SHA-256
+- Configurable attribute mapping for email, name, team, and role
+- Forced SSO mode -- disable password login entirely once SAML is active
+- Multiple IdP support for organizations with more than one identity source
+
+### SCIM 2.0 Provisioning
+
+Automate user lifecycle management directly from your identity provider:
+
+- **Create** -- new users in your IdP directory are automatically provisioned in Wraith with the correct team and role
+- **Update** -- changes to name, email, or group membership sync within minutes
+- **Deactivate** -- removing a user from the IdP immediately revokes all Wraith access and active sessions
+- **Group mapping** -- IdP groups map to Wraith teams, so team membership stays in sync without manual intervention
+
+---
+
+## Audit Logging
+
+Every action in Wraith Enterprise is recorded in a tamper-evident audit log.
+
+### What is logged
+
+- Authentication events (login, logout, SSO assertion, failed attempts)
+- Credential vault operations (store, retrieve, rotate, delete, domain approval changes)
+- Session lifecycle (create, navigate, extract, submit, close)
+- Administrative actions (role changes, team creation, policy updates, SCIM sync events)
+- Configuration changes (SSO settings, data residency selection, SLA modifications)
+
+### Log format
+
+Each entry includes:
+
+| Field | Description |
+|---|---|
+| `timestamp` | ISO 8601 timestamp with millisecond precision |
+| `actor` | User ID and email of the person or service account that performed the action |
+| `action` | Machine-readable action name (e.g., `vault.credential.rotate`) |
+| `resource` | The target resource type and ID |
+| `team_id` | The team context in which the action occurred |
+| `ip_address` | Source IP address |
+| `result` | `success` or `failure` with an error code |
+| `metadata` | Action-specific details (varies by event type) |
+
+### Retention and export
+
+- Audit logs are retained for a minimum of **1 year** (configurable up to 7 years)
+- Export to your SIEM via webhook, S3-compatible storage, or syslog (RFC 5424)
+- Real-time streaming to Splunk, Datadog, or Elasticsearch via native integrations
+- Logs are immutable once written -- neither users nor administrators can modify or delete entries
+
+---
+
+## SOC 2 Type II Compliance
+
+Wraith is on an active SOC 2 Type II compliance roadmap. The program covers the **Security**, **Availability**, and **Confidentiality** trust service criteria.
+
+### Current controls
+
+| Control area | Status |
+|---|---|
+| Access control and authentication | Implemented -- RBAC, SSO/SAML, SCIM provisioning |
+| Encryption at rest | Implemented -- AES-256-GCM for vault, AES-256 for data stores |
+| Encryption in transit | Implemented -- TLS 1.3 for all API and SSE connections |
+| Audit logging | Implemented -- immutable, exportable audit trail |
+| Vulnerability management | Implemented -- automated dependency scanning, 72h patch SLA for critical CVEs |
+| Incident response | Implemented -- documented runbooks, on-call rotation, post-incident reviews |
+| Change management | Implemented -- CI/CD with required reviews, signed commits, staged rollouts |
+| Data residency | Implemented -- region-locked storage (see below) |
+| Vendor risk management | In progress |
+| Penetration testing | Scheduled -- annual third-party assessment |
+
+### Compliance artifacts
+
+Enterprise customers receive:
+
+- SOC 2 Type II audit report (available upon request under NDA)
+- Penetration test executive summary
+- Data processing agreement (DPA)
+- Subprocessor list
+- Security questionnaire responses (SIG Lite, CAIQ, or custom)
+
+---
+
+## Data Residency
+
+Enterprise customers choose where their data is stored. Once a region is selected, all data at rest -- credentials, session recordings, knowledge graph content, and audit logs -- remains within that region.
+
+### Available regions
+
+| Region | Location | Identifier |
+|---|---|---|
+| US East | Virginia, USA | `us-east-1` |
+| US West | Oregon, USA | `us-west-2` |
+| EU Central | Frankfurt, Germany | `eu-central-1` |
+| EU West | Ireland | `eu-west-1` |
+| Asia Pacific | Tokyo, Japan | `ap-northeast-1` |
+| Asia Pacific | Sydney, Australia | `ap-southeast-2` |
+
+Data residency is configured at the organization level. Teams within an organization inherit the region setting. Cross-region replication is available for disaster recovery with data sovereignty guarantees (replicas stay within the same regulatory boundary).
+
+---
+
+## Credential Management
+
+Wraith Enterprise builds on the [open-source credential vault](/docs/guides/credential-vault) with additional controls for team environments.
+
+### KMS-backed envelope encryption
+
+In the open-source edition, the vault uses a locally-derived AES-256-GCM master key. Enterprise replaces this with a two-layer envelope encryption scheme:
+
+1. **Data encryption keys (DEKs)** -- each credential is encrypted with a unique AES-256-GCM key
+2. **Key encryption keys (KEKs)** -- DEKs are wrapped by a KEK stored in your cloud KMS (AWS KMS, Google Cloud KMS, or Azure Key Vault)
+
+The plaintext KEK never leaves the KMS boundary. Key rotation is automatic and does not require re-encrypting existing credentials -- only the DEK wrapper is updated.
+
+### Per-domain access controls
+
+Administrators define which domains each team can access credentials for. Domain policies support:
+
+- Exact match (`github.com`)
+- Wildcard subdomains (`*.example.com`)
+- Domain deny-lists to block credential use on unapproved sites
+- Approval workflows -- operators request access to a new domain, admins approve or deny
+
+### Credential sharing
+
+Teams can share credentials across team boundaries with explicit grants:
+
+- Time-limited sharing (e.g., grant access for 24 hours)
+- Read-only or use-only permissions (the secret value is never exposed to the receiving team)
+- All sharing events are logged in the audit trail
+
+---
+
+## Dedicated Infrastructure
+
+Enterprise customers can run Wraith on isolated compute infrastructure for workload separation, predictable performance, and regulatory requirements.
+
+### What is included
+
+- **Isolated compute** -- dedicated nodes that are not shared with other customers
+- **Private networking** -- VPC peering or AWS PrivateLink connectivity to your infrastructure
+- **Custom scaling policies** -- auto-scaling rules tuned to your concurrency and throughput targets
+- **Managed upgrades** -- new releases are deployed to your dedicated environment on a schedule you approve
+
+### Custom SLAs
+
+| Metric | Standard | Enterprise |
+|---|---|---|
+| Uptime | 99.5% | 99.95% |
+| Scheduled maintenance window | Best effort | 72h advance notice, customer-approved window |
+| RTO (Recovery Time Objective) | 4 hours | 1 hour |
+| RPO (Recovery Point Objective) | 24 hours | 1 hour |
+
+SLA terms are documented in your enterprise agreement. Credits apply automatically for any month where the uptime target is not met.
+
+---
+
+## Priority Support
+
+Enterprise customers receive dedicated support with guaranteed response times.
+
+| Severity | Description | Response SLA |
+|---|---|---|
+| **P1 -- Critical** | Production system down, no workaround | 1 hour |
+| **P2 -- High** | Major feature degraded, workaround available | 4 hours |
+| **P3 -- Medium** | Minor feature issue, low business impact | 1 business day |
+| **P4 -- Low** | General question or feature request | 2 business days |
+
+### What is included
+
+- **Dedicated Customer Success Manager (CSM)** -- a named point of contact who knows your deployment, use cases, and team
+- **Private Slack channel** -- direct access to Wraith engineering for real-time collaboration
+- **Quarterly business reviews** -- usage reporting, roadmap preview, and optimization recommendations
+- **Onboarding and migration assistance** -- hands-on help moving from existing browser automation stacks to Wraith
+- **Custom training sessions** -- live walkthroughs of advanced features, MCP tool patterns, and scaling strategies
+
+---
+
+## Getting started
+
+Enterprise features are available as an add-on to any self-hosted or managed Wraith deployment.
+
+1. **Contact sales** -- reach out at [enterprise@wraith-browser.com](mailto:enterprise@wraith-browser.com) or visit the [pricing page](/pricing)
+2. **Trial** -- enterprise features can be enabled on your existing deployment for a 14-day evaluation
+3. **Deployment** -- our team works with you to configure SSO, RBAC, data residency, and infrastructure settings
+
+All enterprise features are backward-compatible with the open-source edition. Your existing sessions, credentials, and knowledge graph data carry over without migration.

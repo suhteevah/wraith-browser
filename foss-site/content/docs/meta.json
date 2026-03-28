@@ -1,0 +1,18 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "---Getting Started---",
+    "getting-started",
+    "---Reference---",
+    "mcp-tools",
+    "cli-reference",
+    "---Deep Dives---",
+    "architecture",
+    "knowledge-graph",
+    "guides",
+    "---Operations---",
+    "self-hosting",
+    "---Enterprise---",
+    "enterprise"
+  ]
+}

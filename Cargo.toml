@@ -89,6 +89,7 @@ async-trait = "0.1"
 
 # HTTP client with broad TLS compatibility (BoringSSL)
 rquest = { version = "5.1", features = ["cookies", "gzip", "brotli"] }
+rquest-util = "2.2"
 
 # Fast compression (replaces gzip/flate2)
 zstd = "0.13"

@@ -1,0 +1,40 @@
+---
+title: ROI Calculator
+description: Compare the cost of your current browser automation solution against Wraith Browser at any scale.
+---
+
+# ROI Calculator
+
+Estimate how much you can save by switching to Wraith. Select your current solution and monthly page volume to see a side-by-side cost comparison.
+
+<ROICalculator />
+
+---
+
+## How Wraith reduces cost
+
+Wraith's architecture is fundamentally cheaper to operate than Chrome-based automation:
+
+| Factor | Chrome-based tools | Wraith |
+|--------|-------------------|--------|
+| Memory per session | 300-500 MB | 5-50 MB |
+| Concurrent sessions (16 GB VM) | 6-8 | 50-100+ |
+| Chrome binary required | Yes (300 MB+) | No |
+| Startup time | 2-5 seconds | < 100 ms |
+| VMs needed for 1M pages/month | 20-40 | 1-2 |
+
+At 100K pages/month, a self-hosted Playwright setup needs 3-5 VMs running Chrome instances. Wraith handles the same load on a single VM.
+
+---
+
+## Self-hosted vs managed
+
+Wraith is open source (AGPL-3.0). You can self-host for free and pay only for compute. The managed tiers on this page add:
+
+- Monitoring and alerting
+- Automatic updates
+- Priority support
+- Usage dashboards and cost attribution
+- SSO, RBAC, and audit logging (Scale and Enterprise)
+
+See [Pricing](/docs/enterprise/pricing) for full tier details.

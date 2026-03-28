@@ -1,0 +1,122 @@
+---
+title: Why Wraith — Competitive Comparison
+description: How Wraith Browser compares to Browserbase, Browserless, Playwright, and Puppeteer across performance, cost, and AI-native capabilities
+---
+
+Wraith Browser is a fundamentally different kind of browser. While existing tools wrap Chrome in automation layers, Wraith replaces Chrome entirely with a purpose-built Rust engine designed for AI agent control. This page breaks down how Wraith compares to the most common alternatives across features, performance, and cost.
+
+---
+
+## Feature Matrix
+
+| Feature | Wraith | Browserbase | Browserless | Playwright | Puppeteer |
+|---|---|---|---|---|---|
+| **Chrome required** | No | Yes (cloud) | Yes (cloud) | Yes (local) | Yes (local) |
+| **Binary size** | ~15 MB | N/A (SaaS) | N/A (SaaS) | ~300 MB + runtime | ~300 MB + runtime |
+| **Memory per session** | 5-50 MB | Managed | Managed | 300-500 MB | 300-500 MB |
+| **MCP native** | Yes (130 tools) | No | No | No | No |
+| **Knowledge graph** | Built-in (petgraph + SQLite) | No | No | No | No |
+| **Credential vault** | AES-256-GCM encrypted | No | No | No | No |
+| **Concurrent sessions per 16 GB** | 50-100+ | Plan-limited | Plan-limited | 6-8 | 6-8 |
+| **Page fetch latency (static)** | ~50 ms | 500-2000 ms | 300-1500 ms | 1-3 s | 1-3 s |
+| **Self-hosted option** | Yes (single binary or Docker) | No (SaaS only) | Yes (Docker) | Yes (library) | Yes (library) |
+| **Built-in search** | Yes (DuckDuckGo, SearXNG, Tantivy) | No | No | No | No |
+| **Workflow recording** | Built-in record/replay | No | No | Codegen (different model) | No |
+
+---
+
+## Cost Comparison at Scale
+
+Wraith is free, open-source software (AGPL-3.0). You run it on your own infrastructure and pay only for compute. The comparisons below use publicly available pricing as of early 2026.
+
+### Assumptions
+
+- **Wraith** runs self-hosted on a single 4-vCPU / 16 GB VM (approximately $50-80/month on most cloud providers). At ~50 ms per static page fetch, a single instance can handle well over 1M pages/month.
+- **Browserbase** pricing is based on their published per-session rates ($0.01-0.03 per session depending on plan).
+- **Browserless** pricing is based on their published per-unit rates (starting at $0.005 per unit, with complex pages consuming multiple units).
+- **Playwright / Puppeteer** are free libraries, but each session requires a Chrome instance consuming 300-500 MB of RAM, so infrastructure costs scale with concurrency.
+
+### Monthly Cost Estimates
+
+| Volume | Wraith (self-hosted) | Browserbase | Browserless | Playwright / Puppeteer (self-hosted) |
+|---|---|---|---|---|
+| **10K pages/month** | $50-80 (VM cost) | $100-300 | $50-150 | $50-80 (1 VM sufficient) |
+| **100K pages/month** | $50-80 (same VM) | $1,000-3,000 | $500-1,500 | $200-400 (need 3-5 VMs) |
+| **1M pages/month** | $50-80 (same VM) | $10,000-30,000 | $5,000-15,000 | $1,500-3,000 (need 20-40 VMs) |
+
+At 1M pages/month, Wraith on a single VM costs roughly **100-300x less** than cloud browser APIs. Even compared to self-hosted Playwright/Puppeteer, Wraith requires a fraction of the infrastructure because it does not spawn Chrome processes.
+
+> **Note:** These estimates cover static and lightly dynamic pages. Pages requiring full JavaScript rendering (SPAs with complex client-side routing) may use Wraith's QuickJS runtime or CDP fallback, which adds latency but still avoids the Chrome dependency for most workloads.
+
+---
+
+## Key Differentiators
+
+### No Chrome. No Node. No Python.
+
+Wraith ships as a single ~15 MB Rust binary. There is no Chrome download, no Node.js runtime, no Python interpreter, and no Selenium grid. Install it, run it, connect your AI agent. The entire dependency tree compiles into one static binary.
+
+Traditional automation tools are wrappers around Chrome. That means every session spawns a full browser process consuming 300-500 MB of RAM, takes 2-5 seconds to start, and requires careful lifecycle management to avoid zombie processes. Wraith's Sevro engine uses direct HTTP fetching with html5ever parsing and QuickJS for JavaScript, keeping memory at 5-50 MB per session and startup under 100 ms.
+
+### Built for AI Agents, Not Humans
+
+Wraith is the first browser designed to be controlled exclusively by LLMs. Every capability is exposed through 130 MCP tools over JSON-RPC. There is no GUI, no DevTools panel, no manual interaction point. The AI agent is the sole operator.
+
+This matters because MCP is becoming the standard protocol for tool use across Claude, Cursor, and other AI coding environments. Wraith speaks MCP natively -- your agent gets browser tools the same way it gets file system or database tools, with zero glue code.
+
+### Knowledge Graph and Semantic Memory
+
+Every page Wraith visits is automatically cached in a SQLite-backed knowledge store with full-text search via Tantivy. But it goes further:
+
+- **Semantic page diffing** detects meaningful changes ("Price dropped from $99 to $79") rather than raw HTML diffs
+- **Cross-site entity resolution** links the same entity (a person, product, or company) across different websites using a petgraph knowledge graph
+- **Embedding store** with cosine similarity search enables RAG-style retrieval over previously visited pages
+- **Adaptive TTLs** automatically tune cache expiration based on how frequently a page changes
+
+No other browser automation tool includes a built-in knowledge layer. With Playwright or Puppeteer, you would need to build and maintain this infrastructure yourself.
+
+### Anti-Detection Without Complexity
+
+Wraith includes 19 stealth evasions (canvas spoofing, WebGL fingerprinting, navigator patching, and more), four TLS fingerprint profiles (Chrome, Firefox, Safari), and behavioral simulation with Bezier mouse curves and bigram-modeled typing delays. The four-tier Cloudflare bypass handles everything from simple JS challenges to Turnstile CAPTCHAs automatically.
+
+With Playwright or Puppeteer, stealth requires third-party plugins (puppeteer-extra-plugin-stealth, playwright-stealth) that are perpetually playing catch-up with detection systems. Cloud services like Browserbase handle some of this but at a per-session cost premium.
+
+### Agent Intelligence Built In
+
+Wraith does not just fetch pages -- it reasons about them:
+
+- **MCTS planning** uses Monte Carlo Tree Search to select optimal action sequences
+- **Workflow recording** captures browsing sessions and replays them with variable substitution
+- **Time-travel debugging** lets you branch, replay, and diff decision timelines
+- **Task DAGs** execute parallel subtasks with dependency resolution
+- **Predictive pre-fetching** anticipates the next URLs an agent will need
+
+These capabilities are integrated into the engine, not bolted on as separate services.
+
+### True Self-Hosting
+
+Wraith runs anywhere you can run a binary: bare metal, Docker, Kubernetes, a Raspberry Pi. There is no phone-home telemetry, no license server, no usage metering. The Docker image is roughly 30 MB.
+
+Browserbase has no self-hosted option. Browserless offers Docker but still requires Chrome inside the container. Playwright and Puppeteer can self-host but carry Chrome's full resource footprint.
+
+---
+
+## When to Choose Each Tool
+
+| Use Case | Best Choice | Why |
+|---|---|---|
+| AI agent browsing at scale | **Wraith** | Native MCP, low memory, knowledge graph |
+| Enterprise with existing Playwright tests | **Playwright** | Mature test ecosystem, cross-browser |
+| Quick prototype, no infra | **Browserbase** | Zero setup, managed Chrome |
+| High-volume scraping on a budget | **Wraith** | Single VM handles 1M+ pages/month |
+| Full visual browser testing | **Playwright** | Pixel-perfect rendering, video recording |
+| Serverless browser tasks | **Browserless** | Pay-per-use, no server management |
+| LLM-controlled web interaction | **Wraith** | Purpose-built for this exact use case |
+
+---
+
+## Summary
+
+Wraith is not a replacement for Playwright in your CI test suite. It is a replacement for Chrome in your AI agent stack. If your use case is LLM-controlled browsing, web data extraction, or autonomous web tasks, Wraith delivers 10-100x better resource efficiency, native AI integration, and capabilities (knowledge graph, credential vault, workflow recording) that do not exist in any other tool.
+
+For questions about enterprise licensing or commercial use, contact [ridgecellrepair@gmail.com](mailto:ridgecellrepair@gmail.com).

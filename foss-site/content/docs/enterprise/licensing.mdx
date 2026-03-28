@@ -1,0 +1,122 @@
+---
+title: Licensing
+description: Understand Wraith Browser's AGPL-3.0 open-source license and when a commercial license is required
+---
+
+## Default License — AGPL-3.0
+
+Wraith Browser is released under the [GNU Affero General Public License v3.0](https://www.gnu.org/licenses/agpl-3.0.en.html) (AGPL-3.0). This is a strong copyleft license designed to keep software free and open, even when it runs on a server.
+
+### What AGPL-3.0 allows — no commercial license needed
+
+You can use Wraith Browser for free, with no additional license, in any of these scenarios:
+
+- **Personal projects** — experiment, learn, build side projects.
+- **Open-source software** — embed Wraith in your own AGPL-3.0 or compatible open-source project.
+- **Academic and research use** — use Wraith in papers, coursework, or research tooling.
+- **Internal tools** — run Wraith inside your company for internal automation, testing, or data collection. As long as the software is not offered to third parties over a network, AGPL-3.0 does not require you to publish source code.
+- **Unmodified commercial use** — if you use Wraith as-is (no modifications to the engine) and do not expose it as a network service to third parties, no commercial license is required.
+
+### The AGPL-3.0 obligation
+
+If you **modify** Wraith Browser and **deploy those modifications as a network service** available to users outside your organization, you must release the complete source code of your modified version under AGPL-3.0. This includes making it available to every user who interacts with the service.
+
+This is the key distinction from permissive licenses like MIT or Apache-2.0: the AGPL closes the "SaaS loophole" so that improvements to the software remain available to the community.
+
+---
+
+## When You Need a Commercial License
+
+A commercial license removes all open-source obligations. You need one if your use case falls into any of these categories:
+
+### Embedding in proprietary SaaS
+
+You are building a product — for example, a scraping platform, a monitoring dashboard, or an AI agent service — that incorporates Wraith Browser (modified or not) and is offered to customers over the network. A commercial license lets you keep your product's source code proprietary.
+
+### White-labeling
+
+You want to rebrand or reskin Wraith Browser and distribute it under your own name without attributing the original project or releasing source.
+
+### Distributing without source
+
+You distribute Wraith Browser (or a product built on it) to customers as a binary, container image, or appliance and do not want to provide corresponding source code.
+
+### OEM and appliance bundling
+
+You embed Wraith Browser into hardware, kiosks, or pre-configured virtual machines sold to end users.
+
+---
+
+## Commercial License Terms
+
+Commercial licenses are available directly from Ridge Cell Repair LLC, the maintainers of Wraith Browser.
+
+| Feature | Details |
+| --- | --- |
+| **License type** | Perpetual (use the licensed version forever) |
+| **Pricing model** | Per-seat or per-deployment — choose whichever fits your architecture |
+| **Updates** | Included for 1 year from purchase; renewable annually |
+| **Source access** | Full source code access for the licensed version |
+| **Open-source obligations** | None — no requirement to disclose your source code |
+| **Support** | Priority email support included; dedicated support available on Enterprise plans |
+| **Transferability** | Non-transferable; tied to the purchasing organization |
+
+Per-seat licensing is ideal for teams where individual developers work with Wraith. Per-deployment licensing suits architectures where Wraith runs as a shared service (e.g., a pool of browser instances behind an API).
+
+---
+
+## Use Cases
+
+### SaaS scraping or automation platform
+
+You run a web scraping service that customers access via API. Wraith powers the browser sessions. A per-deployment commercial license lets you scale instances without open-source obligations.
+
+### Consulting and agency work
+
+Your firm builds browser-automation solutions for clients and delivers them as proprietary software. A per-seat license covers your development team, and each client deployment is licensed separately.
+
+### Enterprise internal tools with proprietary modifications
+
+Your organization has forked Wraith to add custom authentication, proxy routing, or domain-specific heuristics. Even though AGPL-3.0 permits internal use without disclosure, a commercial license gives you explicit legal clarity, indemnification, and support — especially important in regulated industries.
+
+### OEM product
+
+You sell a network monitoring appliance that ships with Wraith Browser embedded. A per-deployment license covers each unit sold.
+
+---
+
+## Frequently Asked Questions
+
+### Can I use the free (AGPL-3.0) version commercially?
+
+Yes. If you use Wraith Browser without modification, or only for internal purposes, the AGPL-3.0 license permits commercial use at no cost. The obligation to release source code is only triggered when you deploy a **modified** version as a **network service to third parties**.
+
+### Do I need a commercial license for internal use?
+
+No. The AGPL-3.0 explicitly allows organizations to use, modify, and deploy software internally without any source-disclosure requirement. "Internal use" means the software is only accessed by employees or contractors within your organization — not by external customers.
+
+### What about plugins and extensions?
+
+Plugins that communicate with Wraith Browser through its public API or MCP tool interface are generally considered separate works and **do not trigger AGPL-3.0 copyleft**. You can write proprietary plugins without open-sourcing them. If your plugin modifies Wraith's core source code (rather than using its public interfaces), it may be considered a derivative work — contact us if you are unsure.
+
+### Can I try Wraith before purchasing a commercial license?
+
+Absolutely. The AGPL-3.0 version is fully functional. Evaluate it in your environment, build a proof of concept, and purchase a commercial license when you are ready to ship to production without open-source obligations.
+
+### What if I have multiple products using Wraith?
+
+Each distinct product or service that embeds Wraith requires its own license. Volume discounts are available — reach out for a custom quote.
+
+### Do commercial licenses include future major versions?
+
+Your license includes all updates (minor and major) released within 1 year of purchase. After that, you can renew the update entitlement or continue using the last version you received.
+
+---
+
+## Contact
+
+For pricing, custom terms, volume discounts, or any licensing questions:
+
+**Email:** [ridgecellrepair@gmail.com](mailto:ridgecellrepair@gmail.com)
+
+We typically respond within one business day. Include a brief description of your use case and expected deployment scale so we can recommend the right license structure.

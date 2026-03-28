@@ -56,7 +56,7 @@ impl NativeClient {
             .cookie_provider(Arc::clone(&jar))
             .cookie_store(true)
             .redirect(reqwest::redirect::Policy::limited(10))
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0")
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
@@ -68,7 +68,7 @@ impl NativeClient {
             current_html: None,
             current_snapshot: None,
             history: Vec::new(),
-            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string(),
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0".to_string(),
             filled_values: HashMap::new(),
             stored_cookies: Vec::new(),
         }

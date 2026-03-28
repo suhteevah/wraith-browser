@@ -61,8 +61,8 @@ impl Default for SevroConfig {
         Self {
             navigation_timeout_ms: 30_000,
             js_timeout_ms: 30_000,
-            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36".to_string(),
-            accept_language: "en-US,en;q=0.9".to_string(),
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0".to_string(),
+            accept_language: "en-US,en;q=0.5".to_string(),
             viewport_width: 1920,
             viewport_height: 1080,
             disable_cors: false,
@@ -911,11 +911,9 @@ impl SevroEngine {
             .map_err(|e| format!("Proxy client build failed: {e}"))?;
 
         let response = client.get(url)
-            .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
-            .header("sec-ch-ua-mobile", "?0")
-            .header("sec-ch-ua-platform", "\"Windows\"")
             .header("Upgrade-Insecure-Requests", "1")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            .header("Priority", "u=0, i")
             .header("Sec-Fetch-Site", "none")
             .header("Sec-Fetch-Mode", "navigate")
             .header("Sec-Fetch-User", "?1")
@@ -1640,7 +1638,7 @@ impl SevroEngine {
 
         #[cfg(not(feature = "stealth-tls"))]
         {
-            debug!(url = %url, "Fetching with reqwest (rustls — TLS profile may differ from Chrome)");
+            debug!(url = %url, "Fetching with reqwest (rustls — TLS fingerprint may differ from Firefox)");
 
             let mut req = self.client.get(url)
                 .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")

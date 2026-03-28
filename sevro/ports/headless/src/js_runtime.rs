@@ -50,7 +50,24 @@ impl JsRuntime {
 
     /// Register the DOM bridge APIs into the JS global scope.
     /// Call this after parsing a page, passing the extracted DOM nodes.
+    /// Uses default fingerprint values (for tests and backward compat).
     pub fn setup_dom_bridge(&self, dom_nodes: &[DomNode]) -> Result<(), String> {
+        self.setup_dom_bridge_with_fingerprint(dom_nodes, None)
+    }
+
+    /// Register the DOM bridge with optional fingerprint config.
+    ///
+    /// When a fingerprint map is provided, all browser-observable properties
+    /// (window dimensions, navigator, screen, hardware) are set from the config
+    /// instead of hardcoded defaults. This is the Camoufox-style approach:
+    /// interception at the implementation level, invisible to JS inspection.
+    ///
+    /// The map uses dot-notation keys (e.g., "window.innerWidth", "navigator.userAgent").
+    pub fn setup_dom_bridge_with_fingerprint(
+        &self,
+        dom_nodes: &[DomNode],
+        fingerprint: Option<&std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Result<(), String> {
         self.context.with(|ctx| {
             let globals = ctx.globals();
 
@@ -86,17 +103,60 @@ impl JsRuntime {
                 .map(|n| n.text_content.as_str())
                 .unwrap_or("");
 
-            // Inject DOM data and bridge functions as JS
-            // NOTE: This is intentional JS execution — the entire purpose of
-            // this module is to run JavaScript against a DOM tree.
+            // Apply fingerprint config to DOM bridge template.
+            // This replaces Camoufox's C++ MaskConfig interception — we set
+            // values at the Rust/QuickJS bridge level so JS sees spoofed
+            // values without any detectable injection.
+            let empty_fp = std::collections::HashMap::new();
+            let fp = fingerprint.unwrap_or(&empty_fp);
+
+            // Helper closures to extract typed values from the fingerprint map
+            let fp_i64 = |key: &str, default: i64| -> String {
+                fp.get(key).and_then(|v| v.as_i64()).unwrap_or(default).to_string()
+            };
+            let fp_f64 = |key: &str, default: f64| -> String {
+                fp.get(key).and_then(|v| v.as_f64()).unwrap_or(default).to_string()
+            };
+            let fp_str = |key: &str, default: &str| -> String {
+                fp.get(key).and_then(|v| v.as_str()).unwrap_or(default).to_string()
+            };
+            let fp_json = |key: &str, default: &str| -> String {
+                fp.get(key).map(|v| v.to_string()).unwrap_or_else(|| default.to_string())
+            };
+
             let bridge_script = include_str!("dom_bridge.js")
                 .replace("{node_json}", &node_json)
-                .replace("{title}", &title.replace('"', r#"\""#));
+                .replace("{title}", &title.replace('"', r#"\""#))
+                // Window properties
+                .replace("{fp_window_innerWidth}", &fp_i64("window.innerWidth", 1920))
+                .replace("{fp_window_innerHeight}", &fp_i64("window.innerHeight", 995))
+                .replace("{fp_window_outerWidth}", &fp_i64("window.outerWidth", 1920))
+                .replace("{fp_window_outerHeight}", &fp_i64("window.outerHeight", 1080))
+                .replace("{fp_window_screenX}", &fp_i64("window.screenX", 0))
+                .replace("{fp_window_screenY}", &fp_i64("window.screenY", 0))
+                .replace("{fp_window_devicePixelRatio}", &fp_f64("window.devicePixelRatio", 1.0))
+                // Screen properties
+                .replace("{fp_screen_width}", &fp_i64("screen.width", 1920))
+                .replace("{fp_screen_height}", &fp_i64("screen.height", 1080))
+                .replace("{fp_screen_availWidth}", &fp_i64("screen.availWidth", 1920))
+                .replace("{fp_screen_availHeight}", &fp_i64("screen.availHeight", 1040))
+                .replace("{fp_screen_colorDepth}", &fp_i64("screen.colorDepth", 24))
+                .replace("{fp_screen_pixelDepth}", &fp_i64("screen.pixelDepth", 24))
+                // Navigator properties
+                .replace("{fp_navigator_userAgent}", &fp_str("navigator.userAgent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0"))
+                .replace("{fp_navigator_language}", &fp_str("navigator.language", "en-US"))
+                .replace("{fp_navigator_languages}", &fp_json("navigator.languages", r#"["en-US","en"]"#))
+                .replace("{fp_navigator_platform}", &fp_str("navigator.platform", "Win32"))
+                .replace("{fp_navigator_hardwareConcurrency}", &fp_i64("navigator.hardwareConcurrency", 8))
+                .replace("{fp_navigator_maxTouchPoints}", &fp_i64("navigator.maxTouchPoints", 0))
+                .replace("{fp_navigator_deviceMemory}", &fp_i64("navigator.deviceMemory", 8))
+                .replace("{fp_navigator_oscpu}", &fp_str("navigator.oscpu", "Windows NT 10.0; Win64; x64"));
 
             ctx.eval::<(), _>(bridge_script.as_bytes())
                 .map_err(|e| format!("DOM bridge injection failed: {e}"))?;
 
-            debug!(nodes = dom_nodes.len(), "DOM bridge initialized in QuickJS");
+            debug!(nodes = dom_nodes.len(), "DOM bridge initialized in QuickJS (fingerprint-config applied)");
             Ok(())
         })
     }
