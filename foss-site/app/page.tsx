@@ -116,6 +116,29 @@ export default function HomePage() {
         </div>
       </section>
 
+      {/* Enterprise CTA */}
+      <section className="px-6 py-20 max-w-4xl mx-auto text-center">
+        <h2 className="text-3xl font-bold mb-4">Scale with confidence</h2>
+        <p className="text-fd-muted-foreground max-w-2xl mx-auto mb-8">
+          From free tier to enterprise. SSO, RBAC, SOC 2 compliance, dedicated
+          infrastructure, and priority support for teams that need reliability at scale.
+        </p>
+        <div className="flex gap-4 justify-center">
+          <Link
+            href="/docs/enterprise/pricing"
+            className="px-6 py-2 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-500 transition-colors"
+          >
+            View pricing
+          </Link>
+          <Link
+            href="/docs/enterprise/comparison"
+            className="px-6 py-2 rounded-lg border border-fd-border hover:bg-fd-accent text-fd-foreground font-medium transition-colors"
+          >
+            Compare solutions
+          </Link>
+        </div>
+      </section>
+
       {/* Footer */}
       <footer className="border-t border-fd-border px-6 py-12 text-center text-sm text-fd-muted-foreground">
         <p>Wraith Browser — AGPL-3.0 — Free and open source, forever.</p>

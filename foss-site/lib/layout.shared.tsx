@@ -7,6 +7,7 @@ export function baseOptions(): BaseLayoutProps {
     },
     links: [
       { text: 'Playground', url: '/playground' },
+      { text: 'Enterprise', url: '/docs/enterprise/pricing' },
       { text: 'Blog', url: '/blog' },
       { text: 'Community', url: '/community' },
     ],
