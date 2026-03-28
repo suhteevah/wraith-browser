@@ -1,53 +1,45 @@
 ---
 title: Pricing
-description: Wraith Browser plans for teams and enterprises — from free tier to dedicated infrastructure
+description: Wraith Browser managed plans for teams and enterprises — self-host free, or let us run it for you.
 ---
 
-## Plans
+## Self-host for free
 
-All plans include access to the full Wraith Browser engine, 130+ MCP tools, and the knowledge graph. Plans differ in throughput, concurrency, and support level.
+Wraith Browser is open source (AGPL-3.0). Clone the repo, build, and run on your own infrastructure at no cost. The managed plans below add monitoring, support, SLAs, and enterprise features on top.
 
-| | Free | Starter | Growth | Scale | Enterprise |
-| --- | --- | --- | --- | --- | --- |
-| **Monthly price** | $0 | $49 | $199 | $799 | Custom |
-| **Pages / month** | 1,000 | 10,000 | 100,000 | 1,000,000 | Unlimited |
-| **Concurrent sessions** | 2 | 5 | 20 | 100 | Unlimited |
-| **MCP tools** | All 130+ | All 130+ | All 130+ | All 130+ | All 130+ |
-| **Knowledge graph** | Per-session | Persistent | Persistent | Persistent | Persistent + dedicated |
-| **Support** | Community | Email (48h) | Email (24h) | Priority (4h) | Dedicated CSM |
-| **SSO / SAML** | — | — | — | — | Included |
-| **SOC 2 report** | — | — | — | — | Available |
-| **Dedicated infra** | — | — | — | — | Included |
-| **SLA** | — | — | 99.5% | 99.9% | 99.99% |
+---
+
+## Managed plans
+
+All plans include the full Wraith Browser engine, 130+ MCP tools, persistent knowledge graph, and automatic updates.
+
+| | Growth | Scale | Enterprise |
+| --- | --- | --- | --- |
+| **Monthly price** | $199 | $799 | Custom |
+| **Pages / month** | 100,000 | 1,000,000 | Unlimited |
+| **Concurrent sessions** | 20 | 100 | Unlimited |
+| **MCP tools** | All 130+ | All 130+ | All 130+ |
+| **Knowledge graph** | Persistent | Persistent | Persistent + dedicated |
+| **Support** | Email (24h) | Priority (4h) | Dedicated CSM |
+| **SSO / SAML** | -- | -- | Included |
+| **RBAC / multi-tenancy** | -- | -- | Included |
+| **SOC 2 report** | -- | -- | Available |
+| **Dedicated infra** | -- | -- | Included |
+| **SLA** | 99.5% | 99.9% | 99.99% |
+
+---
 
 ## Plan details
 
-### Free
-
-Best for experimentation and personal projects.
-
-- 1,000 pages per month
-- 2 concurrent browser sessions
-- Community support via GitHub Discussions
-- Knowledge graph persists for the duration of each session
-
-### Starter — $49/mo
-
-For individuals and small teams running regular scraping or automation workflows.
-
-- 10,000 pages per month
-- 5 concurrent browser sessions
-- Email support with 48-hour response time
-- Persistent knowledge graph across sessions
-
 ### Growth — $199/mo
 
-For teams that depend on Wraith Browser for production workloads.
+For teams that depend on Wraith for production workloads.
 
 - 100,000 pages per month
 - 20 concurrent browser sessions
 - Email support with 24-hour response time
 - Persistent knowledge graph across sessions
+- Usage dashboard and cost attribution
 - 99.5% uptime SLA
 
 ### Scale — $799/mo
@@ -58,6 +50,7 @@ For organizations with high-throughput requirements.
 - 100 concurrent browser sessions
 - Priority support with 4-hour response time
 - Persistent knowledge graph across sessions
+- Usage dashboard and cost attribution
 - 99.9% uptime SLA
 
 ### Enterprise — Custom pricing
@@ -68,17 +61,20 @@ For organizations that need dedicated infrastructure, compliance, and hands-on s
 - Unlimited concurrent sessions
 - Dedicated infrastructure (single-tenant deployment)
 - SOC 2 Type II report available
-- SSO / SAML integration
+- SSO / SAML / SCIM integration
+- RBAC and multi-tenancy
 - Dedicated customer success manager
 - 99.99% uptime SLA
-- Custom data retention policies
+- Custom data retention and data residency
 - On-premises deployment option
+
+---
 
 ## Metering
 
-Usage is metered by **pages loaded** — each call to `browser_navigate` or equivalent MCP tool that loads a new page counts as one page. Navigating to an anchor on the same page, interacting with elements, or reading from the knowledge graph cache does not count.
+Usage is metered by **pages loaded** — each call to `browser_navigate` or equivalent MCP tool that loads a new page counts as one page. Interacting with elements, reading from cache, or querying the knowledge graph does not count.
 
-Overages are billed at the per-page rate for your plan tier. You can set hard caps in your dashboard to prevent unexpected charges.
+Overages are billed at your plan's per-page rate. You can set hard caps in your dashboard to prevent unexpected charges.
 
 ## FAQ
 
@@ -88,17 +84,16 @@ Yes. Upgrades take effect immediately and are prorated. Downgrades take effect a
 
 ### Is there an annual discount?
 
-Annual billing is available on Starter, Growth, and Scale plans at a 20% discount. Contact sales for enterprise annual agreements.
+Annual billing is available on Growth and Scale at a 20% discount. Contact sales for enterprise annual agreements.
 
-### What happens if I exceed my page limit?
+### What if I need less than 100K pages/month?
 
-You can configure a hard cap or allow overages. Overage pages are billed at your plan's per-page rate. On the Free plan, requests are rate-limited once you hit the cap.
+Self-host from the [GitHub repo](https://github.com/suhteevah/wraith-browser). Wraith is AGPL-3.0 — free to run on your own infrastructure. The managed plans are for teams that want us to handle operations, monitoring, and support.
 
-### Do self-hosted deployments count against the page limit?
+### Do self-hosted deployments need a license?
 
-Self-hosted deployments with a commercial license are metered the same way. You can run Wraith Browser on your own infrastructure and connect it to our metering API, or opt for an air-gapped Enterprise license with a fixed page allocation.
+Not if you comply with the AGPL-3.0 license. If you need to embed Wraith in proprietary software without open-source obligations, see our [commercial licensing](/docs/enterprise/licensing) options.
 
 ---
 
-Need a custom plan or have questions about Enterprise?
-[Contact Sales](mailto:sales@wraith-browser.dev)
+Need a custom plan or have questions about Enterprise? [Contact us](mailto:ridgecellrepair@gmail.com)

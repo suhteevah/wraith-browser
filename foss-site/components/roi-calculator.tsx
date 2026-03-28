@@ -11,8 +11,7 @@ const CURRENT_SOLUTIONS = [
 ] as const;
 
 const WRAITH_TIERS = [
-  { name: 'Free', monthlyBase: 0, includedPages: 1_000, overagePer1k: 0, maxPages: 1_000 },
-  { name: 'Starter', monthlyBase: 49, includedPages: 10_000, overagePer1k: 4.00, maxPages: 50_000 },
+  { name: 'Self-hosted', monthlyBase: 0, includedPages: Infinity, overagePer1k: 0, maxPages: Infinity },
   { name: 'Growth', monthlyBase: 199, includedPages: 100_000, overagePer1k: 1.50, maxPages: 500_000 },
   { name: 'Scale', monthlyBase: 799, includedPages: 1_000_000, overagePer1k: 0.60, maxPages: 10_000_000 },
   { name: 'Enterprise', monthlyBase: 2499, includedPages: 10_000_000, overagePer1k: 0.30, maxPages: Infinity },
