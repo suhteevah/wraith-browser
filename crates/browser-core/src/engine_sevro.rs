@@ -159,8 +159,10 @@ pub struct SevroEngineBackend {
 
 impl SevroEngineBackend {
     pub fn new() -> Self {
+        let mut engine = sevro_headless::SevroEngine::default();
+        engine.set_fingerprint(crate::FingerprintConfig::generate().to_map());
         Self {
-            engine: sevro_headless::SevroEngine::default(),
+            engine,
             scripts: wraith_scripting::ScriptEngine::new(),
             synthetic_snapshot: None,
             scroll_position: (0, 0),
@@ -168,8 +170,10 @@ impl SevroEngineBackend {
     }
 
     pub fn with_config(config: sevro_headless::SevroConfig) -> Self {
+        let mut engine = sevro_headless::SevroEngine::new(config);
+        engine.set_fingerprint(crate::FingerprintConfig::generate().to_map());
         Self {
-            engine: sevro_headless::SevroEngine::new(config),
+            engine,
             scripts: wraith_scripting::ScriptEngine::new(),
             synthetic_snapshot: None,
             scroll_position: (0, 0),

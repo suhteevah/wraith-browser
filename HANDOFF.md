@@ -1,110 +1,113 @@
-# Wraith Browser — Session Handoff (2026-03-27)
+# Wraith Browser — Session Handoff (2026-03-30)
 
 ## Session Summary
 
-Fixed the broken Chrome TLS bypass by switching to Firefox 136 emulation (rquest + Camoufox technique), built the entire enterprise side of the docs site (6 pages), simplified pricing to 3 tiers, added AGPL enforcement language, and deployed everything.
+Wired FingerprintConfig into SevroEngine (auto-generates per session, passes to DOM bridge every page load), fixed ROI calculator's awkward self-hosted cost math, confirmed FlareSolverr beats Indeed's Cloudflare CAPTCHA (status 200 + cf_clearance), fixed challenge detection to recognize Indeed's "Security Check" page pattern, and fixed a Chrome136 TLS mismatch in the cookie retry path.
 
-## What Was Done
+## What Was Done This Session
 
-### 1. Firefox 136 TLS Emulation (Bypass Fix)
+### 1. FingerprintConfig Wired into SevroEngine (COMPLETE)
 
-The original `stealth_fetch_rquest` was building a bare `rquest::Client` without calling `.emulation()` — sending a default BoringSSL fingerprint that Cloudflare flagged instantly. Additionally, all HTTP requests were sending Chrome `sec-ch-ua` headers alongside a Firefox User-Agent, which is an instant red flag.
+Previously: FingerprintConfig existed in browser-core and the DOM bridge accepted it, but SevroEngine never created or passed one.
 
-**Fixed:**
-- rquest now uses `Emulation::Firefox136` from `rquest-util` for TLS-level fingerprint matching
-- All User-Agent strings switched from Chrome 131/136 to Firefox 136 across Sevro, Native, and stealth_http engines
-- Removed all `sec-ch-ua` headers (Chromium-only) from sevro/ports/headless/src/lib.rs (3 locations)
-- Default Accept-Language changed to `en-US,en;q=0.5` (Firefox style)
-- Added `Priority: u=0, i` header (Firefox sends this, Chrome doesn't)
-- Updated Accept header to Firefox format (no `image/apng`)
-- Added `rquest-util = "2.2"` to workspace and browser-core deps
+**Now:**
+- `SevroEngine` has a `fingerprint: Option<HashMap<String, serde_json::Value>>` field
+- `set_fingerprint()` public setter accepts a HashMap of property overrides
+- `load_page_with_scripts()` passes `self.fingerprint.as_ref()` to `setup_dom_bridge_with_fingerprint()` — every page load gets Camoufox-style DOM spoofing
+- `SevroEngineBackend` (browser-core) auto-generates fingerprint via `FingerprintConfig::generate().to_map()` in all constructors (`new()`, `with_config()`, `new_with_options()`)
+- Confirmed in logs: `Generated fingerprint config screen=1536x864 cores=16 memory=4 dpr=1.25 canvas_seed=1006282108`
 
-**Files changed:** Cargo.toml, crates/browser-core/Cargo.toml, crates/browser-core/src/stealth_http.rs, crates/browser-core/src/native.rs, sevro/ports/headless/src/lib.rs
+**Files changed:**
+- `sevro/ports/headless/src/lib.rs` — field, setter, wiring in load_page_with_scripts
+- `crates/browser-core/src/engine_sevro.rs` — auto-generate in constructors
 
-### 2. FingerprintConfig System (Camoufox MaskConfig Port)
+### 2. ROI Calculator Fixed (COMPLETE)
 
-Studied Camoufox's open source patches (github.com/daijro/camoufox) — they intercept browser API property getters at the C++ level via a JSON config (`CAMOU_CONFIG` env var → `MaskConfig.hpp`). Ported this to Rust:
+The self-hosted competitor costs were using a fake "$3.50/1K pages" rate that was back-calculated from VM assumptions. Users saw per-page pricing for something that's not actually billed per-page.
 
-- `fingerprint_config.rs` — JSON-based config with dot-notation keys (`window.innerWidth`, `navigator.userAgent`, etc.)
-- `FingerprintConfig::generate()` — produces randomized but consistent profiles (common screen resolutions weighted by real-world usage, realistic hardware specs, Firefox navigator values)
-- `apply_canvas_noise()` — direct port of Camoufox's `CanvasFingerprintManager::ApplyCanvasNoise` (seeded LCG PRNG, modifies one RGB channel per pixel by ±1, skips zero channels to preserve transparency)
-- 8 tests, all passing
+**Now:**
+- Self-hosted competitors (Playwright/Puppeteer) use a VM-based cost model: `ceil(pages / (sessions × pages_per_session × 30)) × $80/VM`
+- Each solution has explicit params: `vmCost: 80, sessionsPerVm: 6, pagesPerSession: 200`
+- Dropdown shows `(~$80/VM)` for self-hosted options, `(~$X/1K pages)` for hosted
+- Comparison table uses the same VM-based formula
+- Footnote explains assumptions clearly
 
-**File:** crates/browser-core/src/fingerprint_config.rs
+**File changed:** `foss-site/components/roi-calculator.tsx`
 
-### 3. DOM Bridge Wiring
+### 3. Indeed + FlareSolverr Testing
 
-Updated the QuickJS DOM bridge (`dom_bridge.js`) to accept fingerprint config values instead of hardcoded Chrome defaults. 20+ properties are now template-driven:
+**FlareSolverr confirmed working against Indeed:**
+- Direct curl to FlareSolverr `POST /v1` returned status 200, `cf_clearance` cookie, full rendered page
+- `"Challenge not detected!"` — FlareSolverr's Chrome solved Cloudflare Turnstile transparently
+- FlareSolverr runs at `http://localhost:8191`
 
-- Window: innerWidth, innerHeight, outerWidth, outerHeight, screenX, screenY, devicePixelRatio
-- Screen: width, height, availWidth, availHeight, colorDepth, pixelDepth
-- Navigator: userAgent, language, languages, platform, hardwareConcurrency, maxTouchPoints, deviceMemory, oscpu, vendor (empty for Firefox), userAgentData (undefined for Firefox)
+**Wraith binary NOT yet working with Indeed:**
+- Challenge detection (`is_cloudflare_challenge()`) was NOT recognizing Indeed's page — Indeed uses `"Security Check"` title and `INDEED_CLOUDFLARE_STATIC_PAGE` JS var, not standard CF signatures
+- Added `"Security Check"` and `"CLOUDFLARE_STATIC_PAGE"` to challenge detection
+- Added debug logging for challenge/block detection
+- **Still needs testing** — rebuilt binary, but Chrome zombie processes from FlareSolverr needed cleanup first
 
-`js_runtime.rs` has a new `setup_dom_bridge_with_fingerprint()` method that accepts `Option<&HashMap<String, serde_json::Value>>`.
+### 4. Firefox136 TLS Consistency Fix
 
-**Files changed:** sevro/ports/headless/src/dom_bridge.js, sevro/ports/headless/src/js_runtime.rs
+The `http_fetch_with_cookies()` method (Tier 3.5 cookie replay) was using `Emulation::Chrome136` instead of `Emulation::Firefox136`. This meant if FlareSolverr solved a challenge and we tried to replay cookies, the TLS fingerprint would mismatch (Firefox UA + Chrome TLS = instant red flag).
 
-### 4. TLS Profile Updates
+**Fixed:** All `Emulation::Chrome136` replaced with `Emulation::Firefox136` in sevro-headless.
 
-- Added `firefox_136_profile()` as the new default
-- Added `default_profile()` convenience function
-- `firefox_132_profile()` now delegates to 136 with version-specific UA
-- `all_profiles()` returns Firefox 136 first
+**File changed:** `sevro/ports/headless/src/lib.rs`
 
-**File:** crates/browser-core/src/tls_fingerprint.rs
+### 5. FlareSolverr Chrome Zombie Cleanup
 
-### 5. Enterprise Docs Site (6 New Pages)
+FlareSolverr spawns headless Chrome instances to solve CAPTCHAs but doesn't always clean them up. During testing, 85+ chrome.exe processes accumulated. Killed them with `taskkill //F //IM chrome.exe`.
 
-All at `foss-site/content/docs/enterprise/`:
+**Note for future:** FlareSolverr process management is a known issue. Consider adding a `maxBrowsers` config or switching to a FlareSolverr fork with better cleanup.
 
-| Page | File | Content |
-|------|------|---------|
-| Pricing | pricing.mdx | 3 tiers: Growth $199, Scale $799, Enterprise custom. Self-host is the free tier. |
-| Features | features.mdx | RBAC, SSO/SAML, SOC 2, audit logging, data residency, credential mgmt, dedicated infra, priority support |
-| Comparison | comparison.mdx | Feature matrix + cost comparison vs Browserbase, Browserless, Playwright, Puppeteer |
-| Security | security.mdx | SOC 2, GDPR, encryption (AES-256-GCM, Argon2id), audit logging, vulnerability management |
-| Licensing | licensing.mdx | AGPL-3.0 vs commercial license, use cases, FAQ, enforcement section |
-| ROI Calculator | roi-calculator.mdx | Interactive React component — select current solution + volume, see cost comparison |
+## Previous Session Work (2026-03-27)
 
-### 6. Site Navigation
+### Firefox 136 TLS Emulation
+- rquest uses `Emulation::Firefox136` for TLS fingerprint matching
+- All UAs switched to Firefox 136
+- Removed sec-ch-ua headers, aligned Accept/Priority headers
 
-- "Enterprise" added to top nav bar (layout.shared.tsx)
-- "Scale with confidence" CTA section added to landing page (page.tsx)
-- Enterprise section in docs sidebar (enterprise/meta.json)
+### FingerprintConfig System (Camoufox Port)
+- `FingerprintConfig::generate()` — randomized consistent profiles
+- `apply_canvas_noise()` — Camoufox seeded LCG algorithm
+- 20+ DOM properties template-driven via QuickJS bridge
+- 8 tests passing
 
-### 7. AGPL Enforcement Language
-
-Added to both pricing and licensing pages. Clear message: we monitor, we enforce, contribute back or pay.
-
-### 8. Indeed Test Results
-
-- **SimplyHired**: PASS at Tier 1 — 2,959 jobs found near 95926 with Firefox 136 emulation
-- **Indeed**: Still 403 CAPTCHA — needs FlareSolverr (Tier 3) or Camoufox-level browser. Network was down during testing so FlareSolverr couldn't be tested.
+### Enterprise Docs Site (6 Pages — ALL COMPLETE)
+- Pricing, Features, Comparison, Security, Licensing, ROI Calculator
+- 3 tiers: Growth $199, Scale $799, Enterprise custom
+- AGPL enforcement language on pricing + licensing pages
+- Live at https://wraith-browser.vercel.app
 
 ## Current State
 
 | Component | Status |
 |-----------|--------|
 | Docs site | Live at https://wraith-browser.vercel.app |
-| GitHub | Pushed, commit aa7b464a |
-| Firefox emulation | Working, compiles with `--features stealth-tls` |
-| FingerprintConfig | Built, 8/8 tests pass, wired into DOM bridge |
-| Enterprise pages | 6 pages live, linked from nav and landing page |
+| Enterprise pages | ALL 6 COMPLETE |
+| FingerprintConfig | Wired end-to-end: generate → engine → DOM bridge |
+| Firefox TLS | Consistent Firefox136 across all code paths |
+| ROI Calculator | Fixed — VM-based self-hosted cost model |
+| FlareSolverr | Confirmed working against Indeed (direct test) |
+| Indeed via binary | Challenge detection fixed, needs retest |
 | Release binary | Built at target/release/wraith-browser.exe |
-| Indeed bypass | Needs FlareSolverr or Camoufox integration for CAPTCHA |
+| Pre-built binaries | NOT AVAILABLE — users must build from source or Docker |
+| GitHub CI | BANNED — must build locally, no GitHub Actions |
 
 ## Remaining TODO
 
-1. **Test Indeed with FlareSolverr** — `WRAITH_FLARESOLVERR=http://localhost:8191 ./target/release/wraith-browser.exe navigate "https://www.indeed.com/jobs?q=&l=95926"`
-2. **Wire FingerprintConfig into SevroEngine** — the config exists and the DOM bridge accepts it, but `SevroEngine::navigate()` doesn't create/pass a config yet. Need to add a `fingerprint` field to `SevroConfig` or `SevroEngine` and pass it through to `setup_dom_bridge_with_fingerprint()`.
-3. **Connect Vercel to GitHub** — eliminates manual deploy + alias dance (issue #6)
-4. **Google Search Console / Bing Webmaster** — submit sitemap for indexing
-5. **Rotate GitHub PAT** — exposed in earlier conversation history
-6. **ROI calculator self-hosted tier** — currently shows $0/mo for self-hosted which is correct but the "savings" math is weird when comparing to self-hosted. May want to show estimated VM cost instead.
+1. **Retest Indeed via wraith binary** — rebuild done, challenge detection updated, need to verify Tier 3 escalation works end-to-end: `WRAITH_FLARESOLVERR=http://localhost:8191 ./target/release/wraith-browser.exe navigate "https://www.indeed.com/jobs?q=&l=95926"`
+2. **Pre-built binaries** — No download page on Vercel site. Need local cross-compilation script for Linux x86_64, macOS arm64/x86_64, Windows x86_64. Can't use GitHub CI (banned). Options: local `cross` tool, or add a `/downloads` page with build instructions.
+3. **Connect Vercel to GitHub** — eliminates manual deploy
+4. **Google Search Console / Bing Webmaster** — submit sitemap
+5. **Rotate GitHub PAT** — was exposed in earlier conversation
 
 ## Key Technical Decisions
 
-- **Firefox over Chrome for TLS** — Cloudflare targets Chrome fingerprints more aggressively. Firefox 136 via rquest's `Emulation::Firefox136` passes Akamai, PerimeterX, and basic Cloudflare. Does NOT pass Cloudflare Turnstile CAPTCHA.
-- **Camoufox technique, not Camoufox binary** — We studied their C++ patches and ported the approach to Rust. No external binary dependency.
-- **3-tier pricing** — Free and Starter dropped. Self-hosting from the open source repo IS the free tier. Managed plans start at Growth ($199).
-- **AGPL enforcement** — Explicitly stated on pricing and licensing pages. Legal action for violations.
+- **Firefox over Chrome for TLS** — Cloudflare targets Chrome fingerprints more aggressively. Firefox 136 via rquest passes basic Cloudflare. Does NOT pass Cloudflare Turnstile CAPTCHA without FlareSolverr.
+- **Camoufox technique at Rust/QuickJS level** — No external binary dependency. Intercepts at DOM bridge, invisible to JS inspection.
+- **FingerprintConfig auto-generated per engine** — Each engine instance gets a unique randomized fingerprint. Consistent within a session (same canvas seed, same screen size, etc.)
+- **VM-based cost model for ROI** — Self-hosted competitors priced by VM count, not fake per-page rates. Honest comparison.
+- **No GitHub CI** — Matt is banned. All builds must be local. Cross-compilation for release binaries TBD.
+- **3-tier pricing** — Self-hosting from AGPL repo IS the free tier. Growth $199, Scale $799, Enterprise custom.

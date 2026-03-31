@@ -3,11 +3,11 @@
 import { useState } from 'react';
 
 const CURRENT_SOLUTIONS = [
-  { name: 'Browserbase', costPer1k: 10.00 },
-  { name: 'Browserless', costPer1k: 8.00 },
-  { name: 'Playwright (self-hosted)', costPer1k: 3.50 },
-  { name: 'Puppeteer (self-hosted)', costPer1k: 3.50 },
-  { name: 'Custom scraping infra', costPer1k: 5.00 },
+  { name: 'Browserbase', costPer1k: 10.00, hosted: true },
+  { name: 'Browserless', costPer1k: 8.00, hosted: true },
+  { name: 'Playwright (self-hosted)', costPer1k: 0, hosted: false, vmCost: 80, sessionsPerVm: 6, pagesPerSession: 200 },
+  { name: 'Puppeteer (self-hosted)', costPer1k: 0, hosted: false, vmCost: 80, sessionsPerVm: 6, pagesPerSession: 200 },
+  { name: 'Custom scraping infra', costPer1k: 5.00, hosted: true },
 ] as const;
 
 const WRAITH_TIERS = [
@@ -53,7 +53,9 @@ export function ROICalculator() {
   const [solutionIdx, setSolutionIdx] = useState(0);
 
   const solution = CURRENT_SOLUTIONS[solutionIdx];
-  const currentCost = (pages / 1000) * solution.costPer1k;
+  const currentCost = solution.hosted
+    ? (pages / 1000) * solution.costPer1k
+    : Math.ceil(pages / (solution.sessionsPerVm * solution.pagesPerSession * 30)) * solution.vmCost;
   const wraith = bestWraithTier(pages);
   const savings = currentCost - wraith.monthlyCost;
   const savingsPercent = currentCost > 0 ? (savings / currentCost) * 100 : 0;
@@ -78,7 +80,9 @@ export function ROICalculator() {
             className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           >
             {CURRENT_SOLUTIONS.map((s, i) => (
-              <option key={s.name} value={i}>{s.name} (~${s.costPer1k}/1K pages)</option>
+              <option key={s.name} value={i}>
+                {s.name}{s.hosted ? ` (~$${s.costPer1k}/1K pages)` : ` (~$${s.vmCost}/VM)`}
+              </option>
             ))}
           </select>
         </div>
@@ -146,7 +150,9 @@ export function ROICalculator() {
           </thead>
           <tbody>
             {[10_000, 100_000, 500_000, 1_000_000].map((vol) => {
-              const otherCost = (vol / 1000) * solution.costPer1k;
+              const otherCost = solution.hosted
+                ? (vol / 1000) * solution.costPer1k
+                : Math.ceil(vol / (solution.sessionsPerVm * solution.pagesPerSession * 30)) * solution.vmCost;
               const w = bestWraithTier(vol);
               const s = otherCost - w.monthlyCost;
               return (
@@ -165,9 +171,10 @@ export function ROICalculator() {
       </div>
 
       <p className="text-xs text-zinc-500">
-        Estimates based on published pricing. Self-hosted costs include compute
-        (Playwright/Puppeteer assume ~6 sessions per 16GB VM at $80/mo). Wraith
-        self-hosted runs 50-100+ sessions on a single VM. Actual costs vary by usage pattern.
+        Estimates based on published pricing. Self-hosted costs assume 16GB VMs at $80/mo
+        running ~6 concurrent sessions (Playwright/Puppeteer) or 50-100+ sessions (Wraith),
+        each processing ~200 pages/day. Hosted pricing uses published per-page rates. Actual
+        costs vary by workload.
       </p>
     </div>
   );

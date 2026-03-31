@@ -167,6 +167,9 @@ pub struct SevroEngine {
     _request_interceptor: Option<Box<dyn Fn(&str) -> RequestAction + Send + Sync>>,
     /// Resolved iframe contents: maps iframe node_id to (src_url, parsed DomNodes)
     iframe_contents: HashMap<u64, (String, Vec<DomNode>)>,
+    /// Fingerprint overrides for DOM-level spoofing (Camoufox-style).
+    /// Keys are dot-notation property paths (e.g. "navigator.userAgent").
+    fingerprint: Option<HashMap<String, serde_json::Value>>,
 }
 
 // SAFETY: SevroEngine is always accessed behind Arc<Mutex<...>>, guaranteeing
@@ -229,7 +232,14 @@ impl SevroEngine {
             history: Vec::new(),
             _request_interceptor: None,
             iframe_contents: HashMap::new(),
+            fingerprint: None,
         }
+    }
+
+    /// Set or replace the fingerprint overrides used for DOM-level spoofing.
+    /// Keys are dot-notation property paths (e.g. "window.innerWidth", "navigator.userAgent").
+    pub fn set_fingerprint(&mut self, fp: HashMap<String, serde_json::Value>) {
+        self.fingerprint = Some(fp);
     }
 
     /// Navigate to a URL — fetches HTML and parses into a live DOM tree.
@@ -266,7 +276,10 @@ impl SevroEngine {
         self.wait_for_stability(500).await;
 
         // SPA handling: if the page has very few visible elements, try platform-specific APIs
-        if !Self::is_cloudflare_challenge(&html, status) && !Self::is_ip_blocked(&html) {
+        let is_challenge = Self::is_cloudflare_challenge(&html, status);
+        let is_blocked = Self::is_ip_blocked(&html);
+        debug!(is_challenge, is_blocked, status, html_len = html.len(), "Challenge/block detection result");
+        if !is_challenge && !is_blocked {
             let interactive_count = self.dom_nodes.iter()
                 .filter(|n| n.is_visible && matches!(n.tag_name.as_str(),
                     "a" | "button" | "input" | "select" | "textarea" | "h1" | "h2" | "h3" | "p"))
@@ -973,9 +986,9 @@ impl SevroEngine {
 
         debug!(nodes = self.dom_nodes.len(), url = %url, "DOM parsed");
 
-        // Set up JS environment and run scripts
+        // Set up JS environment and run scripts (with fingerprint spoofing if configured)
         if let Some(ref js) = self.js {
-            if let Err(e) = js.setup_dom_bridge(&self.dom_nodes) {
+            if let Err(e) = js.setup_dom_bridge_with_fingerprint(&self.dom_nodes, self.fingerprint.as_ref()) {
                 warn!(error = %e, "DOM bridge setup failed");
             } else {
                 // Set actual page location
@@ -1010,6 +1023,8 @@ impl SevroEngine {
             || html.contains("Authenticating...")
             || html.contains("cf_chl_opt")
             || html.contains("challenge-platform")
+            || html.contains("Security Check")
+            || html.contains("CLOUDFLARE_STATIC_PAGE")
             || (html.contains("cloudflare") && html.contains("challenge"))
     }
 
@@ -1020,7 +1035,7 @@ impl SevroEngine {
         #[cfg(feature = "stealth-tls")]
         {
             let client = rquest::Client::builder()
-                .emulation(Emulation::Chrome136)
+                .emulation(Emulation::Firefox136)
                 .cookie_store(true)
                 .build()
                 .map_err(|e| format!("rquest build failed: {e}"))?;
@@ -1603,7 +1618,7 @@ impl SevroEngine {
             debug!(url = %url, "Fetching with compatible TLS (rquest + BoringSSL)");
 
             let client = rquest::Client::builder()
-                .emulation(Emulation::Chrome136)
+                .emulation(Emulation::Firefox136)
                 .cookie_store(true)
                 .build()
                 .map_err(|e| format!("rquest build failed: {e}"))?;
