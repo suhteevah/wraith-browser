@@ -5385,6 +5385,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "wraith-transport",
 ]
 
 [[package]]
@@ -8782,6 +8783,7 @@ dependencies = [
  "uuid",
  "wasmtime",
  "wraith-scripting",
+ "wraith-transport",
 ]
 
 [[package]]
@@ -8927,6 +8929,14 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "wraith-transport"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
 ]
 
 [[package]]

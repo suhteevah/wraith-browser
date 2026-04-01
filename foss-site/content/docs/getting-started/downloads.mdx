@@ -1,0 +1,66 @@
+---
+title: Downloads
+description: Pre-built binaries for Wraith Browser
+---
+
+## Pre-built Binaries
+
+Download the latest release binary for your platform. These are single static binaries with no runtime dependencies.
+
+### v0.1.0 (Latest)
+
+| Platform | Architecture | Download | Size |
+|----------|-------------|----------|------|
+| Windows | x86_64 | [wraith-browser-0.1.0-windows-x86_64.exe](https://github.com/suhteevah/wraith-browser/releases/download/v0.1.0/wraith-browser-0.1.0-windows-x86_64.exe) | ~45 MB |
+| Linux | x86_64 | Coming soon | — |
+| macOS | arm64 (Apple Silicon) | Coming soon | — |
+| macOS | x86_64 (Intel) | Coming soon | — |
+
+### Verify your download
+
+Check the SHA256 checksum after downloading:
+
+```bash
+# Windows (PowerShell)
+Get-FileHash wraith-browser-0.1.0-windows-x86_64.exe -Algorithm SHA256
+
+# Linux / macOS
+sha256sum wraith-browser-0.1.0-windows-x86_64.exe
+```
+
+**Expected checksums:**
+
+```text
+d4de0b938e9774f52b62aecb42fae2997d839170f2be2df9fc6e91b96dcf39e0  wraith-browser-0.1.0-windows-x86_64.exe
+```
+
+### Quick start
+
+After downloading, make the binary executable (Linux/macOS) and run it:
+
+```bash
+# Linux / macOS
+chmod +x wraith-browser-*
+./wraith-browser-0.1.0-linux-x86_64 --version
+
+# Windows
+.\wraith-browser-0.1.0-windows-x86_64.exe --version
+```
+
+Optionally move it to your PATH:
+
+```bash
+# Linux / macOS
+sudo mv wraith-browser-0.1.0-linux-x86_64 /usr/local/bin/wraith-browser
+
+# Windows (PowerShell as admin)
+Move-Item wraith-browser-0.1.0-windows-x86_64.exe C:\Windows\wraith-browser.exe
+```
+
+## Build from source
+
+If your platform isn't listed above, or you want the latest development version, see the [build from source](/docs/getting-started/installation) instructions.
+
+## Self-hosting with Docker
+
+For server deployments, see the [Docker guide](/docs/self-hosting/docker).

@@ -18,6 +18,7 @@ Thumbs.db
 /data/
 # Build artifacts
 wraith-browser.zip
+dist/
 # Broken directory name artifact
 {crates/
 # SQLite databases

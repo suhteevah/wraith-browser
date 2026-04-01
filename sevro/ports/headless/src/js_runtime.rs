@@ -1,3 +1,4 @@
+#![cfg(feature = "std")]
 //! # JavaScript Runtime (QuickJS via rquickjs)
 //!
 //! Embeds QuickJS to execute JavaScript against the DOM tree.

@@ -5,6 +5,9 @@
 //! - `NativeEngine` — pure-Rust HTTP client, no external dependencies
 //! - `SevroEngine` — Servo-derived engine with QuickJS, DOM, and layout (default)
 
+// HTTP transport abstraction (pluggable backends)
+pub mod transport;
+
 // Engine abstraction (always available)
 pub mod engine;
 pub mod engine_native;

@@ -28,7 +28,7 @@ struct Cli {
     proxy: Option<String>,
 
     /// External challenge-solving proxy URL (e.g., "http://localhost:8191")
-    #[arg(long, global = true)]
+    #[arg(long, global = true, env = "WRAITH_FLARESOLVERR")]
     flaresolverr: Option<String>,
 
     /// Fallback proxy for access-restricted sites

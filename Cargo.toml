@@ -10,6 +10,7 @@ members = [
     "crates/agent-loop",
     "crates/cli",
     "crates/scripting",
+    "crates/transport",
     "sevro/ports/headless",
 ]
 
@@ -62,7 +63,7 @@ schemars = "0.8"
 tantivy = "0.25"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

@@ -40,4 +40,5 @@ arti-client = { workspace = true, optional = true }
 tor-rtcompat = { workspace = true, optional = true }
 wasmtime = { workspace = true, optional = true }
 wraith-scripting = { path = "../scripting" }
+wraith-transport = { path = "../transport", features = ["reqwest-backend"] }
 tokio-tungstenite = { workspace = true, optional = true }

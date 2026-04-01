@@ -22,15 +22,22 @@
 //! - `current_url()` → current URL
 //! - Cookie persistence across navigations
 
+#[cfg(feature = "std")]
 pub mod js_runtime;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use scraper::{Html, Selector};
+#[cfg(feature = "std")]
+use std::sync::Arc;
+#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 use tracing::{info, warn, debug, instrument};
 #[cfg(feature = "stealth-tls")]
 use rquest_util::Emulation;
+
+#[cfg(feature = "std")]
+use wraith_transport::{HttpTransport, TransportRequest, TransportMethod};
 
 // ═══════════════════════════════════════════════════════════════
 // Configuration
@@ -157,9 +164,16 @@ pub struct SevroEngine {
     /// Extracted DOM nodes (cached after parse)
     dom_nodes: Vec<DomNode>,
     cookies: Vec<Cookie>,
-    /// HTTP client with cookie jar
+    /// Pluggable HTTP transport (default: ReqwestTransport).
+    /// Used by the main fetch paths (http_fetch, http_get).
+    #[cfg(feature = "std")]
+    transport: Arc<dyn HttpTransport>,
+    /// Raw reqwest client — retained for methods that need reqwest-specific
+    /// features (cookie jar, .json(), .multipart(), proxy client builders).
+    #[cfg(feature = "std")]
     client: reqwest::Client,
     /// QuickJS runtime for JavaScript execution
+    #[cfg(feature = "std")]
     js: Option<js_runtime::JsRuntime>,
     /// Navigation history for back/forward
     history: Vec<String>,
@@ -181,6 +195,7 @@ unsafe impl Send for SevroEngine {}
 unsafe impl Sync for SevroEngine {}
 
 impl SevroEngine {
+    #[cfg(feature = "std")]
     #[instrument(skip(config), fields(viewport = format!("{}x{}", config.viewport_width, config.viewport_height)))]
     pub fn new(config: SevroConfig) -> Self {
         let mut client_builder = reqwest::Client::builder()
@@ -203,6 +218,24 @@ impl SevroEngine {
         }
 
         let client = client_builder.build().expect("failed to build HTTP client");
+
+        // Build a transport-layer reqwest client with the same settings.
+        // This mirrors the main client's config so the transport behaves identically.
+        let mut transport_builder = reqwest::Client::builder()
+            .user_agent(&config.user_agent)
+            .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .gzip(true)
+            .brotli(true);
+        if let Some(ref proxy_url) = config.proxy_url {
+            if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
+                transport_builder = transport_builder.proxy(proxy);
+            }
+        }
+        let transport_client = transport_builder.build().expect("failed to build transport client");
+        let transport: Arc<dyn HttpTransport> = Arc::new(
+            wraith_transport::ReqwestTransport::with_client(transport_client),
+        );
 
         let js = if config.enable_javascript {
             match js_runtime::JsRuntime::new() {
@@ -227,8 +260,26 @@ impl SevroEngine {
             parsed_dom: None,
             dom_nodes: Vec::new(),
             cookies: Vec::new(),
+            transport,
             client,
             js,
+            history: Vec::new(),
+            _request_interceptor: None,
+            iframe_contents: HashMap::new(),
+            fingerprint: None,
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn new(config: SevroConfig) -> Self {
+        info!("Sevro engine initialized (no-std: networking and JS disabled)");
+        Self {
+            config,
+            current_url: None,
+            current_html: None,
+            parsed_dom: None,
+            dom_nodes: Vec::new(),
+            cookies: Vec::new(),
             history: Vec::new(),
             _request_interceptor: None,
             iframe_contents: HashMap::new(),
@@ -250,6 +301,7 @@ impl SevroEngine {
     /// 2. **QuickJS challenge solver** — if challenge page "Just a moment..." detected
     /// 3. **External solver** — if QuickJS can't solve (obfuscated challenge)
     /// 4. **Fallback proxy** — if access restriction detected ("you have been blocked")
+    #[cfg(feature = "std")]
     #[instrument(skip(self), fields(url = %url))]
     pub async fn navigate(&mut self, url: &str) -> Result<PageEvent, String> {
         info!(url = %url, "Navigating");
@@ -380,6 +432,7 @@ impl SevroEngine {
 
     /// Ashby API-native hydration: fetch form definition via GraphQL and build synthetic DOM.
     /// This accesses the API directly — no React, no ES modules, just direct API access.
+    #[cfg(feature = "std")]
     async fn try_ashby_api_hydration(&mut self, page_url: &str) {
         // Extract company name and job ID from URL
         // Format: https://jobs.ashbyhq.com/{company}/{job_id}/application
@@ -549,6 +602,7 @@ impl SevroEngine {
 
     /// Greenhouse embed hydration: fetch job listings via the Greenhouse Boards API
     /// when the URL is a `boards.greenhouse.io/embed/job_board?for=<company>` embed.
+    #[cfg(feature = "std")]
     async fn try_greenhouse_embed_hydration(&mut self, page_url: &str) {
         let parsed = match url::Url::parse(page_url) {
             Ok(u) => u,
@@ -633,6 +687,7 @@ impl SevroEngine {
 
     /// SPA hydration: after initial page load, check if inline scripts created dynamic
     /// script elements (SPA pattern) and fetch+execute them.
+    #[cfg(feature = "std")]
     async fn try_spa_hydration(&mut self, base_url: &str) {
         let js = match self.js.as_ref() {
             Some(js) => js,
@@ -765,6 +820,7 @@ impl SevroEngine {
     }
 
     /// Tier 2: Try solving the CF challenge with QuickJS. Returns cookie string if successful.
+    #[cfg(feature = "std")]
     async fn try_quickjs_solve(&self, url: &str) -> Option<String> {
         let js = self.js.as_ref()?;
 
@@ -799,6 +855,7 @@ impl SevroEngine {
 
     /// Tier 3: Call external challenge solver to resolve protected page via real browser.
     /// The solver must be running (e.g., `docker run -p 8191:8191 flaresolverr/flaresolverr`).
+    #[cfg(feature = "std")]
     async fn try_flaresolverr(&self, url: &str) -> Option<String> {
         let solver_url = self.config.flaresolverr_url.as_ref()?;
         let endpoint = format!("{}/v1", solver_url);
@@ -858,6 +915,7 @@ impl SevroEngine {
     /// Tier 3 variant: get the full page HTML from the external solver's response.
     /// The solver returns the rendered page content — we can use it directly
     /// without needing to replay cookies (which may be restricted anyway).
+    #[cfg(feature = "std")]
     async fn try_flaresolverr_full_page(&self, url: &str) -> Option<String> {
         let solver_url = self.config.flaresolverr_url.as_ref()?;
         let endpoint = format!("{}/v1", solver_url);
@@ -908,6 +966,7 @@ impl SevroEngine {
     }
 
     /// Fetch via a specific proxy (for Tier 4 access restriction fallback).
+    #[cfg(feature = "std")]
     async fn http_fetch_via_proxy(&self, url: &str, proxy_url: &str) -> Result<(u16, String, String), String> {
         debug!(url = %url, proxy = %proxy_url, "Fetching via fallback proxy");
 
@@ -945,6 +1004,7 @@ impl SevroEngine {
 
     /// Wait for page stability by checking if the visible element count has settled.
     /// This catches pages that render asynchronously (setTimeout callbacks, fetch-then-render).
+    #[cfg(feature = "std")]
     async fn wait_for_stability(&mut self, max_wait_ms: u64) {
         let mut last_count = self.dom_nodes.iter().filter(|n| n.is_visible).count();
         let start = Instant::now();
@@ -987,6 +1047,7 @@ impl SevroEngine {
         debug!(nodes = self.dom_nodes.len(), url = %url, "DOM parsed");
 
         // Set up JS environment and run scripts (with fingerprint spoofing if configured)
+        #[cfg(feature = "std")]
         if let Some(ref js) = self.js {
             if let Err(e) = js.setup_dom_bridge_with_fingerprint(&self.dom_nodes, self.fingerprint.as_ref()) {
                 warn!(error = %e, "DOM bridge setup failed");
@@ -1008,6 +1069,15 @@ impl SevroEngine {
     /// Detect if an HTTP response is a challenge page (not a solved page).
     /// A page with real content that also has challenge remnants is NOT a challenge.
     fn is_cloudflare_challenge(html: &str, _status: u16) -> bool {
+        // Definitive challenge signatures — check these regardless of page size.
+        // Some sites (e.g. Indeed) serve bloated CAPTCHA pages (>50KB of inline CSS).
+        if html.contains("CLOUDFLARE_STATIC_PAGE")
+            || html.contains("cf-browser-verification")
+            || html.contains("cf_chl_opt")
+        {
+            return true;
+        }
+
         // If the page has substantial content (>50KB), it's probably real content
         // with leftover CF scripts/tags — not an unsolved challenge.
         // Challenge pages are typically small (<20KB).
@@ -1015,20 +1085,18 @@ impl SevroEngine {
             return false;
         }
 
-        // Challenge page signatures
-        html.contains("cf-browser-verification")
-            || html.contains("Checking if the site connection is secure")
+        // Weaker challenge page signatures (only trust on small pages)
+        html.contains("Checking if the site connection is secure")
             || html.contains("Attention Required! | Cloudflare")
             || html.contains("Just a moment...")
             || html.contains("Authenticating...")
-            || html.contains("cf_chl_opt")
             || html.contains("challenge-platform")
             || html.contains("Security Check")
-            || html.contains("CLOUDFLARE_STATIC_PAGE")
             || (html.contains("cloudflare") && html.contains("challenge"))
     }
 
     /// Fetch with explicit cookie header (for challenge resolution retry).
+    #[cfg(feature = "std")]
     async fn http_fetch_with_cookies(&self, url: &str, cookies: &str) -> Result<(u16, String, String), String> {
         debug!(url = %url, "Retrying with challenge cookies");
 
@@ -1055,26 +1123,33 @@ impl SevroEngine {
 
         #[cfg(not(feature = "stealth-tls"))]
         {
-            let response = self.client.get(url)
-                .header("Cookie", cookies)
-                .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
-                .header("sec-ch-ua-mobile", "?0")
-                .header("sec-ch-ua-platform", "\"Windows\"")
-                .header("Upgrade-Insecure-Requests", "1")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-                .header("Sec-Fetch-Site", "none")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-User", "?1")
-                .header("Sec-Fetch-Dest", "document")
-                .header("Accept-Encoding", "gzip, deflate, br, zstd")
-                .header("Accept-Language", &self.config.accept_language)
-                .send()
-                .await
+            let mut headers = std::collections::BTreeMap::new();
+            headers.insert("Cookie".to_string(), cookies.to_string());
+            headers.insert("sec-ch-ua".to_string(), "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"".to_string());
+            headers.insert("sec-ch-ua-mobile".to_string(), "?0".to_string());
+            headers.insert("sec-ch-ua-platform".to_string(), "\"Windows\"".to_string());
+            headers.insert("Upgrade-Insecure-Requests".to_string(), "1".to_string());
+            headers.insert("Accept".to_string(), "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8".to_string());
+            headers.insert("Sec-Fetch-Site".to_string(), "none".to_string());
+            headers.insert("Sec-Fetch-Mode".to_string(), "navigate".to_string());
+            headers.insert("Sec-Fetch-User".to_string(), "?1".to_string());
+            headers.insert("Sec-Fetch-Dest".to_string(), "document".to_string());
+            headers.insert("Accept-Encoding".to_string(), "gzip, deflate, br, zstd".to_string());
+            headers.insert("Accept-Language".to_string(), self.config.accept_language.clone());
+
+            let request = TransportRequest {
+                method: TransportMethod::Get,
+                url: url.to_string(),
+                headers,
+                body: None,
+            };
+
+            let response = self.transport.execute(request).await
                 .map_err(|e| format!("retry request failed: {e}"))?;
 
-            let status = response.status().as_u16();
-            let final_url = response.url().to_string();
-            let body = response.text().await.map_err(|e| format!("body failed: {e}"))?;
+            let status = response.status;
+            let final_url = response.url;
+            let body = String::from_utf8_lossy(&response.body).to_string();
             Ok((status, body, final_url))
         }
     }
@@ -1101,6 +1176,7 @@ impl SevroEngine {
     /// Parses the iframe HTML into DomNodes with prefixed node_ids to avoid collisions.
     /// Called automatically after navigate().
     #[instrument(skip(self))]
+    #[cfg(feature = "std")]
     pub async fn resolve_iframes(&mut self) {
         self.iframe_contents.clear();
 
@@ -1271,6 +1347,7 @@ impl SevroEngine {
     }
 
     /// Execute JavaScript via QuickJS.
+    #[cfg(feature = "std")]
     #[instrument(skip(self, script))]
     pub async fn eval_js(&self, script: &str) -> Result<String, String> {
         match &self.js {
@@ -1337,6 +1414,7 @@ impl SevroEngine {
     /// Fetch all external `<script src="...">` URLs from HTML.
     /// Returns a map of URL -> script content for scripts that were successfully fetched.
     /// Skips analytics, tracking, and non-JS scripts. Limits to 2MB total.
+    #[cfg(feature = "std")]
     pub async fn fetch_external_scripts(client: &reqwest::Client, html: &str, base_url: &str) -> std::collections::HashMap<String, String> {
         let mut scripts = std::collections::HashMap::new();
         let mut total_bytes: usize = 0;
@@ -1482,6 +1560,7 @@ impl SevroEngine {
     /// Follows all redirects (302 -> 302 -> 302 -> 200), captures Set-Cookie
     /// headers at each hop, detects OAuth callback URLs (`?code=` or `?token=`),
     /// and returns the final page event.
+    #[cfg(feature = "std")]
     #[instrument(skip(self), fields(url = %url))]
     pub async fn navigate_with_auth(&mut self, url: &str) -> Result<PageEvent, String> {
         info!(url = %url, "Navigating with auth redirect tracking");
@@ -1598,6 +1677,7 @@ impl SevroEngine {
     }
 
     /// Go back in history.
+    #[cfg(feature = "std")]
     pub async fn go_back(&mut self) -> Result<PageEvent, String> {
         if let Some(url) = self.history.pop() {
             let url_clone = url.clone();
@@ -1612,6 +1692,7 @@ impl SevroEngine {
     /// Returns (status, body, final_url, set_cookie_headers).
     /// Redirect policy follows up to 10 hops; cookie_store preserves cookies
     /// across redirects. set_cookie_headers captures Set-Cookie from the final response.
+    #[cfg(feature = "std")]
     async fn http_fetch(&self, url: &str) -> Result<(u16, String, String, Vec<String>), String> {
         #[cfg(feature = "stealth-tls")]
         {
@@ -1653,43 +1734,45 @@ impl SevroEngine {
 
         #[cfg(not(feature = "stealth-tls"))]
         {
-            debug!(url = %url, "Fetching with reqwest (rustls — TLS fingerprint may differ from Firefox)");
+            debug!(url = %url, "Fetching via HttpTransport (reqwest backend)");
 
-            let mut req = self.client.get(url)
-                .header("sec-ch-ua", "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"")
-                .header("sec-ch-ua-mobile", "?0")
-                .header("sec-ch-ua-platform", "\"Windows\"")
-                .header("Upgrade-Insecure-Requests", "1")
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-                .header("Sec-Fetch-Site", "none")
-                .header("Sec-Fetch-Mode", "navigate")
-                .header("Sec-Fetch-User", "?1")
-                .header("Sec-Fetch-Dest", "document")
-                .header("Accept-Encoding", "gzip, deflate, br, zstd")
-                .header("Accept-Language", &self.config.accept_language)
-                .header("Priority", "u=0, i");
+            let mut headers = std::collections::BTreeMap::new();
+            headers.insert("sec-ch-ua".to_string(), "\"Google Chrome\";v=\"136\", \"Chromium\";v=\"136\", \"Not_A Brand\";v=\"24\"".to_string());
+            headers.insert("sec-ch-ua-mobile".to_string(), "?0".to_string());
+            headers.insert("sec-ch-ua-platform".to_string(), "\"Windows\"".to_string());
+            headers.insert("Upgrade-Insecure-Requests".to_string(), "1".to_string());
+            headers.insert("Accept".to_string(), "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8".to_string());
+            headers.insert("Sec-Fetch-Site".to_string(), "none".to_string());
+            headers.insert("Sec-Fetch-Mode".to_string(), "navigate".to_string());
+            headers.insert("Sec-Fetch-User".to_string(), "?1".to_string());
+            headers.insert("Sec-Fetch-Dest".to_string(), "document".to_string());
+            headers.insert("Accept-Encoding".to_string(), "gzip, deflate, br, zstd".to_string());
+            headers.insert("Accept-Language".to_string(), self.config.accept_language.clone());
+            headers.insert("Priority".to_string(), "u=0, i".to_string());
 
             // Attach stored cookies (including any injected via cookie_set)
             if let Some(cookie_header) = self.cookie_header_for_url(url) {
                 debug!(cookies = %cookie_header, "Attaching stored cookies to request");
-                req = req.header("Cookie", cookie_header);
+                headers.insert("Cookie".to_string(), cookie_header);
             }
 
-            let response = req.send()
-                .await
+            let request = TransportRequest {
+                method: TransportMethod::Get,
+                url: url.to_string(),
+                headers,
+                body: None,
+            };
+
+            let response = self.transport.execute(request).await
                 .map_err(|e| format!("HTTP request failed: {e}"))?;
 
-            let status = response.status().as_u16();
-            let final_url = response.url().to_string();
-            let set_cookies: Vec<String> = response.headers().get_all("set-cookie")
-                .iter()
-                .filter_map(|v| v.to_str().ok().map(|s| s.to_string()))
-                .collect();
+            let status = response.status;
+            let final_url = response.url;
+            let set_cookies = response.set_cookie_headers;
             if !set_cookies.is_empty() {
                 debug!(count = set_cookies.len(), "Captured Set-Cookie headers from response");
             }
-            let body = response.text().await
-                .map_err(|e| format!("Body read failed: {e}"))?;
+            let body = String::from_utf8_lossy(&response.body).to_string();
 
             Ok((status, body, final_url, set_cookies))
         }
@@ -1702,12 +1785,14 @@ impl SevroEngine {
 
     /// Submit form data via HTTP POST. Used as fallback when React form submission
     /// doesn't work (because React scripts aren't loaded in QuickJS).
+    #[cfg(feature = "std")]
     pub async fn submit_form_data(&self, url: &str, json_body: &str) -> Result<String, String> {
         self.submit_form_data_with_content_type(url, json_body, "application/json").await
     }
 
     /// Submit form data with a specific content type.
     /// Handles JSON, multipart/form-data (for Greenhouse), and URL-encoded (for Lever).
+    #[cfg(feature = "std")]
     pub async fn submit_form_data_with_content_type(
         &self, url: &str, json_body: &str, content_type: &str
     ) -> Result<String, String> {
@@ -1795,14 +1880,26 @@ impl SevroEngine {
     }
 
     /// Perform a simple HTTP GET and return (status_code, body).
+    #[cfg(feature = "std")]
     pub async fn http_get(&self, url: &str) -> Result<(u16, String), String> {
-        let resp = self.client.get(url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            .send()
-            .await
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert(
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
+        );
+
+        let request = TransportRequest {
+            method: TransportMethod::Get,
+            url: url.to_string(),
+            headers,
+            body: None,
+        };
+
+        let response = self.transport.execute(request).await
             .map_err(|e| format!("HTTP GET failed: {e}"))?;
-        let status = resp.status().as_u16();
-        let body = resp.text().await.map_err(|e| format!("Failed to read body: {e}"))?;
+
+        let status = response.status;
+        let body = String::from_utf8_lossy(&response.body).to_string();
         Ok((status, body))
     }
 
