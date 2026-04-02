@@ -332,18 +332,26 @@ impl SevroEngine {
         let is_blocked = Self::is_ip_blocked(&html);
         debug!(is_challenge, is_blocked, status, html_len = html.len(), "Challenge/block detection result");
         if !is_challenge && !is_blocked {
-            let interactive_count = self.dom_nodes.iter()
-                .filter(|n| n.is_visible && matches!(n.tag_name.as_str(),
-                    "a" | "button" | "input" | "select" | "textarea" | "h1" | "h2" | "h3" | "p"))
-                .count();
-            if interactive_count < 5 {
-                // Try API-native form loading for known platforms
-                if final_url.contains("ashbyhq.com") {
-                    self.try_ashby_api_hydration(&final_url).await;
-                } else if final_url.contains("greenhouse.io/embed/job_board") {
-                    self.try_greenhouse_embed_hydration(&final_url).await;
-                } else {
-                    // Generic SPA — try to hydrate by fetching dynamic scripts
+            // Known platform API hydration — always try regardless of element count.
+            // These platforms serve shell HTML with navigation chrome but load
+            // actual content (job listings) via their own APIs.
+            if final_url.contains("ashbyhq.com") {
+                self.try_ashby_api_hydration(&final_url).await;
+            } else if final_url.contains("greenhouse.io/embed/job_board") {
+                self.try_greenhouse_embed_hydration(&final_url).await;
+            } else if html.contains("talentbrew.com") || html.contains("SearchAsService") {
+                self.try_radancy_api_hydration(&final_url, &html).await;
+            } else if html.contains("phenompeople.com") || html.contains("phenom.com") {
+                self.try_phenom_api_hydration(&final_url, &html).await;
+            } else if final_url.contains("myworkdayjobs.com") {
+                self.try_workday_api_hydration(&final_url, &html).await;
+            } else {
+                // Unknown platform — only try generic SPA hydration if page looks empty
+                let interactive_count = self.dom_nodes.iter()
+                    .filter(|n| n.is_visible && matches!(n.tag_name.as_str(),
+                        "a" | "button" | "input" | "select" | "textarea" | "h1" | "h2" | "h3" | "p"))
+                    .count();
+                if interactive_count < 5 {
                     self.try_spa_hydration(&final_url).await;
                 }
             }
@@ -683,6 +691,410 @@ impl SevroEngine {
 
         info!(html_len = html.len(), job_count = jobs.len(), "Greenhouse embed: built synthetic listing from Boards API");
         self.load_page(&html, page_url);
+    }
+
+    /// Radancy/TalentBrew hydration: fetch job search results via the TalentBrew Search API
+    /// when the page contains Radancy meta tags (used by Boeing, L3Harris, Lockheed Martin, etc.).
+    #[cfg(feature = "std")]
+    async fn try_radancy_api_hydration(&mut self, page_url: &str, html: &str) {
+        let parsed = match url::Url::parse(page_url) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        // Extract org ID from meta tag: <meta name="site-organization-id" content="185">
+        let org_id = {
+            let marker = "name=\"site-organization-id\"";
+            if let Some(pos) = html.find(marker) {
+                let after = &html[pos + marker.len()..];
+                if let Some(cstart) = after.find("content=\"") {
+                    let val_start = cstart + 9;
+                    if let Some(cend) = after[val_start..].find('"') {
+                        Some(after[val_start..val_start + cend].to_string())
+                    } else { None }
+                } else { None }
+            } else { None }
+        };
+
+        let org_id = match org_id {
+            Some(id) if !id.is_empty() => id,
+            _ => {
+                debug!("Radancy: no site-organization-id meta tag found");
+                return;
+            }
+        };
+
+        // Extract search keyword from URL query parameters
+        let keyword = parsed.query_pairs()
+            .find(|(k, _)| k == "keyword" || k == "SearchText")
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_default();
+
+        let base_url_str = format!("{}://{}", parsed.scheme(), parsed.host_str().unwrap_or(""));
+
+        info!(org_id = %org_id, keyword = %keyword, host = %base_url_str, "Radancy: fetching jobs via TalentBrew Search API");
+
+        let api_url = format!(
+            "{}/search-jobs/results?ActiveFacetID=0&CurrentPage=1&OrgIds={}&RecordsPerPage=25&SearchResultsModuleName=Search+Results&SearchText={}",
+            base_url_str, org_id, keyword
+        );
+
+        let resp = match self.client
+            .get(&api_url)
+            .header("X-Requested-With", "XMLHttpRequest")
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "Radancy TalentBrew API request failed");
+                return;
+            }
+        };
+
+        let body = match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(_) => {
+                debug!("Radancy: failed to parse API response as JSON");
+                return;
+            }
+        };
+
+        let results_html = match data.get("results").and_then(|r| r.as_str()) {
+            Some(r) if !r.is_empty() => r,
+            _ => {
+                debug!("Radancy: no results HTML in API response");
+                return;
+            }
+        };
+
+        // Wrap the results HTML in a full page structure
+        let host = parsed.host_str().unwrap_or("careers");
+        let full_html = format!(
+            r#"<html><head><title>{} — Job Search Results</title></head><body>
+<h1>Job Search Results</h1>
+<div id="radancy-job-list">
+{}
+</div>
+</body></html>"#,
+            host, results_html
+        );
+
+        info!(html_len = full_html.len(), "Radancy: built job listing from TalentBrew Search API");
+        self.load_page(&full_html, page_url);
+    }
+
+    /// Phenom People hydration: fetch job search results via the Phenom /widgets API
+    /// when the page contains Phenom scripts (used by RTX/Raytheon, MITRE, etc.).
+    #[cfg(feature = "std")]
+    async fn try_phenom_api_hydration(&mut self, page_url: &str, _html: &str) {
+        let parsed = match url::Url::parse(page_url) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        let host = match parsed.host_str() {
+            Some(h) => h.to_string(),
+            None => return,
+        };
+
+        // Extract lang/country from URL path segments like /us/en/ or /global/en/
+        let segments: Vec<&str> = parsed.path().trim_matches('/').split('/').collect();
+        let (lang, country) = {
+            let mut country_val = "us".to_string();
+            let mut lang_code = "en".to_string();
+            // Look for patterns like /us/en/ or /global/en/
+            if segments.len() >= 2 {
+                let first = segments[0].to_lowercase();
+                let second = segments[1].to_lowercase();
+                // Check if first segment looks like a country/region and second like a language
+                if second.len() == 2 && first.len() <= 6 {
+                    country_val = first;
+                    lang_code = second;
+                }
+            }
+            let lang = format!("{}_{}", lang_code, country_val);
+            (lang, country_val)
+        };
+
+        // Extract search keywords from query parameter
+        let keywords = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "keywords" || k == "q")
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_default();
+
+        info!(host = %host, lang = %lang, country = %country, keywords = %keywords, "Phenom: fetching jobs via /widgets API");
+
+        let base_url = format!("{}://{}", parsed.scheme(), host);
+        let api_url = format!("{}/widgets", base_url);
+
+        let payload = serde_json::json!({
+            "lang": lang,
+            "deviceType": "desktop",
+            "country": country,
+            "pageName": "search-results",
+            "ddoKey": "refineSearch",
+            "from": 0,
+            "s": 1,
+            "rk": format!("l-{}-search-results", lang),
+            "jobs": true,
+            "counts": true,
+            "all_fields": ["category", "country", "state", "city", "type", "subCategory"],
+            "size": 25,
+            "keywords": keywords
+        });
+
+        let resp = match self.client
+            .post(&api_url)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "Phenom /widgets API request failed");
+                return;
+            }
+        };
+
+        let body = match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        let refine = match data.get("refineSearch").and_then(|r| r.get("data")) {
+            Some(d) => d,
+            None => {
+                debug!("Phenom: no refineSearch.data in API response");
+                return;
+            }
+        };
+
+        let jobs = match refine.get("jobs").and_then(|j| j.as_array()) {
+            Some(j) => j,
+            None => {
+                debug!("Phenom: no jobs array in API response");
+                return;
+            }
+        };
+
+        let total_count = refine.get("totalCount").and_then(|t| t.as_u64()).unwrap_or(jobs.len() as u64);
+
+        // Build synthetic HTML from the job listings
+        let mut synthetic_html = format!(
+            r#"<html><head><title>{} Jobs - Search Results</title></head>
+<body>
+<h1>Search Results ({} jobs)</h1>
+<div class="job-results">
+"#,
+            total_count, total_count
+        );
+
+        for job in jobs {
+            let title = job.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+            let req_id = job.get("reqId").and_then(|r| r.as_str()).unwrap_or("");
+            let city = job.get("city").and_then(|c| c.as_str()).unwrap_or("");
+            let state = job.get("state").and_then(|s| s.as_str()).unwrap_or("");
+            let job_type = job.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            let teaser = job.get("descriptionTeaser").and_then(|d| d.as_str()).unwrap_or("");
+            let apply_url = job.get("applyUrl").and_then(|u| u.as_str()).unwrap_or("#");
+            let skills = job.get("ml_skills")
+                .and_then(|s| s.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(", "))
+                .unwrap_or_default();
+
+            synthetic_html.push_str(&format!(
+                r#"<div class="job-card" data-req-id="{}">
+<h2><a href="{}">{}</a></h2>
+<p class="location">{}, {}</p>
+<p class="type">{}</p>
+<p class="description">{}</p>
+<p class="skills">{}</p>
+</div>
+"#,
+                req_id, apply_url, title, city, state, job_type,
+                if teaser.len() > 500 { &teaser[..500] } else { teaser },
+                skills
+            ));
+        }
+
+        synthetic_html.push_str("</div>\n</body></html>");
+
+        info!(html_len = synthetic_html.len(), job_count = jobs.len(), total_count, "Phenom: built synthetic listing from /widgets API");
+        self.load_page(&synthetic_html, page_url);
+    }
+
+    /// Workday hydration: fetch job listings via the Workday CXS API
+    /// when the URL contains `myworkdayjobs.com` (used by Honeywell, Deloitte, etc.).
+    /// Requires a PLAY_SESSION cookie that is set by the initial page load.
+    #[cfg(feature = "std")]
+    async fn try_workday_api_hydration(&mut self, page_url: &str, html: &str) {
+        // Confirm this is a Workday page via URL or HTML content
+        if !page_url.contains("myworkdayjobs.com") && !html.contains("myworkdayjobs.com") {
+            return;
+        }
+
+        let parsed = match url::Url::parse(page_url) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        let host = match parsed.host_str() {
+            Some(h) => h.to_string(),
+            None => return,
+        };
+
+        // Extract company from subdomain: {company}.wd{N}.myworkdayjobs.com
+        let subdomain_parts: Vec<&str> = host.split('.').collect();
+        if subdomain_parts.len() < 3 {
+            debug!("Workday: unexpected host format — {}", host);
+            return;
+        }
+        let company = subdomain_parts[0];
+
+        // Extract site name from path: /en-US/{SiteName}/...
+        let segments: Vec<&str> = parsed.path().trim_matches('/').split('/').collect();
+        let site_name = if segments.len() >= 2 {
+            segments[1]
+        } else if segments.len() == 1 && !segments[0].is_empty() {
+            segments[0]
+        } else {
+            debug!("Workday: could not extract site name from path");
+            return;
+        };
+
+        // Extract search query from URL query parameters
+        let search_text = parsed
+            .query_pairs()
+            .find(|(k, _)| k == "q" || k == "searchText")
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_default();
+
+        info!(company = %company, site_name = %site_name, search_text = %search_text, host = %host, "Workday: fetching jobs via CXS API");
+
+        // Check for PLAY_SESSION cookie from the initial page fetch
+        let cookie_header = match self.cookie_header_for_url(page_url) {
+            Some(c) => c,
+            None => {
+                warn!("Workday: no cookies available for {} — PLAY_SESSION required; use CDP fallback", host);
+                return;
+            }
+        };
+
+        if !cookie_header.contains("PLAY_SESSION") {
+            warn!("Workday: PLAY_SESSION cookie not found in stored cookies — API will likely fail; use CDP fallback");
+            // Still try — the cookie jar from reqwest may have it even if our manual store doesn't
+        }
+
+        let api_url = format!("https://{}/wday/cxs/{}/{}/jobs", host, company, site_name);
+
+        let payload = serde_json::json!({
+            "appliedFacets": {},
+            "limit": 20,
+            "offset": 0,
+            "searchText": search_text
+        });
+
+        let resp = match self.client
+            .post(&api_url)
+            .header("Content-Type", "application/json")
+            .header("Cookie", &cookie_header)
+            .json(&payload)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                debug!(error = %e, "Workday CXS API request failed");
+                return;
+            }
+        };
+
+        let status = resp.status().as_u16();
+        if status == 422 || status == 403 || (300..400).contains(&status) {
+            warn!(status, "Workday: CXS API returned error status — PLAY_SESSION may be invalid");
+            return;
+        }
+
+        let body = match resp.text().await {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        let data: serde_json::Value = match serde_json::from_str(&body) {
+            Ok(d) => d,
+            Err(_) => {
+                debug!("Workday: failed to parse CXS API response as JSON");
+                return;
+            }
+        };
+
+        let jobs = match data.get("jobPostings").and_then(|j| j.as_array()) {
+            Some(j) => j,
+            None => {
+                debug!("Workday: no jobPostings array in CXS API response");
+                return;
+            }
+        };
+
+        let total = data.get("total").and_then(|t| t.as_u64()).unwrap_or(jobs.len() as u64);
+
+        // Build synthetic HTML from the job listings
+        let mut synthetic_html = format!(
+            r#"<html><head><title>{} — Jobs ({} results)</title></head>
+<body>
+<h1>{} — Job Search Results ({} total)</h1>
+<div id="workday-job-list">
+"#,
+            company, total, company, total
+        );
+
+        for job in jobs {
+            let title = job.get("title").and_then(|t| t.as_str()).unwrap_or("Untitled");
+            let location = job.get("locationsText").and_then(|l| l.as_str()).unwrap_or("");
+            let posted_on = job.get("postedOn").and_then(|p| p.as_str()).unwrap_or("");
+            let external_path = job.get("externalPath").and_then(|u| u.as_str()).unwrap_or("#");
+            let job_url = format!("https://{}{}", host, external_path);
+
+            let bullet_fields = job.get("bulletFields")
+                .and_then(|b| b.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<&str>>()
+                    .join(" · "))
+                .unwrap_or_default();
+
+            synthetic_html.push_str(&format!(
+                r#"<div class="workday-job" data-external-path="{}">
+<h2><a href="{}">{}</a></h2>
+<p class="location">{}</p>
+<p class="details">{}</p>
+<p class="posted">{}</p>
+</div>
+"#,
+                external_path, job_url, title, location, bullet_fields, posted_on
+            ));
+        }
+
+        synthetic_html.push_str("</div>\n</body></html>");
+
+        info!(html_len = synthetic_html.len(), job_count = jobs.len(), total, "Workday: built synthetic listing from CXS API");
+        self.load_page(&synthetic_html, page_url);
     }
 
     /// SPA hydration: after initial page load, check if inline scripts created dynamic
