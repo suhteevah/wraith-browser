@@ -1277,7 +1277,7 @@ impl SevroEngine {
         let mut payload = serde_json::json!({
             "cmd": "request.get",
             "url": url,
-            "maxTimeout": 60000
+            "maxTimeout": 120000
         });
 
         // If we have a fallback proxy, tell the solver to use it too
@@ -1337,7 +1337,7 @@ impl SevroEngine {
         let mut payload = serde_json::json!({
             "cmd": "request.get",
             "url": url,
-            "maxTimeout": 60000
+            "maxTimeout": 120000
         });
 
         if let Some(ref proxy) = self.config.fallback_proxy_url {
@@ -1486,6 +1486,7 @@ impl SevroEngine {
         if html.contains("CLOUDFLARE_STATIC_PAGE")
             || html.contains("cf-browser-verification")
             || html.contains("cf_chl_opt")
+            || html.contains("Invalid CORS request")
         {
             return true;
         }
