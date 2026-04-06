@@ -184,6 +184,11 @@ pub struct SevroEngine {
     /// Fingerprint overrides for DOM-level spoofing (Camoufox-style).
     /// Keys are dot-notation property paths (e.g. "navigator.userAgent").
     fingerprint: Option<HashMap<String, serde_json::Value>>,
+    /// Domains that required FlareSolverr to resolve. Subsequent navigates to
+    /// these domains skip Tier 1 (direct fetch) and go straight to FlareSolverr,
+    /// avoiding stale cookie CORS issues.
+    #[cfg(feature = "std")]
+    flaresolverr_domains: std::collections::HashSet<String>,
 }
 
 // SAFETY: SevroEngine is always accessed behind Arc<Mutex<...>>, guaranteeing
@@ -267,6 +272,7 @@ impl SevroEngine {
             _request_interceptor: None,
             iframe_contents: HashMap::new(),
             fingerprint: None,
+            flaresolverr_domains: std::collections::HashSet::new(),
         }
     }
 
@@ -311,6 +317,28 @@ impl SevroEngine {
             self.history.push(current.clone());
         }
 
+        // Fast path: if this domain previously required FlareSolverr, skip Tier 1
+        // and go straight to FlareSolverr. This avoids stale cookie CORS issues
+        // where replayed cf_clearance cookies cause "Invalid CORS request" responses.
+        #[cfg(feature = "std")]
+        if self.config.flaresolverr_url.is_some() {
+            let domain = url::Url::parse(url).ok()
+                .and_then(|u| u.host_str().map(|h| h.to_string()))
+                .unwrap_or_default();
+            if self.flaresolverr_domains.contains(&domain) {
+                info!(url = %url, domain = %domain, "Domain requires FlareSolverr — skipping Tier 1 direct fetch");
+                if let Some(page_html) = self.try_flaresolverr_full_page(url).await {
+                    if !Self::is_ip_blocked(&page_html) && !Self::is_cloudflare_challenge(&page_html, 200) {
+                        info!(html_len = page_html.len(), "FlareSolverr fast-path resolved");
+                        self.load_page(&page_html, url);
+                        return Ok(PageEvent::DomContentLoaded);
+                    }
+                }
+                // If FlareSolverr failed, fall through to normal Tier 1 → Tier 2 → Tier 3 chain
+                warn!("FlareSolverr fast-path failed — falling back to normal flow");
+            }
+        }
+
         // === Tier 1: Direct fetch ===
         let (status, html, final_url, set_cookies) = self.http_fetch(url).await?;
 
@@ -330,7 +358,8 @@ impl SevroEngine {
         // SPA handling: if the page has very few visible elements, try platform-specific APIs
         let is_challenge = Self::is_cloudflare_challenge(&html, status);
         let is_blocked = Self::is_ip_blocked(&html);
-        debug!(is_challenge, is_blocked, status, html_len = html.len(), "Challenge/block detection result");
+        let has_cors = html.contains("Invalid CORS");
+        debug!(is_challenge, is_blocked, has_cors, status, html_len = html.len(), "Challenge/block detection result");
         if !is_challenge && !is_blocked {
             // Known platform API hydration — always try regardless of element count.
             // These platforms serve shell HTML with navigation chrome but load
@@ -383,6 +412,13 @@ impl SevroEngine {
                 if let Some(page_html) = self.try_flaresolverr_full_page(url).await {
                     if !Self::is_ip_blocked(&page_html) {
                         info!(html_len = page_html.len(), "Tier 3 resolved — external solver returned real page");
+                        // Remember this domain so subsequent navigates skip Tier 1
+                        if let Ok(parsed) = url::Url::parse(url) {
+                            if let Some(host) = parsed.host_str() {
+                                self.flaresolverr_domains.insert(host.to_string());
+                                info!(domain = %host, "Domain marked as FlareSolverr-required");
+                            }
+                        }
                         self.load_page(&page_html, url);
                         return Ok(PageEvent::DomContentLoaded);
                     }

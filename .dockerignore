@@ -1,0 +1,11 @@
+target/
+dist/
+.git/
+node_modules/
+foss-site/node_modules/
+foss-site/.next/
+benchmarks/node_modules/
+benchmarks/results/
+*.tar
+*.pdf
+qemu_debug.log

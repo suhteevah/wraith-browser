@@ -3,7 +3,7 @@
 **The AI-agent-first web browser -- built in Rust, designed for LLM control.**
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.78%2B-orange.svg)](https://www.rust-lang.org/)
 [![MCP Tools](https://img.shields.io/badge/MCP%20tools-130-blue.svg)]()
 
 ---
@@ -141,9 +141,7 @@ Use freely for personal projects, open source, research, and internal tools. If 
 
 ### Commercial License
 
-Companies that want to embed Wraith in proprietary products without open-source obligations can obtain a commercial license. Contact [ridgecellrepair@gmail.com](mailto:ridgecellrepair@gmail.com).
-
-Contact us for enterprise features.
+Companies that want to embed Wraith in proprietary products without open-source obligations can obtain a commercial license. See [Enterprise Licensing](https://wraith-browser.vercel.app/docs/enterprise/licensing) for details, or [contact our sales team](https://wraith-browser.vercel.app/docs/enterprise/contact).
 
 ## Contributing
 
@@ -163,18 +161,6 @@ Built with [scraper](https://github.com/causal-agent/scraper), [rquickjs](https:
 **Wraith** -- *the browser your AI agent deserves.*
 
 Copyright (c) 2026 Matt Gates / Ridge Cell Repair LLC
-
----
-
----
-
----
-
----
-
----
-
----
 
 ---
 
