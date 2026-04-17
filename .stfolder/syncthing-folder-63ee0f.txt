@@ -1,0 +1,5 @@
+# This directory is a Syncthing folder marker.
+# Do not delete.
+
+folderID: wraith-browser
+created: 2026-04-17T01:23:02-07:00
