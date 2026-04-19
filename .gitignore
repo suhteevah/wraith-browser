@@ -86,3 +86,9 @@ playbooks/
 *.plan.md
 *.spec.md
 .quarantine/
+
+# Added by uploader (secret-leak hardening, 2026-04-18)
+.secrets
+VOXCLAW.md
+scratch/
+*.local

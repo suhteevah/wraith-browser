@@ -1,4 +1,19 @@
-// Syncthing ignores — skip build artifacts + VCS metadata
+// Secrets — never replicate
+.env
+.env.*
+!.env.example
+.secrets
+*.secret
+*.key
+!*.key.example
+*.pem
+credentials*
+id_ed25519
+id_rsa
+*.p12
+*.pfx
+.ssh/
+// Build artifacts + VCS
 target
 .git
 node_modules
@@ -7,8 +22,3 @@ dist
 *.tmp
 .DS_Store
 Thumbs.db
-// Rust
-**/*.rs.bk
-// Editor scratch
-.vscode
-.idea
