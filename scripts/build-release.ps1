@@ -1,157 +1,95 @@
-#Requires -Version 5.1
 <#
 .SYNOPSIS
-    Build wraith-browser release binaries.
+    Build wraith-browser (open-source CLI) release archives for all targets.
 .DESCRIPTION
-    Builds release binaries for Windows (native) and optionally Linux (via cross).
-    Run from the repo root: .\scripts\build-release.ps1
-.NOTES
-    Prerequisites:
-      - Rust toolchain (rustup + cargo)
-      - cargo install cross  (optional, for Linux; requires Docker)
-    macOS cross-compilation from Windows is not supported.
+    Thin wrapper that delegates to scripts/build-release.sh via Git Bash.
+    All real work lives in the bash script — this just locates bash.exe,
+    forwards args, and surfaces exit codes.
+
+    Targets: linux x86_64 + linux aarch64 (Docker), windows x86_64 (native),
+    macOS x86_64 + aarch64 (skipped here — emits ssh imac commands).
+
+    See scripts/release-targets.md for design + static-linking decisions.
+.PARAMETER Version
+    Required. Version tag, e.g. v0.1.0. Must match Cargo.toml workspace.package.version.
+.PARAMETER Force
+    Wipe a non-empty dist/$Version/ before building.
+.PARAMETER Publish
+    After building, run gh release create against suhteevah/wraith-browser.
+    Requires CHANGELOG_FRAGMENT.md at repo root.
+.PARAMETER SkipWindows
+    Skip the native Windows build (debug only).
+.PARAMETER SkipLinux
+    Skip the Docker linux builds (debug only).
+.EXAMPLE
+    .\scripts\build-release.ps1 -Version v0.1.0
+.EXAMPLE
+    .\scripts\build-release.ps1 -Version v0.1.0 -Force -Publish
 #>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true, Position = 0)]
+    [string]$Version,
+
+    [switch]$Force,
+    [switch]$Publish,
+    [switch]$SkipWindows,
+    [switch]$SkipLinux
+)
 
 $ErrorActionPreference = "Stop"
 
-Push-Location (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
+# Locate bash.exe — prefer Git for Windows
+$bashCandidates = @(
+    "C:\Program Files\Git\bin\bash.exe",
+    "C:\Program Files\Git\usr\bin\bash.exe",
+    "C:\Program Files (x86)\Git\bin\bash.exe"
+)
+$bash = $null
+foreach ($c in $bashCandidates) {
+    if (Test-Path $c) { $bash = $c; break }
+}
+if (-not $bash) {
+    $cmd = Get-Command bash.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $bash = $cmd.Source }
+}
+if (-not $bash) {
+    throw "bash.exe not found. Install Git for Windows."
+}
+
+$repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$script   = Join-Path $repoRoot "scripts\build-release.sh"
+if (-not (Test-Path $script)) {
+    throw "Cannot find $script"
+}
+
+# Build arg list for the bash script
+$bashArgs = @($script, $Version)
+if ($Force)        { $bashArgs += "--force" }
+if ($Publish)      { $bashArgs += "--publish" }
+if ($SkipWindows)  { $bashArgs += "--skip-windows" }
+if ($SkipLinux)    { $bashArgs += "--skip-linux" }
+
+Write-Host ""
+Write-Host "============================================"
+Write-Host "  wraith-browser release build $Version"
+Write-Host "  delegating to: $bash"
+Write-Host "============================================"
+Write-Host ""
+
+# -lc so Git Bash sources MSYS env; Push-Location keeps cwd at repo root for the script's own resolution
+Push-Location $repoRoot
 try {
-
-# ---------- version ----------
-$Version = "0.1.0"
-try {
-    $meta = cargo metadata --format-version=1 --no-deps 2>$null | ConvertFrom-Json
-    if ($meta.packages.Count -gt 0) {
-        $Version = $meta.packages[0].version
-    }
-} catch {
-    Write-Host "Could not read version from Cargo.toml, using default: $Version"
-}
-
-$Dist = "dist"
-if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
-New-Item -ItemType Directory -Path $Dist | Out-Null
-
-$Built = @()
-$Failed = @()
-
-Write-Host ""
-Write-Host "========================================"
-Write-Host "  wraith-browser release build v$Version"
-Write-Host "========================================"
-Write-Host ""
-
-# ==========================================================
-#  1. Windows x86_64 -- native build
-# ==========================================================
-Write-Host ">>> Building for Windows x86_64 (native)..."
-$env:RUSTC_WRAPPER = ""
-cargo build --release
-if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-
-$WinBin = Join-Path "target" "release" | Join-Path -ChildPath "wraith-browser.exe"
-$OutName = "wraith-browser-$Version-windows-x86_64.exe"
-if (Test-Path $WinBin) {
-    Copy-Item $WinBin (Join-Path $Dist $OutName)
-    $Built += $OutName
-    Write-Host "    OK: $OutName"
-} else {
-    $Failed += "windows-x86_64"
-    Write-Host "    FAILED: Binary not found at $WinBin"
-}
-Write-Host ""
-
-# ==========================================================
-#  2. Linux x86_64 -- cross-compile via cross
-# ==========================================================
-$crossCmd = Get-Command cross -ErrorAction SilentlyContinue
-if ($crossCmd) {
-    Write-Host ">>> Building for Linux x86_64 (via cross)..."
-    $env:RUSTC_WRAPPER = ""
-    cross build --release --target x86_64-unknown-linux-gnu
-    if ($LASTEXITCODE -eq 0) {
-        $LinuxBin = Join-Path "target" "x86_64-unknown-linux-gnu" | Join-Path -ChildPath "release" | Join-Path -ChildPath "wraith-browser"
-        $OutName = "wraith-browser-$Version-linux-x86_64"
-        if (Test-Path $LinuxBin) {
-            Copy-Item $LinuxBin (Join-Path $Dist $OutName)
-            $Built += $OutName
-            Write-Host "    OK: $OutName"
-        } else {
-            $Failed += "linux-x86_64"
-            Write-Host "    FAILED: Binary not found at $LinuxBin"
-        }
-    } else {
-        $Failed += "linux-x86_64"
-        Write-Host "    FAILED: cross build returned an error"
-    }
-} else {
-    Write-Host ">>> SKIPPED: Linux x86_64 -- cross not installed."
-    Write-Host "   Install with: cargo install cross"
-    Write-Host "   Requires Docker Desktop running."
-    $Failed += "linux-x86_64 (skipped)"
-}
-Write-Host ""
-
-# ==========================================================
-#  3. macOS -- NOT supported from Windows
-# ==========================================================
-Write-Host ">>> SKIPPED: macOS -- cross-compilation from Windows is not supported."
-Write-Host "   Build on a Mac with: cargo build --release"
-Write-Host ""
-
-# ==========================================================
-#  4. Generate SHA256 checksums
-# ==========================================================
-Write-Host ">>> Generating checksums..."
-$ChecksumFile = Join-Path $Dist "SHA256SUMS.txt"
-$checksumLines = @()
-
-Get-ChildItem (Join-Path $Dist "wraith-browser-*") -ErrorAction SilentlyContinue | ForEach-Object {
-    $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
-    $checksumLines += "$hash  $($_.Name)"
-}
-
-if ($checksumLines.Count -gt 0) {
-    $checksumLines | Set-Content -Path $ChecksumFile -Encoding UTF8
-    Write-Host "    Wrote $ChecksumFile"
-} else {
-    Write-Host "    No binaries to checksum."
-}
-Write-Host ""
-
-# ==========================================================
-#  Summary
-# ==========================================================
-Write-Host "========================================"
-Write-Host "  Build Summary"
-Write-Host "========================================"
-Write-Host ""
-Write-Host "  Version:  $Version"
-Write-Host ('  Output:   ' + $Dist + '\')
-Write-Host ""
-
-if ($Built.Count -gt 0) {
-    Write-Host "  Built successfully:"
-    foreach ($b in $Built) {
-        $filePath = Join-Path $Dist $b
-        $size = (Get-Item $filePath).Length
-        $sizeMB = [math]::Round($size / 1048576, 1)
-        Write-Host ('    - ' + $b + '  (' + $sizeMB + ' MB)')
-    }
-} else {
-    Write-Host "  No binaries were built successfully."
-}
-Write-Host ""
-
-if ($Failed.Count -gt 0) {
-    Write-Host "  Failed / Skipped:"
-    foreach ($f in $Failed) {
-        Write-Host "    - $f"
-    }
-}
-Write-Host ""
-Write-Host "Done."
-
+    & $bash -lc ((@("bash") + $bashArgs | ForEach-Object { "'$_'" }) -join ' ')
+    $code = $LASTEXITCODE
 } finally {
     Pop-Location
 }
+
+if ($code -ne 0) {
+    Write-Host ""
+    Write-Host "build-release.sh exited with code $code" -ForegroundColor Red
+    exit $code
+}
+Write-Host ""
+Write-Host "build-release.sh completed successfully." -ForegroundColor Green

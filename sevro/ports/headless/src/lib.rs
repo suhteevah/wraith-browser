@@ -27,16 +27,17 @@ pub mod js_runtime;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use scraper::{Html, Selector};
-#[cfg(feature = "std")]
 use std::sync::Arc;
+use scraper::{Html, Selector};
 #[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 use tracing::{info, warn, debug, instrument};
 #[cfg(feature = "stealth-tls")]
 use rquest_util::Emulation;
 
-#[cfg(feature = "std")]
+// HttpTransport trait is the pluggable HTTP backend. Available in both std and
+// no-std (well, "std-with-no-reqwest") builds — bare-metal callers wire their
+// own implementation via `SevroEngine::with_transport`.
 use wraith_transport::{HttpTransport, TransportRequest, TransportMethod};
 
 // ═══════════════════════════════════════════════════════════════
@@ -164,10 +165,12 @@ pub struct SevroEngine {
     /// Extracted DOM nodes (cached after parse)
     dom_nodes: Vec<DomNode>,
     cookies: Vec<Cookie>,
-    /// Pluggable HTTP transport (default: ReqwestTransport).
-    /// Used by the main fetch paths (http_fetch, http_get).
-    #[cfg(feature = "std")]
-    transport: Arc<dyn HttpTransport>,
+    /// Pluggable HTTP transport. In std builds this defaults to a
+    /// ReqwestTransport built from `SevroConfig`. In no-std builds (bare-metal),
+    /// callers must inject their own implementation via `with_transport`; if
+    /// they don't, transport-using methods return a "no transport configured"
+    /// error rather than panicking.
+    transport: Option<Arc<dyn HttpTransport>>,
     /// Raw reqwest client — retained for methods that need reqwest-specific
     /// features (cookie jar, .json(), .multipart(), proxy client builders).
     #[cfg(feature = "std")]
@@ -265,7 +268,7 @@ impl SevroEngine {
             parsed_dom: None,
             dom_nodes: Vec::new(),
             cookies: Vec::new(),
-            transport,
+            transport: Some(transport),
             client,
             js,
             history: Vec::new(),
@@ -276,9 +279,46 @@ impl SevroEngine {
         }
     }
 
+    /// Construct an engine with a caller-supplied HTTP transport.
+    ///
+    /// Use this from bare-metal / no-std contexts where the kernel provides
+    /// its own smoltcp/embedded-tls-backed transport. In std builds, prefer
+    /// [`SevroEngine::new`] which sets up a default reqwest transport.
+    pub fn with_transport(
+        config: SevroConfig,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Self {
+        #[cfg(feature = "std")]
+        {
+            // In std mode we still want the reqwest client (cookie jar,
+            // multipart, etc.). Build the same default new() and then swap
+            // the transport.
+            let mut engine = Self::new(config);
+            engine.transport = Some(transport);
+            engine
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            info!("Sevro engine initialized (no-std with caller-supplied transport)");
+            Self {
+                config,
+                current_url: None,
+                current_html: None,
+                parsed_dom: None,
+                dom_nodes: Vec::new(),
+                cookies: Vec::new(),
+                transport: Some(transport),
+                history: Vec::new(),
+                _request_interceptor: None,
+                iframe_contents: HashMap::new(),
+                fingerprint: None,
+            }
+        }
+    }
+
     #[cfg(not(feature = "std"))]
     pub fn new(config: SevroConfig) -> Self {
-        info!("Sevro engine initialized (no-std: networking and JS disabled)");
+        info!("Sevro engine initialized (no-std: no transport — call with_transport for fetching)");
         Self {
             config,
             current_url: None,
@@ -286,11 +326,50 @@ impl SevroEngine {
             parsed_dom: None,
             dom_nodes: Vec::new(),
             cookies: Vec::new(),
+            transport: None,
             history: Vec::new(),
             _request_interceptor: None,
             iframe_contents: HashMap::new(),
             fingerprint: None,
         }
+    }
+
+    /// Bare-metal–friendly fetch helper.
+    ///
+    /// Always available (std and no-std), uses only the `HttpTransport` trait
+    /// and `scraper`. Returns the parsed body as text. Errors if no transport
+    /// has been configured.
+    pub async fn fetch(&self, url: &str) -> Result<String, String> {
+        let transport = self
+            .transport
+            .as_ref()
+            .ok_or_else(|| "no HTTP transport configured (call SevroEngine::with_transport)".to_string())?;
+
+        let mut headers = std::collections::BTreeMap::new();
+        headers.insert("User-Agent".to_string(), self.config.user_agent.clone());
+        headers.insert("Accept-Language".to_string(), self.config.accept_language.clone());
+        headers.insert(
+            "Accept".to_string(),
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8".to_string(),
+        );
+
+        let request = TransportRequest {
+            method: TransportMethod::Get,
+            url: url.to_string(),
+            headers,
+            body: None,
+        };
+
+        let response = transport
+            .execute(request)
+            .await
+            .map_err(|e| format!("transport error: {e}"))?;
+
+        if response.status >= 400 {
+            return Err(format!("HTTP {} from {}", response.status, response.url));
+        }
+
+        Ok(String::from_utf8_lossy(&response.body).to_string())
     }
 
     /// Set or replace the fingerprint overrides used for DOM-level spoofing.
@@ -1593,7 +1672,7 @@ impl SevroEngine {
                 body: None,
             };
 
-            let response = self.transport.execute(request).await
+            let response = self.transport.as_ref().expect("std build always sets transport").execute(request).await
                 .map_err(|e| format!("retry request failed: {e}"))?;
 
             let status = response.status;
@@ -2212,7 +2291,7 @@ impl SevroEngine {
                 body: None,
             };
 
-            let response = self.transport.execute(request).await
+            let response = self.transport.as_ref().expect("std build always sets transport").execute(request).await
                 .map_err(|e| format!("HTTP request failed: {e}"))?;
 
             let status = response.status;
@@ -2344,7 +2423,7 @@ impl SevroEngine {
             body: None,
         };
 
-        let response = self.transport.execute(request).await
+        let response = self.transport.as_ref().expect("std build always sets transport").execute(request).await
             .map_err(|e| format!("HTTP GET failed: {e}"))?;
 
         let status = response.status;

@@ -56,5 +56,6 @@ pub use native::NativeClient;
 pub use selectors::AdaptiveSelector;
 pub use network_intel::NetworkCapture;
 pub use stealth::HumanBehavior;
+pub use stealth_http::{stealth_fetch, has_stealth_tls};
 pub use swarm::BrowserSwarm;
 pub use fingerprint_config::{FingerprintConfig, apply_canvas_noise};

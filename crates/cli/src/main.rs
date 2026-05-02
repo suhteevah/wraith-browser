@@ -97,6 +97,46 @@ enum Commands {
         max_tokens: usize,
     },
 
+    /// Fetch a URL with stealth TLS (Firefox 136 emulation), no DOM.
+    ///
+    /// Lightweight HTTP-only path for JSON APIs. No QuickJS, no DOM parse.
+    /// Use this for stealth-fingerprinted scraping where the full engine is
+    /// overkill (e.g., Sofascore live scores, ESPN APIs).
+    Fetch {
+        /// URL to fetch
+        url: String,
+
+        /// User-Agent header (defaults to a current Firefox 136 string)
+        #[arg(long, default_value = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:136.0) Gecko/20100101 Firefox/136.0")]
+        user_agent: String,
+
+        /// Accept-Language header
+        #[arg(long, default_value = "en-US,en;q=0.5")]
+        accept_language: String,
+
+        /// Output format: "body" (default, body only), "json" (status + body + final_url), "headers" (status + final_url, no body)
+        #[arg(short, long, default_value = "body")]
+        output: String,
+    },
+
+    /// Run a YAML playbook from the playbooks/ directory
+    Run {
+        /// Playbook name (resolves to `${playbook_dir}/<name>.yml`) or explicit path to a .yml file
+        playbook: String,
+
+        /// Variable override `key=value` (repeatable)
+        #[arg(long = "var", value_parser = parse_var_kv)]
+        vars: Vec<(String, String)>,
+
+        /// Directory to look up bare playbook names in
+        #[arg(long)]
+        playbook_dir: Option<std::path::PathBuf>,
+
+        /// Output format: "json", "snapshot", "markdown", "raw"
+        #[arg(short, long, default_value = "json")]
+        output: String,
+    },
+
     /// Manage the encrypted credential vault
     Vault {
         #[command(subcommand)]
@@ -219,6 +259,150 @@ fn read_secret(prompt: &str) -> anyhow::Result<SecretString> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     Ok(SecretString::from(input.trim().to_string()))
+}
+
+/// Parse a `key=value` string into a tuple. Used by clap value_parser for `--var`.
+fn parse_var_kv(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s
+        .split_once('=')
+        .ok_or_else(|| format!("expected key=value, got `{s}`"))?;
+    let k = k.trim();
+    if k.is_empty() {
+        return Err(format!("empty variable name in `{s}`"));
+    }
+    Ok((k.to_string(), v.to_string()))
+}
+
+/// Resolve the playbook directory. Order:
+///   1. explicit `--playbook-dir`
+///   2. `./playbooks` relative to CWD
+///   3. `${CARGO_MANIFEST_DIR}/../../playbooks` (when run via `cargo run`)
+///   4. `~/.wraith/playbooks`
+fn resolve_playbook_dir(explicit: Option<std::path::PathBuf>) -> std::path::PathBuf {
+    if let Some(p) = explicit {
+        return p;
+    }
+    let cwd_pb = std::env::current_dir()
+        .map(|c| c.join("playbooks"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("playbooks"));
+    if cwd_pb.is_dir() {
+        return cwd_pb;
+    }
+    if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
+        let p = std::path::Path::new(manifest)
+            .join("..")
+            .join("..")
+            .join("playbooks");
+        if p.is_dir() {
+            return p;
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".wraith")
+        .join("playbooks")
+}
+
+/// Whether the playbook arg looks like an explicit path rather than a bare name.
+fn playbook_looks_like_path(playbook: &str) -> bool {
+    playbook.contains('/')
+        || playbook.contains('\\')
+        || playbook.ends_with(".yml")
+        || playbook.ends_with(".yaml")
+}
+
+/// Validate a bare playbook name (no path components, no traversal).
+fn validate_bare_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty()
+        || name.contains("..")
+        || name.starts_with('.')
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!(
+            "Invalid playbook name '{}': bare names must be [A-Za-z0-9_-]+",
+            name
+        );
+    }
+    Ok(())
+}
+
+/// Look up a validated bare name inside `dir` by enumerating directory entries.
+/// Returns `(matched_path, available_names)`.
+fn lookup_in_dir(
+    dir: &std::path::Path,
+    name: &str,
+) -> (Option<std::path::PathBuf>, Vec<String>) {
+    let mut available: Vec<String> = Vec::new();
+    let mut hit: Option<std::path::PathBuf> = None;
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return (None, available),
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        let ext_ok = matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("yml") | Some("yaml")
+        );
+        if !ext_ok {
+            continue;
+        }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if stem == name && hit.is_none() {
+                hit = Some(path.clone());
+            }
+            available.push(stem.to_string());
+        }
+    }
+    available.sort();
+    (hit, available)
+}
+
+/// Resolve a positional playbook arg to a YAML file path.
+fn resolve_playbook_path(
+    playbook: &str,
+    dir: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    if playbook_looks_like_path(playbook) {
+        // Explicit path: canonicalize against the filesystem (rejects non-existent
+        // files and resolves any `..` traversal) and require a YAML extension.
+        let canonical = std::fs::canonicalize(playbook)
+            .map_err(|e| anyhow::anyhow!("Playbook file not found: {} ({})", playbook, e))?;
+        let ext_ok = matches!(
+            canonical.extension().and_then(|s| s.to_str()),
+            Some("yml") | Some("yaml")
+        );
+        if !ext_ok {
+            anyhow::bail!(
+                "Playbook path must end in .yml or .yaml: {}",
+                canonical.display()
+            );
+        }
+        if !canonical.is_file() {
+            anyhow::bail!("Playbook path is not a regular file: {}", canonical.display());
+        }
+        return Ok(canonical);
+    }
+    validate_bare_name(playbook)?;
+    let (hit, available) = lookup_in_dir(dir, playbook);
+    if let Some(p) = hit {
+        return Ok(p);
+    }
+    if available.is_empty() {
+        anyhow::bail!(
+            "Playbook '{}' not found in {} (directory empty or missing)",
+            playbook,
+            dir.display()
+        );
+    }
+    anyhow::bail!(
+        "Playbook '{}' not found in {}.\nAvailable: {}",
+        playbook,
+        dir.display(),
+        available.join(", ")
+    );
 }
 
 fn parse_credential_kind(s: &str) -> wraith_identity::CredentialKind {
@@ -404,6 +588,40 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
+        Commands::Fetch { url, user_agent, accept_language, output } => {
+            info!(url = %url, "Stealth fetch (Firefox 136 TLS, no DOM)");
+            let (status, body, final_url) =
+                wraith_browser_core::stealth_fetch(&url, &user_agent, &accept_language)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("stealth fetch failed: {e}"))?;
+
+            match output.as_str() {
+                "body" => {
+                    print!("{}", body);
+                }
+                "headers" => {
+                    println!("status: {}", status);
+                    println!("final_url: {}", final_url);
+                }
+                "json" => {
+                    let out = serde_json::json!({
+                        "status": status,
+                        "final_url": final_url,
+                        "body": body,
+                        "stealth_tls": wraith_browser_core::has_stealth_tls(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+                other => {
+                    anyhow::bail!("unknown --output format: {other} (expected body|headers|json)");
+                }
+            }
+
+            if status >= 400 {
+                std::process::exit(1);
+            }
+        }
+
         Commands::Extract { url, max_tokens } => {
             info!(url = %url, "Extracting content");
             let engine = wraith_browser_core::engine::create_engine_with_options(
@@ -423,6 +641,299 @@ async fn main() -> anyhow::Result<()> {
             println!("\n---\nTokens: ~{} | Links: {} | Confidence: {:.0}%",
                 content.estimated_tokens, content.links.len(), content.confidence * 100.0);
             eng.shutdown().await?;
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // PLAYBOOK RUN
+        // ═══════════════════════════════════════════════════════════
+
+        Commands::Run { playbook, vars, playbook_dir, output } => {
+            use wraith_browser_core::actions::BrowserAction;
+            use wraith_browser_core::playbook::{Playbook, PlaybookRunner, PlaybookStep};
+
+            let dir = resolve_playbook_dir(playbook_dir);
+            let path = resolve_playbook_path(&playbook, &dir)?;
+            info!(playbook = %path.display(), "Loading playbook");
+
+            let yaml_text = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
+
+            let pb = Playbook::from_yaml(&yaml_text).map_err(|e| {
+                anyhow::anyhow!("Failed to parse {}: {}", path.display(), e)
+            })?;
+
+            // Build variable map from CLI overrides.
+            let supplied: std::collections::HashMap<String, String> =
+                vars.into_iter().collect();
+
+            // Validate required vars.
+            let missing = pb.validate_variables(&supplied);
+            if !missing.is_empty() {
+                anyhow::bail!(
+                    "Missing required variable(s): {} — supply with --var key=value",
+                    missing.join(", ")
+                );
+            }
+
+            // Spin up the engine using the same helper as Navigate/Task.
+            let engine = wraith_browser_core::engine::create_engine_with_options(
+                &cli.engine,
+                wraith_browser_core::engine::EngineOptions {
+                    proxy_url: cli.proxy.clone(),
+                    flaresolverr_url: cli.flaresolverr.clone(),
+                    fallback_proxy_url: cli.fallback_proxy.clone(),
+                },
+            )
+            .await?;
+
+            let mut runner = PlaybookRunner::new(pb.clone(), supplied);
+            let total = pb.steps.len();
+            let mut step_results: Vec<serde_json::Value> = Vec::with_capacity(total);
+            let mut had_failure = false;
+
+            for (idx, step) in pb.steps.iter().enumerate() {
+                info!(step = idx + 1, total, "Executing playbook step");
+                let mut store_key: Option<String> = None;
+                let mut runtime_value: Option<String> = None;
+
+                let result = match step {
+                    PlaybookStep::Navigate { url, wait_for, timeout } => {
+                        let resolved_url = runner.resolve_variable(url);
+                        let timeout_ms = timeout.unwrap_or(10_000);
+                        let mut eng = engine.lock().await;
+                        let nav = eng.navigate(&resolved_url).await;
+                        match nav {
+                            Ok(()) => {
+                                if let Some(sel) = wait_for {
+                                    let _ = eng
+                                        .execute_action(BrowserAction::WaitForSelector {
+                                            selector: sel.clone(),
+                                            timeout_ms,
+                                        })
+                                        .await;
+                                }
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "navigate",
+                                    "status": "ok", "url": resolved_url,
+                                })
+                            }
+                            Err(e) => {
+                                had_failure = true;
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "navigate",
+                                    "status": "error", "error": e.to_string(),
+                                })
+                            }
+                        }
+                    }
+
+                    PlaybookStep::NavigateCdp { url, wait_for } => {
+                        let resolved_url = runner.resolve_variable(url);
+                        let mut eng = engine.lock().await;
+                        let nav = eng.navigate(&resolved_url).await;
+                        match nav {
+                            Ok(()) => {
+                                if let Some(sel) = wait_for {
+                                    let _ = eng
+                                        .execute_action(BrowserAction::WaitForSelector {
+                                            selector: sel.clone(),
+                                            timeout_ms: 15_000,
+                                        })
+                                        .await;
+                                }
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "navigate_cdp",
+                                    "status": "ok", "url": resolved_url,
+                                })
+                            }
+                            Err(e) => {
+                                had_failure = true;
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "navigate_cdp",
+                                    "status": "error", "error": e.to_string(),
+                                })
+                            }
+                        }
+                    }
+
+                    PlaybookStep::Wait { ms, selector, timeout, .. } => {
+                        if let Some(sel) = selector {
+                            let mut eng = engine.lock().await;
+                            let r = eng
+                                .execute_action(BrowserAction::WaitForSelector {
+                                    selector: sel.clone(),
+                                    timeout_ms: timeout.unwrap_or(5000),
+                                })
+                                .await;
+                            match r {
+                                Ok(_) => serde_json::json!({
+                                    "step": idx + 1, "action": "wait",
+                                    "status": "ok", "selector": sel,
+                                }),
+                                Err(e) => {
+                                    had_failure = true;
+                                    serde_json::json!({
+                                        "step": idx + 1, "action": "wait",
+                                        "status": "error", "error": e.to_string(),
+                                    })
+                                }
+                            }
+                        } else {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                ms.unwrap_or(1000),
+                            ))
+                            .await;
+                            serde_json::json!({
+                                "step": idx + 1, "action": "wait",
+                                "status": "ok", "ms": ms.unwrap_or(1000),
+                            })
+                        }
+                    }
+
+                    PlaybookStep::EvalJs { code, store_as } => {
+                        let resolved_code = runner.resolve_variable(code);
+                        let eng = engine.lock().await;
+                        match eng.eval_js(&resolved_code).await {
+                            Ok(value) => {
+                                if let Some(key) = store_as {
+                                    store_key = Some(key.clone());
+                                    runtime_value = Some(value.clone());
+                                }
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "eval_js",
+                                    "status": "ok",
+                                    "result_preview": value.chars().take(200).collect::<String>(),
+                                })
+                            }
+                            Err(e) => {
+                                had_failure = true;
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "eval_js",
+                                    "status": "error", "error": e.to_string(),
+                                })
+                            }
+                        }
+                    }
+
+                    PlaybookStep::Screenshot { .. } => {
+                        let eng = engine.lock().await;
+                        match eng.screenshot().await {
+                            Ok(png) => serde_json::json!({
+                                "step": idx + 1, "action": "screenshot",
+                                "status": "ok", "size_bytes": png.len(),
+                            }),
+                            Err(e) => {
+                                had_failure = true;
+                                serde_json::json!({
+                                    "step": idx + 1, "action": "screenshot",
+                                    "status": "error", "error": e.to_string(),
+                                })
+                            }
+                        }
+                    }
+
+                    PlaybookStep::Verify { check, .. } => {
+                        // Minimal check support: `url_contains("…")` and runtime-var truthiness.
+                        let resolved = runner.resolve_variable(check);
+                        let passed = if let Some(rest) = resolved
+                            .strip_prefix("url_contains(\"")
+                            .and_then(|s| s.strip_suffix("\")"))
+                        {
+                            let eng = engine.lock().await;
+                            eng.current_url()
+                                .await
+                                .map(|u| u.contains(rest))
+                                .unwrap_or(false)
+                        } else {
+                            // Treat as a runtime var name — pass if non-empty after resolution.
+                            !resolved.is_empty() && resolved != *check
+                        };
+                        if !passed {
+                            had_failure = true;
+                        }
+                        serde_json::json!({
+                            "step": idx + 1, "action": "verify",
+                            "status": if passed { "ok" } else { "fail" },
+                            "check": check,
+                        })
+                    }
+
+                    other => {
+                        // Actions not yet wired into the CLI dispatcher (click, fill,
+                        // select, upload_file, custom_dropdown, submit, conditional,
+                        // repeat, extract). The MCP server (browse_run_playbook)
+                        // covers the full set; the CLI handles the common stealth-
+                        // fetch / scrape playbook subset.
+                        serde_json::json!({
+                            "step": idx + 1,
+                            "action": format!("{:?}", other).split_whitespace().next().unwrap_or("unknown").to_lowercase(),
+                            "status": "skipped",
+                            "message": "Action not implemented in CLI dispatcher — use MCP server for full coverage",
+                        })
+                    }
+                };
+
+                step_results.push(result);
+                runner.mark_complete(
+                    idx,
+                    if let Some(v) = runtime_value.clone() {
+                        wraith_browser_core::playbook::StepResult::Value(v)
+                    } else {
+                        wraith_browser_core::playbook::StepResult::Ok
+                    },
+                    store_key.as_deref(),
+                );
+            }
+
+            // Shutdown engine.
+            {
+                let mut eng = engine.lock().await;
+                let _ = eng.shutdown().await;
+            }
+
+            let summary = serde_json::json!({
+                "playbook": pb.name,
+                "path": path.display().to_string(),
+                "total_steps": total,
+                "completed_steps": step_results.len(),
+                "results": step_results,
+                "runtime_vars": runner.runtime_vars(),
+            });
+
+            match output.as_str() {
+                "json" => {
+                    println!("{}", serde_json::to_string_pretty(&summary)?);
+                }
+                "raw" => {
+                    // Emit just the last `store_as` runtime value if present, else json.
+                    if let Some((_k, v)) = runner.runtime_vars().iter().next() {
+                        print!("{}", v);
+                    } else {
+                        println!("{}", serde_json::to_string(&summary)?);
+                    }
+                }
+                "snapshot" => {
+                    let eng = engine.lock().await;
+                    if let Ok(snap) = eng.snapshot().await {
+                        println!("{}", snap.to_agent_text());
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&summary)?);
+                    }
+                }
+                "markdown" => {
+                    let eng = engine.lock().await;
+                    if let (Ok(html), Some(url)) = (eng.page_source().await, eng.current_url().await) {
+                        if let Ok(content) = wraith_content_extract::extract(&html, &url) {
+                            println!("{}", content.markdown);
+                        }
+                    }
+                }
+                other => anyhow::bail!("Unknown --output format: {} (json|raw|snapshot|markdown)", other),
+            }
+
+            if had_failure {
+                anyhow::bail!("Playbook completed with step failures");
+            }
         }
 
         // ═══════════════════════════════════════════════════════════

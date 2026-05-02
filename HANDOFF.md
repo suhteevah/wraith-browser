@@ -1,3 +1,93 @@
+# Wraith Browser — Session Handoff
+
+## Last Updated
+2026-05-02
+
+## Project Status
+🟢 **Hosted Corpo API live** at `https://wraith-browser.vercel.app` (Vercel TLS-proxied) and `http://207.244.232.227:8080` (direct). Open AGPL repo + proprietary api-server tier both deploying clean. Growth-prep artifacts staged. FR queue cleared except for cross-repo FR-4 (waiting on ClaudioOS session).
+
+## What's Next
+1. **Pick a free hostname** (DuckDNS / FreeDNS / no-ip) → bring up Caddy via the staged `tls` profile in `deploy/corpo/docker-compose.yml` for real TLS + WSS. ~5 min once DNS resolves.
+2. **Record the demo** following `marketing/recording-setup.md` on Kokonoe (~1.5-2h producer time). Ship the three outputs (`wraith-demo-{1080p,square,vertical}.mp4`) to `foss-site/public/` and redeploy.
+3. **HN post** — final eyeball on `marketing/hn-launch.md`, schedule for Tue/Wed 8-9am PT.
+4. **FR-4** — pick up `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md` in a ClaudioOS session: vendor the `HttpTransport` trait, write the 4-line `impl HttpTransport for SmoltcpTransport`, kernel smoke test in QEMU.
+5. **BR-3** — Matt-action: rotate the exposed PAT per `scripts/rotate-github-pat.md` (5 min).
+
+## Blocking Issues
+- **Free hostname** for Caddy/TLS — none picked yet. Vercel rewrites cover REST but WebSocket upgrades and the cleartext Vercel→VPS leg still need real TLS on the VPS.
+- **FR-4** on the ClaudioOS side — needs a separate session. Wraith side is fully ready (`SevroEngine::with_transport(...).fetch(url)` works in both std and no-std).
+
+## Notes for Next Session
+- `crates/api-server/` is **gitignored** (proprietary). Edits to it (BR-5 `display_name` fix, BR-4 migration-fail-loud) are local-only on Kokonoe + already deployed to pixie. Don't be surprised when `git diff` shows them as tracked-but-uncommitted; the gitignore was added after the file was first committed. Leave them out of public commits.
+- The Anthropic API key in TRW's `.env.local` (`sk-ant-api03-l0…X_NgAA`) has **zero credit balance**. TRW production uses the OAuth-token proxy on pixie instead, so nothing's broken — but if you fall back to the key directly, top up first.
+- `wraith-browser.vercel.app` is **aliased** to the `wraith-docs` Vercel project — not natively named. After every `vercel deploy --prod`, re-alias with `vercel alias set <new-url> wraith-browser.vercel.app` or the alias will revert.
+- Edge rate-limit on `/api/v1/auth/register` is **per-region in-memory** (not durable). Sufficient for week-1 anti-abuse; swap for Vercel KV / Upstash before the HN post hits front page.
+- The `target/` cache of the Docker linux builder lives at `dist/.cache/` — don't `rm -rf dist/` blindly, it'll add 15 min back to every release.
+
+---
+
+## Session Summary — 2026-05-02
+
+This session: BR/FR sweep + growth-prep + hosted-API hardening + Anthropic model probe + FR-4 cross-repo handoff. See "Follow-on session 2026-05-02" entry below for the full per-task breakdown. The 2026-05-01 corpo deploy entry follows that.
+
+## Session Summary — 2026-05-01
+
+Deployed the proprietary corpo tier (`crates/api-server/`, `wraith-enterprise` binary, 77 REST endpoints + WS) to the Pixiedust VPS. Live at **`https://wraith-browser.vercel.app`** (Vercel TLS-proxied via `next.config.mjs` rewrites in `foss-site/`) and **`http://207.244.232.227:8080`** (direct, for WS + long calls). Co-tenant with the TRW pixiedust stack. Register + login JWT flow verified end-to-end on both URLs.
+
+### What shipped
+
+- `crates/api-server/Dockerfile` — multi-stage build, `rust:1.88-slim-bookworm` builder → debian-bookworm-slim runtime, non-root user `wraith` (uid 10001), HEALTHCHECK on `/health`. Build context = repo root (api-server has path-deps to `../browser-core` and `../../sevro/ports/headless`).
+- `deploy/corpo/docker-compose.yml` — three-container stack on `wraith-corpo` network: `wraith-corpo-api` (`:8080`), `wraith-corpo-postgres` (`pgvector/pgvector:pg16`, internal), `wraith-corpo-redis` (`redis:7-alpine`, internal).
+- `deploy/corpo/deploy.sh` — Kokonoe → pixie deploy: generates secrets on first run, streams the repo via `tar | ssh` (rsync isn't on Git Bash), runs `docker compose up -d --build`, polls `/health` for 5 min.
+- `deploy/corpo/README.md`, `deploy/corpo/.env.example`.
+- `.gitignore` updated for `deploy/corpo/.env*`.
+
+### Build gotchas hit (and resolved)
+
+1. `rust:1.83-slim` couldn't parse `time-core 0.1.8` (needs `edition2024`).
+2. `rust:1.86-slim` rejected by `cookie_store@0.22.1`, `home@0.5.12`, `time@0.3.47`, `time-core@0.1.8`, `time-macros@0.2.27` (require rustc 1.88).
+3. `rust:1.88-slim` worked — `Finished release profile [optimized] target(s) in 3m 17s`.
+4. `postgres:16-alpine` had no `uuid-ossp` / `pgcrypto` / `vector` extensions → all migrations after `create_extensions` failed → no schema → every endpoint returned `{"error":"database_error"}`. **Switched to `pgvector/pgvector:pg16`.**
+
+### Bugs found in api-server (NOT FIXED, just documented)
+
+1. **Migration error swallowed at boot.** `main.rs` logs `tracing::warn!` from the `wraith_enterprise` binary target, but the default `RUST_LOG` filter only includes `wraith_api_server=info,...` — so migration failures don't appear in logs. Banner says `"Migrations: skipped (error)"` with no detail. Either widen the filter or `panic!` on migration failure.
+2. **`POST /api/v1/auth/register` 500s without `display_name`.** `RegisterRequest.display_name: Option<String>` but `users.display_name` column is `NOT NULL`. Workaround: clients must send the field.
+
+### Smoke results
+
+```
+GET  /health          → {"status":"ok","version":"0.1.0","db_connected":true}
+POST /auth/register   → user + access_token + refresh_token (JWT HS256)
+POST /auth/login      → access_token + refresh_token
+```
+
+### Remaining
+
+- Pick a domain (free hostname first, `.com` later). Drop Caddy in front for TLS.
+- Fix the two app bugs above. **DONE 2026-05-02** — `display_name` defaults to email local-part, migration error now fatal-loud. See `NEXT-UP.md` BR-4 / BR-5.
+- Wire live Stripe keys when ready (currently `ENABLE_BILLING=false`).
+- Move `VAULT_KMS_KEY_ID` off `local-dev-key` for production credential storage.
+
+### Follow-on session 2026-05-02 — FR/BR sweep + growth prep + model probe + FR-4 prep
+
+- **BR-3** GitHub PAT rotation runbook ready at `scripts/rotate-github-pat.md` (5 min Matt-action). Repo + git history clean of PAT remnants.
+- **BR-2** Cross-compile release pipeline shipped: `scripts/build-release.sh` + `.ps1` wrapper, parallel Docker linux x86_64/aarch64 + native MSVC + ssh-imac for macOS. ~15 min wall on first build.
+- **FR-1** HttpTransport now reachable from no_std builds — `transport: Option<Arc<dyn HttpTransport>>` ungated, `SevroEngine::with_transport(config, transport)` constructor + `fetch(url)` helper available in both modes. Both `cargo check` variants pass.
+- **FR-2** `wraith run <playbook>` CLI subcommand wired (subagent did this).
+- **FR-3** `wraith fetch <url>` CLI subcommand + `wraith_browser_core::stealth_fetch` re-export at the crate root. Smoke-tested against example.com.
+- **FR-4** prep — coordination doc at `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md` for the next ClaudioOS session. Real blocker is the ClaudioOS-side `wraith-transport` crate being a homonym, not a dependent — it doesn't actually impl the trait. Doc spells out the 4-line bridge + the cross-repo dep choice (recommend vendoring for now).
+- **Growth prep** — `/signup` page with anti-abuse layers (origin / honeypot / time-gate / edge-rate-limit) + optional Turnstile env-flag, `/vs` comparison page, beta pricing copy, `marketing/{hn-launch,demo-script,recording-setup}.md`. Site live at `https://wraith-browser.vercel.app`.
+- **Anthropic model probe** — full `/v1/models` snapshot at `J:\llm-wiki\models\anthropic-api-snapshot-2026-05-02.md`. 9 models, no "mythos" reachable. Bloomberg article (2026-04-21) confirms it was a real model with a real auth bug; assumed patched.
+
+### LLM wiki updates
+
+- New: `J:\llm-wiki\projects\wraith-enterprise.md`
+- Cross-refs added in `projects/wraith.md`, `projects/The Right Wire.md`, `fleet/Fleet Overview.md`, `index.md`
+- Project memory: `C:\Users\Matt\.claude\projects\J--wraith-browser\memory\project_corpo_deploy.md`
+
+---
+
 # Wraith Browser — Session Handoff (2026-04-02)
 
 ## Session Summary

@@ -100,3 +100,5 @@ id_ed25519
 .claude/.credentials.json
 C:Users*
 C:Windows*
+deploy/corpo/.env.remote
+deploy/corpo/.env
