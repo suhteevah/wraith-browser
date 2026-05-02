@@ -289,6 +289,14 @@ async fn register(
     let slug = slugify(&body.org_name);
     let role_str = "owner";
 
+    // users.display_name is NOT NULL in the schema. If the caller didn't
+    // supply one, default to the email local-part.
+    let display_name = body
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| body.email.split('@').next().unwrap_or(&body.email).to_string());
+
     // Insert organisation and user in a transaction.
     let mut tx = state.db.begin().await?;
 
@@ -314,7 +322,7 @@ async fn register(
     .bind(user_id)
     .bind(&body.email)
     .bind(&password_hash)
-    .bind(&body.display_name)
+    .bind(&display_name)
     .bind(org_id)
     .bind(role_str)
     .bind(now)
@@ -336,7 +344,7 @@ async fn register(
         user: UserProfile {
             id: user_id,
             email: body.email,
-            display_name: body.display_name,
+            display_name: Some(display_name),
             org_id,
             role: role_str.to_string(),
             created_at: now,
