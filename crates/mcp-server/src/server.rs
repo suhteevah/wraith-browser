@@ -548,7 +548,7 @@ impl WraithHandler {
         let ro_session = ToolAnnotations::new().read_only(true).open_world(false);
         let rw_destructive_session = ToolAnnotations::new().read_only(false).destructive(true).open_world(false);
         tools.push(make_tool("browse_session_create",
-            "Create a new named browser session. Use engine_type 'native' for fast Sevro engine or 'cdp' for Chrome with full JS. Multiple sessions can be active simultaneously.",
+            "Create a new named browser session. engine_type options: 'native' (fast Sevro, no JS), 'cdp' (spawn fresh headless Chrome with full JS), or 'cdp-attach' (attach to the operator's running Chrome at --remote-debugging-port — real fingerprint + cookies, passes reCAPTCHA v3 natively). For cdp-attach, optional attach_port (default 9222) and attach_target (URL/title substring filter) select the tab.",
             &schema_for!(SessionCreateInput), rw_session.clone()));
         tools.push(make_tool("browse_session_switch",
             "Switch the active session. All subsequent browse_* commands will route to the switched session's engine.",
@@ -3201,9 +3201,23 @@ impl WraithHandler {
                             ))?;
                         Arc::new(Mutex::new(cdp_engine))
                     }
+                    "cdp-attach" | "cdp_attach" | "attach" => {
+                        // BR-9 primary path: attach to operator's daily Chrome.
+                        // Real fingerprint + cookies + history pass anti-bot
+                        // checks like reCAPTCHA v3 natively, no 2captcha needed.
+                        use wraith_browser_core::engine_cdp::CdpEngine;
+                        let port = input.attach_port.unwrap_or(9222);
+                        let cdp_engine = CdpEngine::attach(port, input.attach_target.clone()).await
+                            .map_err(|e| ErrorData::internal_error(
+                                format!(
+                                    "CDP attach failed: {e}. Ensure Chrome is running with `--remote-debugging-port={port}`."
+                                ), None
+                            ))?;
+                        Arc::new(Mutex::new(cdp_engine))
+                    }
                     _ => {
                         return Err(ErrorData::invalid_params(
-                            format!("Unknown engine_type '{}'. Use 'native' or 'cdp'.", engine_type), None
+                            format!("Unknown engine_type '{}'. Use 'native', 'cdp', or 'cdp-attach'.", engine_type), None
                         ));
                     }
                 };

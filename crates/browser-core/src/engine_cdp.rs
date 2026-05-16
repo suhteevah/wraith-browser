@@ -203,6 +203,165 @@ impl CdpEngine {
         Ok(engine)
     }
 
+    /// Attach to an already-running Chrome via `--remote-debugging-port`.
+    ///
+    /// Unlike `with_port`, this does NOT spawn Chrome — it expects the user
+    /// to be running their daily browser with the debug port exposed:
+    ///
+    /// ```text
+    /// chrome.exe --remote-debugging-port=9222
+    /// ```
+    ///
+    /// The attached browser keeps its real fingerprint, cookies, history,
+    /// installed extensions, and active sessions — so anti-bot systems like
+    /// reCAPTCHA v3 score it as a real user instead of headless Chrome.
+    ///
+    /// `target_filter` — if `Some`, find an existing page tab whose URL or
+    /// title (case-insensitive) contains this string; useful for attaching
+    /// to a tab where the user is already authenticated. If `None`, attach
+    /// to the first page target Chrome returns (typically the active tab).
+    ///
+    /// On shutdown, the engine releases its WebSocket but does NOT kill the
+    /// Chrome process — that's the operator's browser.
+    pub async fn attach(port: u16, target_filter: Option<String>) -> BrowserResult<Self> {
+        // Probe /json/version — fast-fail with a clear error if Chrome isn't
+        // running with the debug port exposed.
+        let version_url = format!("http://127.0.0.1:{port}/json/version");
+        let version_resp = reqwest::get(&version_url).await.map_err(|e| {
+            BrowserError::LaunchFailed(format!(
+                "Cannot reach Chrome at 127.0.0.1:{port} — {e}. Start Chrome with `--remote-debugging-port={port}`."
+            ))
+        })?;
+        if !version_resp.status().is_success() {
+            return Err(BrowserError::LaunchFailed(format!(
+                "Chrome /json/version on port {port} returned HTTP {}.",
+                version_resp.status()
+            )));
+        }
+        let version_info: Value = version_resp.json().await.map_err(|e| {
+            BrowserError::LaunchFailed(format!("Parse /json/version: {e}"))
+        })?;
+        let browser_label = version_info
+            .get("Browser")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Chrome")
+            .to_string();
+        info!(port, browser = %browser_label, target_filter = ?target_filter, "Attaching to running Chrome");
+
+        // List page targets
+        let targets_url = format!("http://127.0.0.1:{port}/json");
+        let targets: Vec<Value> = reqwest::get(&targets_url)
+            .await
+            .map_err(|e| BrowserError::LaunchFailed(format!("Fetch /json: {e}")))?
+            .json()
+            .await
+            .map_err(|e| BrowserError::LaunchFailed(format!("Parse /json: {e}")))?;
+
+        let page_targets: Vec<&Value> = targets
+            .iter()
+            .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+            .collect();
+
+        if page_targets.is_empty() {
+            return Err(BrowserError::LaunchFailed(format!(
+                "Chrome on port {port} has no page targets. Open at least one tab and retry."
+            )));
+        }
+
+        // Pick a target
+        let chosen = if let Some(filter) = &target_filter {
+            let needle = filter.to_lowercase();
+            let matched = page_targets.iter().find(|t| {
+                let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                let title = t.get("title").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                url.contains(&needle) || title.contains(&needle)
+            });
+            match matched {
+                Some(t) => *t,
+                None => {
+                    let available: Vec<String> = page_targets
+                        .iter()
+                        .map(|t| {
+                            format!(
+                                "  [{}] {}",
+                                t.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                                t.get("url").and_then(|v| v.as_str()).unwrap_or("")
+                            )
+                        })
+                        .collect();
+                    return Err(BrowserError::LaunchFailed(format!(
+                        "No tab matched filter '{filter}'. Available tabs:\n{}",
+                        available.join("\n")
+                    )));
+                }
+            }
+        } else {
+            page_targets[0]
+        };
+
+        let ws_url = chosen
+            .get("webSocketDebuggerUrl")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                BrowserError::LaunchFailed("Chosen tab has no webSocketDebuggerUrl".into())
+            })?
+            .to_string();
+        let tab_url = chosen
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let tab_title = chosen
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        info!(ws = %ws_url, title = %tab_title, url = %tab_url, "Attaching to tab");
+
+        // Connect WebSocket (same as with_port from here down, but no chrome_process / temp_dir)
+        let (ws_stream, _) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .map_err(|e| BrowserError::LaunchFailed(format!("WebSocket connect: {e}")))?;
+
+        let (ws_tx, ws_rx) = futures::StreamExt::split(ws_stream);
+        let ws_tx = Arc::new(Mutex::new(ws_tx));
+        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let event_waiters: Arc<Mutex<HashMap<String, Vec<oneshot::Sender<Value>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let next_id = Arc::new(AtomicU64::new(1));
+        let last_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(Some(tab_url.clone())));
+
+        let reader_handle = {
+            let pending = Arc::clone(&pending);
+            let event_waiters = Arc::clone(&event_waiters);
+            let last_url = Arc::clone(&last_url);
+            tokio::spawn(async move {
+                cdp_reader_loop(ws_rx, pending, event_waiters, last_url).await;
+            })
+        };
+
+        let engine = Self {
+            ws_tx,
+            _reader_handle: reader_handle,
+            pending,
+            event_waiters,
+            next_id,
+            chrome_process: None, // attached — don't kill on shutdown
+            temp_dir: None,       // attached — no temp dir to clean
+            last_url,
+            port,
+        };
+
+        // Enable required CDP domains
+        engine.send_cdp_command("Page.enable", json!({})).await?;
+        engine.send_cdp_command("Runtime.enable", json!({})).await?;
+        engine.send_cdp_command("DOM.enable", json!({})).await?;
+
+        info!("CDP engine attached and ready");
+        Ok(engine)
+    }
+
     // -----------------------------------------------------------------------
     // CDP transport
     // -----------------------------------------------------------------------
@@ -1836,7 +1995,16 @@ impl BrowserEngine for CdpEngine {
     async fn shutdown(&mut self) -> BrowserResult<()> {
         info!("CDP engine shutting down");
 
-        // Try graceful browser close
+        let attached_mode = self.chrome_process.is_none();
+        if attached_mode {
+            // Attach mode: this is the operator's daily Chrome. Just disconnect
+            // our WebSocket — do NOT send Browser.close (kills the whole window)
+            // and do NOT kill any process (we didn't spawn one).
+            info!("Attach-mode shutdown — leaving operator Chrome running");
+            return Ok(());
+        }
+
+        // Try graceful browser close (only valid for spawned Chrome)
         let _ = self
             .send_cdp_command("Browser.close", json!({}))
             .await;
@@ -1860,7 +2028,9 @@ impl BrowserEngine for CdpEngine {
 
 impl Drop for CdpEngine {
     fn drop(&mut self) {
-        // Best-effort cleanup if shutdown() wasn't called
+        // Best-effort cleanup if shutdown() wasn't called. Only act on
+        // spawned-Chrome mode; attach mode (chrome_process == None) is a no-op
+        // so the operator's daily browser keeps running.
         if let Some(ref mut child) = self.chrome_process {
             let _ = child.kill();
         }

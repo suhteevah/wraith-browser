@@ -926,8 +926,23 @@ pub struct SolveCaptchaInput {
 pub struct SessionCreateInput {
     /// A unique name for this session (e.g., "indeed", "linkedin", "github").
     pub name: String,
-    /// Engine type: "native" (Sevro, fast, no JS) or "cdp" (Chrome, full JS).
+    /// Engine type: "native" (Sevro, fast, no JS), "cdp" (spawn fresh headless
+    /// Chrome with full JS), or "cdp-attach" (attach to a running Chrome at
+    /// `--remote-debugging-port`). "cdp-attach" reuses the operator's daily
+    /// browser — real fingerprint, real cookies, real history — so anti-bot
+    /// systems like reCAPTCHA v3 score it as a real user.
     pub engine_type: String,
+    /// Optional port for cdp-attach mode (default 9222). Ignored for other
+    /// engine types. The user must have started Chrome with
+    /// `--remote-debugging-port=<port>`.
+    #[serde(default)]
+    pub attach_port: Option<u16>,
+    /// Optional URL/title substring filter for cdp-attach mode. If supplied,
+    /// attaches to the first existing tab whose URL or title contains this
+    /// string (case-insensitive). If omitted, attaches to whichever tab Chrome
+    /// returns first (typically the active one).
+    #[serde(default)]
+    pub attach_target: Option<String>,
 }
 
 /// Tool: switch the active session. All subsequent browse_* commands will use this session's engine.
