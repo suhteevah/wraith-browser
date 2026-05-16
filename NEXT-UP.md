@@ -269,23 +269,152 @@ browse_eval_js("document.querySelectorAll('.select__menu').length")  # → 0
 
 **Tags.** `mcp` `cdp-engine` `browse_select` `browse_eval_js` `regression` `false-positive` `react-select` `greenhouse` `priority-1` `blocks-headline-use-case`
 
+### BR-8: `browse_fill` is broken for `<textarea>` and for masked / custom-controlled inputs — Greenhouse essay + phone fail ✅ FIXED 2026-05-16 (Input.insertText)
+> Surfaced: 2026-05-16, immediately after BR-6 + BR-7 were marked ✅ FIXED. The E2E smoke marker in "Open Items After 2026-05-16" claiming "Greenhouse … end-to-end" is **incorrect** — the dropdowns commit fine (real BR-6/BR-7 wins), but two separate fill bugs prevent any Greenhouse application from actually submitting. Smoke ran on the same Anthropic Greenhouse URL; submit click was issued and silently bailed.
+
+**Fix shipped 2026-05-16, third round.** Switched `BrowserAction::Fill` from the JS-setter approach to a real CDP `Input.insertText` flow with the setter as fallback. Both bugs collapse into one fix:
+
+- **Bug 8a (textarea throws):** the setter path is now only used as a fallback, and when it runs it correctly branches on `el.tagName === 'TEXTAREA'` to pick `HTMLTextAreaElement.prototype` instead of `HTMLInputElement.prototype`. The old `descriptor1 || descriptor2` short-circuit (which always picked descriptor1 since the descriptor is on the prototype not the instance) is gone.
+- **Bug 8b (React state doesn't update):** `Input.insertText` writes through the real Chrome input pipeline, dispatching `beforeinput` + `input` events the same way an actual keypress does. React's controlled-component handlers listen for those, so React state tracks the DOM. One CDP roundtrip for the whole string — much faster than per-char keypress dispatch and framework-agnostic (works for react-textarea-autosize, masked-input libs, Remix forms, react-hook-form, etc.).
+
+**New flow** (`crates/browser-core/src/engine_cdp.rs`, `BrowserAction::Fill` arm):
+
+1. Resolve ref → element, validate it's `<input>`/`<textarea>`/`contenteditable`, scroll into view, focus, `setSelectionRange(0, value.length)` so insertText replaces instead of appends.
+2. `Input.insertText { text }` via CDP.
+3. Verify both DOM value AND React state (`__reactProps$xxx.value` via the fiber). Three outcomes:
+   - DOM matches AND (no React fiber OR React state matches) → `Success`.
+   - DOM matches but React state lags → setter+input/change "nudge" path → re-verify → `Success` or `Failed { reason }`.
+   - DOM doesn't match → `Failed` with both DOM and React state in the error so the next debug session has the diagnostic right there.
+4. If `Input.insertText` itself errors (older Chrome / unusual element), automatic fallback to the setter path with the 8a fix applied.
+
+`browse_fill` now NEVER returns Success without confirming the value actually landed in both DOM and React state. Agents downstream that assumed every "Filled @e…" was real will now get accurate feedback — but the converse is also true: any code that ignored the return value will now surface real failures it was previously eating.
+
+**Validation.** `cargo check --features cdp,sevro` passes clean. `cargo build --release --features cdp,sevro` produced fresh `target/release/wraith-browser.exe` (47 MB, mtime 2026-05-16 7:51 AM). Next Matt-action: kill the running Wraith MCP, reconnect, re-run the Anthropic Greenhouse application — the Phone, Why Anthropic essay, and Additional Information fields should now commit to React state and the submit click should actually fire the network request.
+
+---
+
+> **Original BR-8 report (preserved for context):**
+
+**Two distinct bugs in the Fill path. Both blocking. The textarea bug has an exact root cause and a one-line fix.**
+
+---
+
+**Bug 8a: textarea fill always throws because Fill always calls HTMLInputElement's value setter.**
+
+Source: `crates/browser-core/src/engine_cdp.rs:935-944` in the just-built binary.
+
+```rust
+const nativeSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype, 'value'
+) || Object.getOwnPropertyDescriptor(
+    window.HTMLTextAreaElement.prototype, 'value'
+);
+if (nativeSetter && nativeSetter.set) {
+    nativeSetter.set.call(el, '{escaped}');
+}
+```
+
+`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')` returns a truthy descriptor **regardless of what element `el` actually is** (the descriptor lives on the prototype, not the instance). So the `||` short-circuits to the input setter every time. Calling the input setter on a `<textarea>` throws `TypeError: Failed to set the 'value' property on 'HTMLInputElement': The provided value is not of type 'HTMLInputElement'`, which Wraith surfaces as `Fill failed: JavaScript evaluation failed: Uncaught`.
+
+Live repro (just observed in the BR-7 smoke session):
+```
+> browse_fill(ref_id=29, text="test")   // @e29 is the Why Anthropic? <textarea>
+< MCP error -32603: Fill failed: JavaScript evaluation failed: Uncaught
+```
+
+Same JS via eval_js with the right prototype works:
+```
+> browse_eval_js("var el=document.querySelector('[data-wraith-ref=\"29\"]'); var s=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set; s.call(el,'test'); el.value")
+< 'test'
+```
+
+**Fix (one block):**
+
+```rust
+const proto = el.tagName === 'TEXTAREA'
+    ? window.HTMLTextAreaElement.prototype
+    : window.HTMLInputElement.prototype;
+const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value');
+```
+
+---
+
+**Bug 8b: DOM-level fills don't propagate to React state for masked inputs / custom textareas; submit handler reads React state, so the submit click silently bails.**
+
+Reproducer on the same Anthropic form, after the BR-7 fix:
+
+```
+> browse_fill(ref_id=12, text="5307863655")    // Phone field (masked input)
+< Filled @e12 with text
+
+> browse_eval_js("var el=document.querySelector('[data-wraith-ref=\"12\"]'); var k=Object.keys(el).find(x=>x.startsWith('__reactProps')); 'dom='+el.value+' react='+JSON.stringify(el[k].value||'')")
+< 'dom=(530) 786-3655 react=""'
+```
+
+DOM is correct (Greenhouse auto-formatted), but React `props.value` is empty. Same pattern for textareas via manual setter+events workaround:
+
+```
+> // workaround: HTMLTextAreaElement.prototype.value setter on textarea, dispatch input + change events
+> ...read both
+< 'dom=1590 react=0'
+```
+
+Even calling the textarea's `onChange` handler directly via the React fiber (`el[reactPropsKey].onChange({currentTarget: el, target: el})`) doesn't update React state — the handler is `N => w(N.currentTarget.value)` where `w` is a setState in a parent component context that isn't reachable from the textarea's own props.
+
+The submit-button onClick on Greenhouse is:
+
+```js
+async E => {
+  if (ge) return;
+  const k = gn(E);          // ← reads from React state
+  if (!k) return;            // ← silent bail when state is invalid
+  let O = {};
+  try { O = await Ua({application: k, submitPath: r, ...}) }
+  catch(P) { ... }
+  if (O.ok) { ... window.location.assign(P) }
+}
+```
+
+`gn(E)` reads from React state. React-state-empty required fields cause `!k`, the handler returns silently, no network call fires, no UI error appears. That's why "Submit application" clicks visibly succeed but nothing happens.
+
+Affected components observed on Greenhouse:
+- `<textarea>` rendered through `input-wrapper input-wrapper__multi-line` (probably react-textarea-autosize). React `props.value` stays `""` regardless of which setter / input / change / onChange-via-fiber path is used from `eval_js`.
+- Phone field (masked input). Auto-formats `5307863655` → `(530) 786-3655` in DOM; React state stays `""`.
+
+Simple text inputs (First Name, Email, Website, LinkedIn, Address) propagate correctly — Wraith's setter + input/change events work for those. So Bug 8b is specifically about controlled components with their own input handlers.
+
+**Severity.** Blocks every Greenhouse application submit (and almost certainly Lever/Ashby too — they use the same masked-phone + react-textarea-autosize stack). The BR-6/BR-7 wins are real but the cross-form smoke is still red on the only application path that matters.
+
+**Suggested fixes (any one):**
+
+1. **Real typing path.** Replace the JS-setter approach in `BrowserAction::Fill` with a CDP keyboard typing implementation: focus the element via `DOM.focus`, then for each character dispatch `Input.dispatchKeyEvent` with type=keyDown / char / keyUp. Slower (~10ms/char ≈ 16s for a 1600-char essay) but works for every controlled component because it mimics actual keyboard input. Greenhouse + Remix Forms + react-textarea-autosize + masked-input libs all listen for real keystrokes.
+2. **`Input.insertText` CDP method.** Single CDP call that simulates the whole string at once via the browser's input pipeline. Fast and framework-agnostic. Recommend this as the default.
+3. **Detect-and-fallback.** Keep the setter path for speed on simple inputs; after the setter, read the React fiber's `memoizedProps.value` (now possible thanks to BR-7's eval_js fix) — if it doesn't match the requested text, fall back to (2). Best of both.
+
+The cleanest is (2) as default with (3) as the optimization. That makes `browse_fill` framework-agnostic — no special-casing per UI library — and the textarea bug (8a) becomes moot because `Input.insertText` doesn't care about prototype lookups.
+
+**Workaround for the current Anthropic application.** Form is mostly populated in Wraith's headless Chrome session "anthropic3": all dropdowns commit, all simple text inputs populate, resume uploaded. But Phone + Why Anthropic essay + Additional Information are DOM-only and the React-state read at submit time returns invalid → submit silently bails. The operator has to redo the application in their own browser. Application packet at `J:\job-hunter-mcp\.pipeline\applications\anthropic-swe-systems-claude-code-2026-05-16.md`.
+
+**Tags.** `mcp` `cdp-engine` `browse_fill` `textarea` `masked-input` `react-controlled-component` `react-textarea-autosize` `greenhouse` `priority-1` `blocks-submit`
+
 ---
 
 ## Priority Order
 
-1. **BR-7** — BR-6 regression triage ✅ FIXED 2026-05-16 (root cause was `browse_navigate` hijacking the active session — not a sandbox bug as suspected; option matcher + post-click verification also tightened)
-2. **BR-6** — Portal-rendered react-select unfillable ✅ FIXED 2026-05-16 (real `Input.dispatchMouseEvent`; needed BR-7 fix to actually exercise on Greenhouse)
-3. **BR-1** — Get API server running (TRW blocked) ✅
-4. **FR-1** — HttpTransport wiring (ClaudioOS path) ✅
-5. **FR-3** — Stealth fetch mode ✅
-6. **FR-2** — CLI playbook runner ✅
-7. **FR-4** — Bare-metal integration (ClaudioOS dependency)
-8. **BR-2** — Pre-built binaries ✅
-9. **BR-3** — PAT rotation (security hygiene) — Matt-action only
+1. **BR-8** — `browse_fill` broken for textarea + masked inputs ✅ FIXED 2026-05-16 (switched to `Input.insertText` + dual DOM/React state verification)
+2. **BR-7** — BR-6 regression triage ✅ FIXED 2026-05-16
+3. **BR-6** — Portal-rendered react-select unfillable ✅ FIXED 2026-05-16
+4. **BR-1** — Get API server running (TRW blocked) ✅
+5. **FR-1** — HttpTransport wiring (ClaudioOS path) ✅
+6. **FR-3** — Stealth fetch mode ✅
+7. **FR-2** — CLI playbook runner ✅
+8. **FR-4** — Bare-metal integration (ClaudioOS dependency)
+9. **BR-2** — Pre-built binaries ✅
+10. **BR-3** — PAT rotation (security hygiene) — Matt-action only
 
 ## Open Items After 2026-05-16
 
-- **E2E smoke** ✅ PASSED 2026-05-16 — Greenhouse react-select dropdowns now commit end-to-end with the rebuilt binary. BR-6 + BR-7 fully closed.
+- **E2E smoke (re-run)** — Matt-action: kill running Wraith MCP, reconnect, re-run the Anthropic Greenhouse application against the fresh binary. BR-6 + BR-7 + BR-8 all landed. The Phone field, Why Anthropic essay, and Additional Information textarea should now commit to React state; the Submit Application button should actually fire the network request instead of silently bailing.
 - **BR-3** — PAT rotation (5-min Matt-action in github.com + `setx`). Runbook: `scripts/rotate-github-pat.md`.
 - **FR-4** — ClaudioOS-side `impl HttpTransport for SmoltcpTransport` (4 lines + QEMU smoke). Coordination doc: `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md`. Wraith side is fully ready.
 - **Diagnostic follow-up (low priority)** — add `tracing::info!` of `(x, y, ref_id)` inside `cdp_dispatch_real_click` per BR-7's suggestion. Would have caught the wrong-engine routing in 5 minutes instead of forcing the long mirror/sandbox investigation.

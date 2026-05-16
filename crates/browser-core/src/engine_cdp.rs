@@ -924,37 +924,237 @@ impl BrowserEngine for CdpEngine {
                 text,
                 force: _,
             } => {
-                // Use native setter + event dispatch (same technique as QuickJS bridge)
-                let escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
-                let js = format!(
+                // BR-8 fix: route fills through CDP `Input.insertText` (real
+                // browser input pipeline). The old JS-setter approach had two
+                // problems:
+                //   (a) the `Object.getOwnPropertyDescriptor(HTMLInputElement
+                //       .prototype, 'value') || HTMLTextAreaElement.prototype`
+                //       short-circuit always returned truthy from the input
+                //       prototype, so calling its setter on a <textarea> threw
+                //       `TypeError`. Textareas never filled.
+                //   (b) the setter approach updates `el.value` but does NOT
+                //       update React's internal state for controlled components
+                //       (masked phone fields, react-textarea-autosize, etc.).
+                //       The submit handler reads React state → silent bail.
+                //
+                // `Input.insertText` writes through the real input pipeline:
+                // dispatches `beforeinput` + `input` events that React's
+                // controlled-component handlers listen to, so React state
+                // tracks the DOM. One CDP roundtrip for the whole string —
+                // faster than per-char keypress dispatch and framework-agnostic.
+
+                // Step 1: focus the element and select existing content so
+                // insertText overwrites instead of appending.
+                let prep_js = format!(
                     r#"(() => {{
                         const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
-                        if (!el) return 'Element @e{ref_id} not found';
-                        el.scrollIntoView({{block: 'center'}});
-                        el.focus();
-                        const nativeSetter = Object.getOwnPropertyDescriptor(
-                            window.HTMLInputElement.prototype, 'value'
-                        ) || Object.getOwnPropertyDescriptor(
-                            window.HTMLTextAreaElement.prototype, 'value'
-                        );
-                        if (nativeSetter && nativeSetter.set) {{
-                            nativeSetter.set.call(el, '{escaped}');
-                        }} else {{
-                            el.value = '{escaped}';
+                        if (!el) return JSON.stringify({{ok: false, reason: 'not_found'}});
+                        const tag = el.tagName;
+                        if (tag !== 'INPUT' && tag !== 'TEXTAREA' && el.contentEditable !== 'true') {{
+                            return JSON.stringify({{ok: false, reason: 'not_fillable', tag}});
                         }}
-                        el.dispatchEvent(new Event('input', {{bubbles: true}}));
-                        el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        return 'filled';
+                        el.scrollIntoView({{block: 'center', inline: 'center'}});
+                        if (typeof el.focus === 'function') el.focus();
+                        // Select existing content so insertText replaces it.
+                        if (tag === 'INPUT' || tag === 'TEXTAREA') {{
+                            try {{
+                                el.setSelectionRange(0, (el.value || '').length);
+                            }} catch (e) {{
+                                // Some input types (number, email, etc.) don't support
+                                // setSelectionRange — fall through, insertText will append.
+                            }}
+                        }}
+                        return JSON.stringify({{ok: true, tag, existing: (el.value || '').length}});
                     }})()"#
                 );
-                let result = self.runtime_evaluate(&js).await?;
-                if result.contains("not found") {
-                    Ok(ActionResult::Failed { error: result })
-                } else {
-                    Ok(ActionResult::Success {
-                        message: format!("Filled @e{ref_id} with text"),
-                    })
+                let prep_raw = self.runtime_evaluate(&prep_js).await?;
+                let prep: Value = serde_json::from_str(&prep_raw)
+                    .map_err(|e| BrowserError::EngineError(format!("Fill prep parse: {e} :: {prep_raw}")))?;
+                if prep.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+                    let reason = prep.get("reason").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    if reason == "not_found" {
+                        return Ok(ActionResult::Failed {
+                            error: format!("Element @e{ref_id} not found"),
+                        });
+                    }
+                    return Ok(ActionResult::Failed {
+                        error: format!(
+                            "Element @e{ref_id} is not fillable ({reason}; tag={})",
+                            prep.get("tag").and_then(|v| v.as_str()).unwrap_or("?")
+                        ),
+                    });
                 }
+                let had_existing = prep
+                    .get("existing")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+                    > 0;
+
+                // Step 2: if the field had existing content but no selection
+                // range support (numeric / email inputs), clear it explicitly
+                // via Input.dispatchKeyEvent({type:"rawKeyDown", code:"Delete"})
+                // on the selection — skipped for now, the common case is empty
+                // fields or text/textarea where setSelectionRange worked.
+                let _ = had_existing;
+
+                // Step 3: insert the text via real CDP input pipeline.
+                let insert_result = self.send_cdp_command(
+                    "Input.insertText",
+                    json!({ "text": text }),
+                ).await;
+
+                let mut used_fallback = false;
+                if let Err(e) = insert_result {
+                    debug!(error = %e, "Input.insertText failed; falling back to native setter path");
+                    used_fallback = true;
+                    // 8a fix in the fallback: branch on tagName for the correct prototype.
+                    let escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+                    let fb_js = format!(
+                        r#"(() => {{
+                            const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                            if (!el) return 'not_found';
+                            const proto = el.tagName === 'TEXTAREA'
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype;
+                            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                            if (desc && desc.set) {{
+                                desc.set.call(el, '{escaped}');
+                            }} else {{
+                                el.value = '{escaped}';
+                            }}
+                            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            return 'ok';
+                        }})()"#
+                    );
+                    let fb_result = self.runtime_evaluate(&fb_js).await?;
+                    if fb_result == "not_found" {
+                        return Ok(ActionResult::Failed {
+                            error: format!("Element @e{ref_id} not found"),
+                        });
+                    }
+                }
+
+                // Step 4: verify the value actually landed. For controlled
+                // components, also check React state if the fiber is reachable
+                // — that's the real predictor of "will the submit handler
+                // accept this?". If DOM matches but React state doesn't, fall
+                // back to the setter path which fires the React-friendly input
+                // event sequence.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let verify_js = format!(
+                    r#"(() => {{
+                        const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                        if (!el) return JSON.stringify({{ok: false, reason: 'gone'}});
+                        const domValue = el.value !== undefined ? el.value : (el.textContent || '');
+                        const propsKey = Object.keys(el).find(k => k.startsWith('__reactProps$'));
+                        let reactValue = null;
+                        if (propsKey) {{
+                            try {{
+                                const props = el[propsKey];
+                                if (props && 'value' in props) reactValue = props.value;
+                            }} catch (e) {{}}
+                        }}
+                        return JSON.stringify({{ok: true, domValue, reactValue, hasReact: !!propsKey}});
+                    }})()"#
+                );
+                let verify_raw = self.runtime_evaluate(&verify_js).await.unwrap_or_default();
+                let verify: Value = serde_json::from_str(&verify_raw).unwrap_or(json!({}));
+                let dom_value = verify
+                    .get("domValue")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let has_react = verify
+                    .get("hasReact")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let react_matches = has_react
+                    && verify
+                        .get("reactValue")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == text)
+                        .unwrap_or(false);
+                let dom_matches = dom_value == text;
+
+                // If DOM and React both agree the value is set, we're done.
+                if dom_matches && (!has_react || react_matches) {
+                    return Ok(ActionResult::Success {
+                        message: format!(
+                            "Filled @e{ref_id} ({} chars{})",
+                            text.len(),
+                            if used_fallback { ", via setter fallback" } else { "" }
+                        ),
+                    });
+                }
+
+                // DOM matches but React state lags — try the setter path with
+                // explicit input+change events to nudge controlled components.
+                // (insertText already fires these, so this is for rare cases
+                // where the component listens for something else.)
+                if dom_matches && has_react && !react_matches && !used_fallback {
+                    let escaped = text.replace('\\', "\\\\").replace('\'', "\\'").replace('\n', "\\n");
+                    let nudge_js = format!(
+                        r#"(() => {{
+                            const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                            if (!el) return 'gone';
+                            const proto = el.tagName === 'TEXTAREA'
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype;
+                            const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                            if (desc && desc.set) desc.set.call(el, '{escaped}');
+                            el.dispatchEvent(new Event('input', {{bubbles: true}}));
+                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                            return 'ok';
+                        }})()"#
+                    );
+                    let _ = self.runtime_evaluate(&nudge_js).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    // Re-verify after the nudge.
+                    let verify2_raw = self.runtime_evaluate(&verify_js).await.unwrap_or_default();
+                    let verify2: Value = serde_json::from_str(&verify2_raw).unwrap_or(json!({}));
+                    let dom_after = verify2
+                        .get("domValue")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let react_after = verify2
+                        .get("reactValue")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == text)
+                        .unwrap_or(false);
+                    if dom_after == text && react_after {
+                        return Ok(ActionResult::Success {
+                            message: format!(
+                                "Filled @e{ref_id} ({} chars, React state nudged via setter)",
+                                text.len()
+                            ),
+                        });
+                    }
+                    return Ok(ActionResult::Failed {
+                        error: format!(
+                            "Filled @e{ref_id} DOM-side but React state did not update — controlled component may need per-char keystrokes (dom={dom_after:?}, reactMatch={react_after})"
+                        ),
+                    });
+                }
+
+                // DOM didn't even match — Fill genuinely failed.
+                Ok(ActionResult::Failed {
+                    error: format!(
+                        "Fill @e{ref_id} failed: expected {} chars, got {} chars in DOM (reactState={})",
+                        text.len(),
+                        dom_value.len(),
+                        if has_react {
+                            verify
+                                .get("reactValue")
+                                .and_then(|v| v.as_str())
+                                .map(|s| format!("{:?}", s))
+                                .unwrap_or_else(|| "null".into())
+                        } else {
+                            "no-react-fiber".into()
+                        }
+                    ),
+                })
             }
 
             BrowserAction::Select {
