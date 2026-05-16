@@ -18,10 +18,12 @@
 - **Memory**: saved `feedback_distrust_bug_diagnosis.md` — when a bug report has both evidence and a hypothesized cause, re-investigate from the evidence (BR-7 was a multi-symptom report with a wrong hypothesis; all three symptoms had one shared root cause).
 
 ## Current State
-- ✅ BR-6, BR-7 fixed and validated E2E against real Greenhouse react-select
+- ✅ BR-6, BR-7, BR-8 fixed and validated E2E against real Greenhouse (react-select + textarea + masked phone all commit)
+- ✅ BR-9 fixed via `cdp-attach` engine type (primary) + `solve_captcha` playbook action (autonomous fallback)
 - ✅ Workspace builds clean (`cargo check --features cdp,sevro` — zero new warnings)
-- ✅ Release binary current: `target/release/wraith-browser.exe`, 47 MB, 2026-05-16 7:23 AM
+- ✅ Release binary current: `target/release/wraith-browser.exe`, 47 MB, 2026-05-16 9:33 AM
 - ✅ Hosted Corpo API live (Vercel + direct VPS)
+- ⏳ BR-9 E2E smoke against real Greenhouse with cdp-attach not yet rerun on rebuilt binary
 - ⏳ FR-4 ClaudioOS bridge still pending — Wraith side fully ready
 - ⏳ BR-3 PAT rotation pending — Matt-action only
 
@@ -30,12 +32,13 @@
 - **FR-4** on the ClaudioOS side — needs a separate session. Wraith side is ready.
 
 ## What's Next
-1. **Pick a free hostname** (DuckDNS / FreeDNS / no-ip) → bring up Caddy via the staged `tls` profile in `deploy/corpo/docker-compose.yml`. ~5 min once DNS resolves.
-2. **Record the demo** following `marketing/recording-setup.md` (~1.5-2h producer time). Ship `wraith-demo-{1080p,square,vertical}.mp4` to `foss-site/public/` and redeploy.
-3. **HN post** — final eyeball on `marketing/hn-launch.md`, schedule for Tue/Wed 8-9am PT.
-4. **FR-4** — pick up `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md` in a ClaudioOS session: vendor `HttpTransport`, write the 4-line `impl HttpTransport for SmoltcpTransport`, kernel smoke test in QEMU.
-5. **BR-3** — Matt-action: rotate the exposed PAT per `scripts/rotate-github-pat.md` (5 min).
-6. **(Low priority)** Add `tracing::info!("real click at x={x:.0} y={y:.0} ref={ref_id}")` inside `cdp_dispatch_real_click` per BR-7's suggestion. Would have caught the wrong-engine routing in 5 min instead of forcing a long investigation.
+1. **BR-9 E2E smoke** — Matt-action: kill running Wraith MCP, reconnect (binary at 9:33 AM), start Chrome with `chrome.exe --remote-debugging-port=9222` (signed-in daily profile), re-run the Anthropic Greenhouse application using `engine_type: "cdp-attach"`. Real fingerprint should pass reCAPTCHA v3 → submit POST fires → confirmation renders.
+2. **Pick a free hostname** (DuckDNS / FreeDNS / no-ip) → bring up Caddy via the staged `tls` profile in `deploy/corpo/docker-compose.yml`. ~5 min once DNS resolves.
+3. **Record the demo** following `marketing/recording-setup.md` (~1.5-2h producer time). Ship `wraith-demo-{1080p,square,vertical}.mp4` to `foss-site/public/` and redeploy.
+4. **HN post** — final eyeball on `marketing/hn-launch.md`, schedule for Tue/Wed 8-9am PT.
+5. **FR-4** — pick up `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md` in a ClaudioOS session: vendor `HttpTransport`, write the 4-line `impl HttpTransport for SmoltcpTransport`, kernel smoke test in QEMU.
+6. **BR-3** — Matt-action: rotate the exposed PAT per `scripts/rotate-github-pat.md` (5 min).
+7. **(Low priority)** Add `tracing::info!("real click at x={x:.0} y={y:.0} ref={ref_id}")` inside `cdp_dispatch_real_click` per BR-7's suggestion. Would have caught the wrong-engine routing in 5 min instead of forcing a long investigation.
 
 ## Notes for Next Session
 - **For Greenhouse / Lever / Ashby applications, prefer `engine_type: "cdp-attach"`.** Start Chrome with `chrome.exe --remote-debugging-port=9222` (signed-in daily profile), then `browse_session_create(name="...", engine_type="cdp-attach")`. Real fingerprint passes reCAPTCHA v3 natively. Headless `engine_type: "cdp"` only works for sites without invisible bot-score checks (or with `TWOCAPTCHA_API_KEY` set for autonomous fallback).
