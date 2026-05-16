@@ -211,7 +211,7 @@ impl WraithHandler {
                 "Go back to the previous page in browser history.",
                 &schema_for!(BackInput), rw_open.clone()),
             make_tool("browse_key_press",
-                "Press a keyboard key on the current page.",
+                "Press a keyboard key on the current page. Pass `ref_id` to focus an element first so the key dispatches to the right target (e.g. committing a react-select choice after the menu is open).",
                 &schema_for!(KeyPressInput), rw_open.clone()),
             make_tool("browse_scroll",
                 "Scroll the current page up or down.",
@@ -241,7 +241,7 @@ impl WraithHandler {
                 "View recent vault audit log entries.",
                 &schema_for!(VaultAuditInput), ro_closed.clone()),
             make_tool("browse_select",
-                "Select a dropdown option by @ref ID and value.",
+                "Select a dropdown option by @ref ID and value. Handles native <select> elements AND React-style portal-rendered dropdowns (react-select, Radix, Headless UI, MUI) by opening the menu via real CDP mouse events, locating the option by label/data-value, and clicking it. Works on Greenhouse/Lever/Ashby application forms.",
                 &schema_for!(SelectInput), rw_open.clone()),
             make_tool("browse_type",
                 "Type text into an element with realistic keystroke delays (realistic human-like input simulation).",
@@ -516,7 +516,7 @@ impl WraithHandler {
                 "Go back to the previous page in browser history.",
                 &schema_for!(BackInput), rw_open.clone()),
             make_tool("browse_key_press",
-                "Press a keyboard key on the current page.",
+                "Press a keyboard key on the current page. Pass `ref_id` to focus an element first so the key dispatches to the right target (e.g. committing a react-select choice after the menu is open).",
                 &schema_for!(KeyPressInput), rw_open.clone()),
             make_tool("browse_scroll",
                 "Scroll the current page up or down.",
@@ -711,60 +711,67 @@ impl WraithHandler {
                 let input: NavigateInput = parse_args(args)?;
                 info!(url = %input.url, "Navigating");
 
-                // Clear active CDP session — switch back to native engine
+                // BR-7 fix: route through the currently active session instead
+                // of unconditionally resetting to "native". The old code reset
+                // active_session_name = "native" and grabbed self.engine directly
+                // — so any browse_session_switch to a CDP session was silently
+                // undone the moment the user called browse_navigate, and every
+                // subsequent click/select/eval_js hit Sevro instead of Chrome.
+                // SPA auto-fallback still applies, but only when the active
+                // engine genuinely is the default native one.
+                #[cfg(feature = "cdp")]
+                let active_name = self.active_session_name.lock().await.clone();
+                #[cfg(not(feature = "cdp"))]
+                let active_name = "native".to_string();
+
+                let engine_arc = self.active_engine_async().await;
+                let snapshot = {
+                    let mut engine = engine_arc.lock().await;
+                    engine.navigate(&input.url).await
+                        .map_err(|e| ErrorData::internal_error(format!("Navigation failed: {e}"), None))?;
+                    engine.snapshot().await
+                        .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?
+                };
+
+                // CDP auto-fallback: if the snapshot from the (native) active engine
+                // has very few interactive elements, this is likely a JS-heavy SPA
+                // that didn't render properly. Only applies when no explicit non-native
+                // session is active — otherwise we'd silently override the user's choice.
                 #[cfg(feature = "cdp")]
                 {
-                    let mut cdp_session = self.active_cdp_session.lock().await;
-                    if cdp_session.is_some() {
-                        info!("Switching from CDP to native engine");
-                        *cdp_session = None;
-                    }
-                    let mut active = self.active_session_name.lock().await;
-                    *active = "native".to_string();
-                }
+                    if active_name == "native"
+                        && self.cdp_auto
+                        && snapshot.elements.len() < 5
+                        && self.cdp_engine.is_some()
+                    {
+                        info!(
+                            native_elements = snapshot.elements.len(),
+                            url = %input.url,
+                            "SPA detected, falling back to CDP renderer"
+                        );
 
-                let mut engine = self.engine.lock().await;
-                engine.navigate(&input.url).await
-                    .map_err(|e| ErrorData::internal_error(format!("Navigation failed: {e}"), None))?;
-
-                let snapshot = engine.snapshot().await
-                    .map_err(|e| ErrorData::internal_error(format!("Snapshot failed: {e}"), None))?;
-
-                // CDP auto-fallback: if the native snapshot has very few interactive
-                // elements, this is likely a JS-heavy SPA that didn't render properly.
-                #[cfg(feature = "cdp")]
-                {
-                    if self.cdp_auto && snapshot.elements.len() < 5 {
-                        if let Some(ref cdp) = self.cdp_engine {
-                            info!(
-                                native_elements = snapshot.elements.len(),
-                                url = %input.url,
-                                "SPA detected, falling back to CDP renderer"
-                            );
-                            drop(engine); // release native engine lock
-
-                            // Lazily launch CDP engine for SPA rendering
-                            use wraith_browser_core::engine_cdp::CdpEngine;
-                            match CdpEngine::new().await {
-                                Ok(mut cdp_eng) => {
-                                    if let Ok(()) = cdp_eng.navigate(&input.url).await {
-                                        if let Ok(cdp_snapshot) = cdp_eng.snapshot().await {
-                                            let response = cdp_snapshot.to_agent_text();
-                                            let _ = cdp_eng.shutdown().await;
-                                            return Ok(CallToolResult::success(vec![Content::text(
-                                                format!("[Full browser fallback — native had {} elements]\n\n{}", snapshot.elements.len(), response)
-                                            )]));
-                                        }
+                        // Lazily launch CDP engine for SPA rendering
+                        use wraith_browser_core::engine_cdp::CdpEngine;
+                        match CdpEngine::new().await {
+                            Ok(mut cdp_eng) => {
+                                if let Ok(()) = cdp_eng.navigate(&input.url).await {
+                                    if let Ok(cdp_snapshot) = cdp_eng.snapshot().await {
+                                        let response = cdp_snapshot.to_agent_text();
+                                        let _ = cdp_eng.shutdown().await;
+                                        return Ok(CallToolResult::success(vec![Content::text(
+                                            format!("[Full browser fallback — native had {} elements]\n\n{}", snapshot.elements.len(), response)
+                                        )]));
                                     }
-                                    let _ = cdp_eng.shutdown().await;
                                 }
-                                Err(e) => {
-                                    debug!(error = %e, "CDP fallback unavailable");
-                                }
+                                let _ = cdp_eng.shutdown().await;
+                            }
+                            Err(e) => {
+                                debug!(error = %e, "CDP fallback unavailable");
                             }
                         }
                     }
                 }
+                let _ = active_name;
 
                 let response = snapshot.to_agent_text();
                 Ok(CallToolResult::success(vec![Content::text(response)]))
@@ -1010,11 +1017,45 @@ impl WraithHandler {
 
             "browse_key_press" => {
                 let input: KeyPressInput = parse_args(args)?;
-                // In native mode, Enter on a form triggers submit
+                let engine_arc = self.active_engine_async().await;
+                let mut engine = engine_arc.lock().await;
+
+                // BR-6: if ref_id is provided, focus the element first so the
+                // key dispatches to the right target. Without this, the key
+                // lands on whatever currently has focus — often a page-top
+                // button that captures Enter and submits the form prematurely.
+                if let Some(ref_id) = input.ref_id {
+                    let focus_js = format!(
+                        r#"(() => {{
+                            const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                            if (!el) return 'not_found';
+                            if (typeof el.focus === 'function') el.focus();
+                            return 'focused';
+                        }})()"#
+                    );
+                    match engine.eval_js(&focus_js).await {
+                        Ok(r) if r == "not_found" => {
+                            return Ok(CallToolResult::success(vec![Content::text(
+                                format!("@e{ref_id} not found — cannot focus before key press"),
+                            )]));
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            return Ok(CallToolResult::success(vec![Content::text(
+                                format!("Focus before key press failed: {e}"),
+                            )]));
+                        }
+                    }
+
+                    let result = engine.execute_action(BrowserAction::KeyPress { key: input.key.clone() }).await
+                        .map_err(|e| ErrorData::internal_error(format!("KeyPress failed: {e}"), None))?;
+                    return Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]));
+                }
+
+                // No ref_id given — preserve legacy behavior: in native mode,
+                // bare Enter triggers a submit-button click as a workaround for
+                // engines that don't dispatch real key events.
                 if input.key.eq_ignore_ascii_case("enter") {
-                    let engine_arc = self.active_engine_async().await;
-                    let mut engine = engine_arc.lock().await;
-                    // Get the current snapshot and find a submit button or regular button
                     if let Ok(snapshot) = engine.snapshot().await {
                         let submit_el = snapshot.elements.iter().find(|el| {
                             el.role == "submit" || el.role == "button"
@@ -1032,9 +1073,12 @@ impl WraithHandler {
                         }
                     }
                 }
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("Key press '{}' acknowledged (limited in native mode)", input.key)
-                )]))
+
+                // Engines with real keyboard support (CDP) will honor this even
+                // without an explicit ref_id — it dispatches to current focus.
+                let result = engine.execute_action(BrowserAction::KeyPress { key: input.key.clone() }).await
+                    .map_err(|e| ErrorData::internal_error(format!("KeyPress failed: {e}"), None))?;
+                Ok(CallToolResult::success(vec![Content::text(format_action_result(&result))]))
             }
 
             "browse_scroll" => {

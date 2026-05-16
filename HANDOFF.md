@@ -1,28 +1,48 @@
 # Wraith Browser — Session Handoff
 
 ## Last Updated
-2026-05-02
+2026-05-16
 
 ## Project Status
-🟢 **Hosted Corpo API live** at `https://wraith-browser.vercel.app` (Vercel TLS-proxied) and `http://207.244.232.227:8080` (direct). Open AGPL repo + proprietary api-server tier both deploying clean. Growth-prep artifacts staged. FR queue cleared except for cross-repo FR-4 (waiting on ClaudioOS session).
+🟢 **BR-6 + BR-7 fixed and confirmed E2E** — Greenhouse react-select dropdowns commit end-to-end with the rebuilt binary. Hosted Corpo API still live at `https://wraith-browser.vercel.app` and `http://207.244.232.227:8080`. Only BR-3 (PAT rotation, Matt-action) and FR-4 (ClaudioOS bridge) remain on the BR/FR board.
 
-## What's Next
-1. **Pick a free hostname** (DuckDNS / FreeDNS / no-ip) → bring up Caddy via the staged `tls` profile in `deploy/corpo/docker-compose.yml` for real TLS + WSS. ~5 min once DNS resolves.
-2. **Record the demo** following `marketing/recording-setup.md` on Kokonoe (~1.5-2h producer time). Ship the three outputs (`wraith-demo-{1080p,square,vertical}.mp4`) to `foss-site/public/` and redeploy.
-3. **HN post** — final eyeball on `marketing/hn-launch.md`, schedule for Tue/Wed 8-9am PT.
-4. **FR-4** — pick up `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md` in a ClaudioOS session: vendor the `HttpTransport` trait, write the 4-line `impl HttpTransport for SmoltcpTransport`, kernel smoke test in QEMU.
-5. **BR-3** — Matt-action: rotate the exposed PAT per `scripts/rotate-github-pat.md` (5 min).
+## What Was Done This Session
+- **BR-6 round 1** (engine_cdp.rs + tools.rs + server.rs): swapped `BrowserAction::Click` from `el.click()` JS to real `Input.dispatchMouseEvent` (mouseMoved → mousePressed → mouseReleased). Added helpers `cdp_resolve_ref_point`, `cdp_dispatch_real_click`, `cdp_real_click_at_ref`. Rewrote the `Select` combobox path to open via real CDP click then locate + click options at their viewport coords. Added `[role="option"]` and `[role="listbox"]` to `SNAPSHOT_JS.interactiveSelectors`. Gave `KeyPressInput` an optional `ref_id` so callers can focus before pressing; tightened the handler accordingly.
+- **BR-7 root cause** (server.rs): `browse_navigate` was unconditionally resetting `active_session_name = "native"` and grabbing `self.engine` directly, so every `browse_session_switch("cdp...")` was silently undone the moment the user navigated. Fix: route through `active_engine_async()`; SPA auto-fallback only fires when active session genuinely is native. This was the actual cause of every BR-7 symptom — the eval_js/coord/matcher hypotheses were red herrings.
+- **BR-7 hardening** (engine_cdp.rs Select path): scoped option search to a visibly-open menu container (`[role="listbox"]`, `.select__menu`, `[data-state="open"]`, etc.); dropped substring matching in favor of exact text/`data-value` equality; added post-click commit verification (`.select__single-value` / aria-valuenow / trigger-text change). `browse_select` now returns `Failed { reason: menu_still_open | no_commit_indicator }` instead of false-positive `SELECTED`.
+- **Build + smoke**: `cargo build --release --features cdp,sevro` produced fresh `target/release/wraith-browser.exe` (47 MB, mtime 7:23 AM). E2E smoke against Anthropic Greenhouse application: ✅ passed.
+- **Docs**: `NEXT-UP.md` updated with BR-6 + BR-7 fix logs; priority order rewritten; Open Items shrunk to BR-3 + FR-4 + low-priority diagnostic follow-up.
+- **Memory**: saved `feedback_distrust_bug_diagnosis.md` — when a bug report has both evidence and a hypothesized cause, re-investigate from the evidence (BR-7 was a multi-symptom report with a wrong hypothesis; all three symptoms had one shared root cause).
+
+## Current State
+- ✅ BR-6, BR-7 fixed and validated E2E against real Greenhouse react-select
+- ✅ Workspace builds clean (`cargo check --features cdp,sevro` — zero new warnings)
+- ✅ Release binary current: `target/release/wraith-browser.exe`, 47 MB, 2026-05-16 7:23 AM
+- ✅ Hosted Corpo API live (Vercel + direct VPS)
+- ⏳ FR-4 ClaudioOS bridge still pending — Wraith side fully ready
+- ⏳ BR-3 PAT rotation pending — Matt-action only
 
 ## Blocking Issues
-- **Free hostname** for Caddy/TLS — none picked yet. Vercel rewrites cover REST but WebSocket upgrades and the cleartext Vercel→VPS leg still need real TLS on the VPS.
-- **FR-4** on the ClaudioOS side — needs a separate session. Wraith side is fully ready (`SevroEngine::with_transport(...).fetch(url)` works in both std and no-std).
+- **Free hostname for Caddy/TLS** — none picked. Vercel rewrites cover REST but WebSocket upgrades and the cleartext Vercel→VPS leg need real TLS on the VPS.
+- **FR-4** on the ClaudioOS side — needs a separate session. Wraith side is ready.
+
+## What's Next
+1. **Pick a free hostname** (DuckDNS / FreeDNS / no-ip) → bring up Caddy via the staged `tls` profile in `deploy/corpo/docker-compose.yml`. ~5 min once DNS resolves.
+2. **Record the demo** following `marketing/recording-setup.md` (~1.5-2h producer time). Ship `wraith-demo-{1080p,square,vertical}.mp4` to `foss-site/public/` and redeploy.
+3. **HN post** — final eyeball on `marketing/hn-launch.md`, schedule for Tue/Wed 8-9am PT.
+4. **FR-4** — pick up `J:\baremetal claude\docs\WRAITH-CRATES-HANDOFF.md` in a ClaudioOS session: vendor `HttpTransport`, write the 4-line `impl HttpTransport for SmoltcpTransport`, kernel smoke test in QEMU.
+5. **BR-3** — Matt-action: rotate the exposed PAT per `scripts/rotate-github-pat.md` (5 min).
+6. **(Low priority)** Add `tracing::info!("real click at x={x:.0} y={y:.0} ref={ref_id}")` inside `cdp_dispatch_real_click` per BR-7's suggestion. Would have caught the wrong-engine routing in 5 min instead of forcing a long investigation.
 
 ## Notes for Next Session
-- `crates/api-server/` is **gitignored** (proprietary). Edits to it (BR-5 `display_name` fix, BR-4 migration-fail-loud) are local-only on Kokonoe + already deployed to pixie. Don't be surprised when `git diff` shows them as tracked-but-uncommitted; the gitignore was added after the file was first committed. Leave them out of public commits.
-- The Anthropic API key in TRW's `.env.local` (`sk-ant-api03-l0…X_NgAA`) has **zero credit balance**. TRW production uses the OAuth-token proxy on pixie instead, so nothing's broken — but if you fall back to the key directly, top up first.
-- `wraith-browser.vercel.app` is **aliased** to the `wraith-docs` Vercel project — not natively named. After every `vercel deploy --prod`, re-alias with `vercel alias set <new-url> wraith-browser.vercel.app` or the alias will revert.
-- Edge rate-limit on `/api/v1/auth/register` is **per-region in-memory** (not durable). Sufficient for week-1 anti-abuse; swap for Vercel KV / Upstash before the HN post hits front page.
-- The `target/` cache of the Docker linux builder lives at `dist/.cache/` — don't `rm -rf dist/` blindly, it'll add 15 min back to every release.
+- **`browse_session_switch` now actually persists across `browse_navigate`** — but only thanks to the BR-7 fix in `server.rs`. If anyone changes that handler in the future, preserve the `active_engine_async()` routing. The old hijack-to-native behavior was the root cause of an extremely confusing "eval_js is sandboxed" report.
+- **`browse_select` will now return `Failed` instead of false-positive `SELECTED`** when the menu doesn't open or no commit indicator appears. Agents downstream that assumed every `SELECTED` was real have just gained accurate feedback — but any code that ignored the return value will now silently leave forms half-filled. Audit any swarm/playbook code that bulk-fires `browse_select`.
+- **Sevro-vs-CDP test pattern**: if you ever see `document.URL === undefined`, body.textContent length 0, and no `__react*` keys on a "CDP" session, you're hitting Sevro. Check whether `browse_navigate` (or anything else) reset `active_session_name`.
+- `crates/api-server/` is **gitignored** (proprietary). Edits to it (BR-5 `display_name` fix, BR-4 migration-fail-loud) are local-only on Kokonoe + already deployed to pixie. Don't be surprised when `git diff` shows them as tracked-but-uncommitted.
+- The Anthropic API key in TRW's `.env.local` (`sk-ant-api03-l0…X_NgAA`) has **zero credit balance**. TRW production uses the OAuth-token proxy on pixie. If you fall back to the key directly, top up first.
+- `wraith-browser.vercel.app` is **aliased** to the `wraith-docs` Vercel project. After every `vercel deploy --prod`, re-alias with `vercel alias set <new-url> wraith-browser.vercel.app`.
+- Edge rate-limit on `/api/v1/auth/register` is **per-region in-memory** (not durable). Swap for Vercel KV / Upstash before the HN post hits front page.
+- The Docker linux builder cache lives at `dist/.cache/` — don't `rm -rf dist/` blindly, it'll add 15 min back to every release.
 
 ---
 

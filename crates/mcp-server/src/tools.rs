@@ -131,6 +131,11 @@ pub struct HoverInput {
 pub struct KeyPressInput {
     /// Key name: "Enter", "Tab", "Escape", "ArrowDown", "Backspace", etc.
     pub key: String,
+    /// Optional @ref ID to focus before pressing the key. Without this, the
+    /// key dispatches to whatever element currently has focus, which is often
+    /// not the one you mean (e.g. page-top buttons capture Enter on form pages).
+    #[serde(default)]
+    pub ref_id: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]

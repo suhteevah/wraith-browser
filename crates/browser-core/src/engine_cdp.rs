@@ -311,6 +311,95 @@ impl CdpEngine {
         }
     }
 
+    /// Resolve a `data-wraith-ref` to a viewport-relative click point (center
+    /// of its bounding box). Scrolls the element into view first so the click
+    /// lands inside the viewport. Returns `None` if the element is missing or
+    /// has zero-size geometry.
+    async fn cdp_resolve_ref_point(&self, ref_id: u32) -> BrowserResult<Option<(f64, f64)>> {
+        let js = format!(
+            r#"(() => {{
+                const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                if (!el) return JSON.stringify({{ok: false, reason: 'not_found'}});
+                el.scrollIntoView({{block: 'center', inline: 'center'}});
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 && r.height === 0) {{
+                    return JSON.stringify({{ok: false, reason: 'zero_size'}});
+                }}
+                return JSON.stringify({{
+                    ok: true,
+                    x: r.left + r.width / 2,
+                    y: r.top + r.height / 2,
+                }});
+            }})()"#
+        );
+        let raw = self.runtime_evaluate(&js).await?;
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|e| BrowserError::EngineError(format!("cdp_resolve_ref_point parse: {e} :: {raw}")))?;
+        if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+            return Ok(None);
+        }
+        let x = v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        Ok(Some((x, y)))
+    }
+
+    /// Dispatch a real mouse click at viewport-relative (x, y) using
+    /// `Input.dispatchMouseEvent`. Produces a real trusted event sequence —
+    /// `mouseMoved` (so :hover styles settle), then `mousePressed` +
+    /// `mouseReleased` — so React's delegated `onMouseDown` listeners (used by
+    /// react-select, Radix, MUI, Headless UI, Ariakit, etc.) fire.
+    ///
+    /// `el.click()` only fires the synthetic `click` event, which is why
+    /// portal-rendered react-select menus stay closed when driven via JS.
+    async fn cdp_dispatch_real_click(&self, x: f64, y: f64) -> BrowserResult<()> {
+        self.send_cdp_command(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseMoved",
+                "x": x,
+                "y": y,
+                "button": "none",
+                "buttons": 0,
+            }),
+        ).await?;
+        self.send_cdp_command(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mousePressed",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "buttons": 1,
+                "clickCount": 1,
+            }),
+        ).await?;
+        self.send_cdp_command(
+            "Input.dispatchMouseEvent",
+            json!({
+                "type": "mouseReleased",
+                "x": x,
+                "y": y,
+                "button": "left",
+                "buttons": 0,
+                "clickCount": 1,
+            }),
+        ).await?;
+        Ok(())
+    }
+
+    /// Resolve `ref_id` then dispatch a real CDP mouse click on its center
+    /// point. Returns `Ok(true)` if the element was found and clicked,
+    /// `Ok(false)` if the element was not found.
+    async fn cdp_real_click_at_ref(&self, ref_id: u32) -> BrowserResult<bool> {
+        match self.cdp_resolve_ref_point(ref_id).await? {
+            Some((x, y)) => {
+                self.cdp_dispatch_real_click(x, y).await?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Reconnect to the new page target after navigation destroyed the old one.
     ///
     /// When a CDP click causes a full-page navigation (e.g. clicking an `<a>` link),
@@ -769,18 +858,18 @@ impl BrowserEngine for CdpEngine {
                     .await
                     .unwrap_or_default();
 
-                let js = format!(
-                    r#"(() => {{
-                        const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
-                        if (!el) return 'Element @e{ref_id} not found';
-                        el.scrollIntoView({{block: 'center'}});
-                        el.click();
-                        return 'clicked';
-                    }})()"#
-                );
-                let result = self.runtime_evaluate(&js).await?;
-                if result.contains("not found") {
-                    return Ok(ActionResult::Failed { error: result });
+                // BR-6: dispatch real CDP mouse events instead of el.click().
+                // Synthetic .click() only fires the `click` event — react-select,
+                // Radix, Headless UI, MUI all open their menus on `mousedown` so
+                // they can preempt focus shift, so .click() leaves their menus
+                // closed. Input.dispatchMouseEvent fires the full mouseMoved →
+                // mousePressed → mouseReleased trusted-event sequence that React's
+                // delegated listeners on the real document pick up natively.
+                let clicked = self.cdp_real_click_at_ref(ref_id).await?;
+                if !clicked {
+                    return Ok(ActionResult::Failed {
+                        error: format!("Element @e{ref_id} not found"),
+                    });
                 }
 
                 // Wait briefly for potential navigation to start
@@ -873,116 +962,252 @@ impl BrowserEngine for CdpEngine {
                 value,
                 force: _,
             } => {
-                let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-                let js = format!(
+                // First detect whether this is a native <select> — if so, the
+                // .value setter path works fine and is the fastest option.
+                let tag_js = format!(
                     r#"(() => {{
                         const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
-                        if (!el) return JSON.stringify({{error: 'Element @e{ref_id} not found'}});
-                        const tag = el.tagName.toLowerCase();
+                        if (!el) return 'NOT_FOUND';
+                        return el.tagName.toLowerCase();
+                    }})()"#
+                );
+                let tag = self.runtime_evaluate(&tag_js).await?;
+                if tag == "NOT_FOUND" {
+                    return Ok(ActionResult::Failed {
+                        error: format!("Element @e{ref_id} not found"),
+                    });
+                }
 
-                        // --- Native <select> ---
-                        if (tag === 'select') {{
+                let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
+
+                if tag == "select" {
+                    let js = format!(
+                        r#"(() => {{
+                            const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                            if (!el) return JSON.stringify({{error: 'Element @e{ref_id} not found'}});
                             el.value = '{escaped}';
                             el.dispatchEvent(new Event('change', {{bubbles: true}}));
                             const chosen = el.options[el.selectedIndex];
                             return JSON.stringify({{ok: true, display: chosen ? chosen.textContent.trim() : '{escaped}'}});
-                        }}
-
-                        // --- React / custom dropdown (role="combobox" or similar) ---
-                        // Step 1: Click the trigger to open the dropdown
-                        el.click();
-                        el.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-                        el.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true}}));
-
-                        // Step 2: Look for the dropdown listbox / option list that appeared
-                        // Common patterns: [role="listbox"], [role="option"], ul[class*="menu"], etc.
-                        function findOption(val) {{
-                            const selectors = [
-                                '[role="option"]',
-                                '[role="listbox"] li',
-                                '[class*="option"]',
-                                '[class*="menu"] li',
-                                '[class*="dropdown"] li',
-                                '[class*="select"] li',
-                                'ul[class*="list"] li',
-                            ];
-                            const valueLower = val.toLowerCase();
-                            for (const sel of selectors) {{
-                                for (const opt of document.querySelectorAll(sel)) {{
-                                    const text = (opt.innerText || opt.textContent || '').trim();
-                                    if (text.toLowerCase() === valueLower || text.toLowerCase().includes(valueLower)) {{
-                                        return opt;
-                                    }}
-                                    // Also check data-value attribute
-                                    const dv = opt.getAttribute('data-value') || '';
-                                    if (dv.toLowerCase() === valueLower) return opt;
-                                }}
-                            }}
-                            return null;
-                        }}
-
-                        const option = findOption('{escaped}');
-                        if (option) {{
-                            option.click();
-                            option.dispatchEvent(new MouseEvent('mousedown', {{bubbles: true}}));
-                            option.dispatchEvent(new MouseEvent('mouseup', {{bubbles: true}}));
-
-                            // Also try to set any hidden input associated with the combobox
-                            const hiddenInput = el.querySelector('input[type="hidden"]') || el.querySelector('input');
-                            if (hiddenInput) {{
-                                const nativeSetter = Object.getOwnPropertyDescriptor(
-                                    window.HTMLInputElement.prototype, 'value'
-                                ).set;
-                                nativeSetter.call(hiddenInput, '{escaped}');
-                                hiddenInput.dispatchEvent(new Event('input', {{bubbles: true}}));
-                                hiddenInput.dispatchEvent(new Event('change', {{bubbles: true}}));
-                            }}
-                            return JSON.stringify({{ok: true, display: (option.innerText || option.textContent || '').trim()}});
-                        }}
-
-                        // Step 3: Fallback — just try setting .value if the element supports it
-                        if ('value' in el) {{
-                            el.value = '{escaped}';
-                            el.dispatchEvent(new Event('change', {{bubbles: true}}));
-                        }}
-                        return JSON.stringify({{ok: true, display: '{escaped}', fallback: true}});
-                    }})()"#
-                );
-                let result = self.runtime_evaluate(&js).await?;
-                if result.contains("\"error\"") {
-                    let msg = result
-                        .replace("{\"error\":\"", "")
-                        .replace("\"}", "");
-                    return Ok(ActionResult::Failed { error: msg });
+                        }})()"#
+                    );
+                    let _ = self.runtime_evaluate(&js).await?;
+                    return Ok(ActionResult::Success {
+                        message: format!("SELECTED: {value} on @e{ref_id}"),
+                    });
                 }
 
-                // Wait for React re-render after clicking the option
+                // --- React / custom dropdown (BR-6 fix) ---
+                // Step 1: open the menu by dispatching a real CDP mouse click
+                // on the trigger. el.click() fires only the synthetic click
+                // event; react-select / Radix / Headless UI listen for
+                // mousedown so they can preempt focus shift, so a JS click
+                // leaves their menus closed.
+                if !self.cdp_real_click_at_ref(ref_id).await? {
+                    return Ok(ActionResult::Failed {
+                        error: format!("Element @e{ref_id} not found"),
+                    });
+                }
+
+                // Step 2: wait for the option list to render (portal-rendered
+                // menus mount async after mousedown). Poll up to ~1.5s.
+                //
+                // BR-7 fix: scope the option search to a visibly-open menu
+                // container (`[role="listbox"]` or `.select__menu` /
+                // `.dropdown-menu`) — NOT document-wide. Use exact match on
+                // `data-value` / trimmed text (case-insensitive). Substring
+                // matching would catch unrelated page text (e.g. Greenhouse's
+                // AI-policy paragraph "...by selecting 'Yes.'") and silently
+                // click dead air, returning a false-positive SELECTED.
+                let mut option_coords: Option<(f64, f64, String)> = None;
+                for _ in 0..15 {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let find_js = format!(
+                        r#"(() => {{
+                            const valueLower = '{escaped}'.toLowerCase();
+                            // Find a visibly-open menu container first. If no menu
+                            // is open, do NOT search the document — that's how false
+                            // positives slip in.
+                            const menuContainers = Array.from(document.querySelectorAll(
+                                '[role="listbox"], .select__menu, .select__menu-list, '
+                                + '[class*="MenuList"], [class*="Menu"][class*="open"], '
+                                + '[class*="dropdown-menu"][class*="show"], '
+                                + '[class*="popper"], [data-state="open"]'
+                            )).filter(m => {{
+                                const r = m.getBoundingClientRect();
+                                return r.width > 0 && r.height > 0;
+                            }});
+                            if (menuContainers.length === 0) {{
+                                return JSON.stringify({{ok: false, reason: 'menu_not_open'}});
+                            }}
+
+                            // Search options as descendants of the open menu only.
+                            const optionSelectors = [
+                                '[role="option"]',
+                                '[class*="select__option"]',
+                                '[class*="MenuItem"]',
+                                'li[role="menuitem"]',
+                                'li',
+                            ].join(',');
+                            const seen = new Set();
+                            for (const menu of menuContainers) {{
+                                for (const opt of menu.querySelectorAll(optionSelectors)) {{
+                                    if (seen.has(opt)) continue;
+                                    seen.add(opt);
+                                    const r = opt.getBoundingClientRect();
+                                    if (r.width === 0 || r.height === 0) continue;
+                                    const text = (opt.innerText || opt.textContent || '').trim();
+                                    const tl = text.toLowerCase();
+                                    const dv = (opt.getAttribute('data-value') || '').toLowerCase();
+                                    // Exact match only — substring match false-positives on
+                                    // option-shaped DOM that happens to contain the value
+                                    // string somewhere in its descendants.
+                                    if (tl === valueLower || dv === valueLower) {{
+                                        return JSON.stringify({{
+                                            ok: true,
+                                            x: r.left + r.width / 2,
+                                            y: r.top + r.height / 2,
+                                            display: text,
+                                        }});
+                                    }}
+                                }}
+                            }}
+                            return JSON.stringify({{ok: false, reason: 'no_exact_match'}});
+                        }})()"#
+                    );
+                    let raw = self.runtime_evaluate(&find_js).await?;
+                    if let Ok(v) = serde_json::from_str::<Value>(&raw) {
+                        if v.get("ok").and_then(|b| b.as_bool()) == Some(true) {
+                            let x = v.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let y = v.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let display = v
+                                .get("display")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&value)
+                                .to_string();
+                            option_coords = Some((x, y, display));
+                            break;
+                        }
+                    }
+                }
+
+                let display = match option_coords {
+                    Some((x, y, disp)) => {
+                        // Step 3: click the option with a real CDP mouse event.
+                        self.cdp_dispatch_real_click(x, y).await?;
+                        disp
+                    }
+                    None => {
+                        // Fallback: try a native .value set on the trigger in
+                        // case it's a non-portal custom dropdown that accepts it.
+                        let fb_js = format!(
+                            r#"(() => {{
+                                const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
+                                if (!el) return '';
+                                if ('value' in el) {{
+                                    el.value = '{escaped}';
+                                    el.dispatchEvent(new Event('change', {{bubbles: true}}));
+                                }}
+                                return '{escaped}';
+                            }})()"#
+                        );
+                        let _ = self.runtime_evaluate(&fb_js).await?;
+                        return Ok(ActionResult::Failed {
+                            error: format!(
+                                "Could not find option '{value}' in the dropdown opened from @e{ref_id} — menu may not have rendered or option label may not match"
+                            ),
+                        });
+                    }
+                };
+
+                // Wait for React re-render after committing the option
                 tokio::time::sleep(Duration::from_millis(200)).await;
 
-                // Read back the displayed text from the combobox trigger to confirm
-                let readback_js = format!(
+                // BR-7 fix: verify the commit actually landed before reporting
+                // SELECTED. React-select commits manifest as one of:
+                //   - the menu closing (no visible .select__menu / [role="listbox"])
+                //   - a .select__single-value (or similar committed-value node)
+                //     rendering the option text
+                //   - the trigger's text/aria-valuenow/aria-label updating to
+                //     match the option label
+                // If none of those are true, the click hit nothing real and we
+                // must NOT return Success — agents downstream would submit a
+                // half-filled form thinking we'd succeeded.
+                let verify_js = format!(
                     r#"(() => {{
                         const el = document.querySelector('[data-wraith-ref="{ref_id}"]');
-                        if (!el) return '';
-                        // For native select
-                        if (el.tagName === 'SELECT') {{
-                            const opt = el.options[el.selectedIndex];
-                            return opt ? opt.textContent.trim() : el.value;
+                        if (!el) return JSON.stringify({{ok: false, reason: 'trigger_gone'}});
+                        const valueLower = '{escaped}'.toLowerCase();
+
+                        // Check for a committed-value display node within the
+                        // combobox subtree.
+                        const single = el.querySelector(
+                            '[class*="singleValue"], [class*="single-value"], '
+                            + '[class*="selectedValue"], [class*="selected-value"]'
+                        );
+                        if (single) {{
+                            const t = (single.innerText || single.textContent || '').trim();
+                            if (t.toLowerCase() === valueLower) {{
+                                return JSON.stringify({{ok: true, via: 'single_value', display: t}});
+                            }}
                         }}
-                        // For custom combobox: check aria-label, textContent, child spans
-                        return (
-                            el.getAttribute('aria-valuenow') ||
-                            el.getAttribute('aria-label') ||
-                            (el.querySelector('span, [class*="value"], [class*="single"]') || {{}}).textContent ||
-                            el.textContent ||
-                            ''
+
+                        // Check aria-valuenow / aria-label.
+                        const aria = (
+                            el.getAttribute('aria-valuenow')
+                            || el.getAttribute('aria-label')
+                            || ''
                         ).trim();
+                        if (aria.toLowerCase() === valueLower) {{
+                            return JSON.stringify({{ok: true, via: 'aria', display: aria}});
+                        }}
+
+                        // Check the trigger's own visible text (last resort —
+                        // some Headless UI variants render the option label
+                        // directly inside the trigger).
+                        const triggerText = (el.innerText || el.textContent || '').trim();
+                        if (triggerText.toLowerCase() === valueLower
+                            || triggerText.toLowerCase().endsWith(valueLower)) {{
+                            return JSON.stringify({{ok: true, via: 'trigger_text', display: triggerText}});
+                        }}
+
+                        // Menu still open and no commit — that means our click
+                        // hit dead air or the wrong element.
+                        const menuOpen = document.querySelectorAll(
+                            '[role="listbox"], .select__menu'
+                        ).length > 0;
+
+                        return JSON.stringify({{
+                            ok: false,
+                            reason: menuOpen ? 'menu_still_open' : 'no_commit_indicator',
+                            triggerText,
+                        }});
                     }})()"#
                 );
-                let displayed = self.runtime_evaluate(&readback_js).await.unwrap_or_default();
+                let verify_raw = self.runtime_evaluate(&verify_js).await.unwrap_or_default();
+                let verify: Value = serde_json::from_str(&verify_raw).unwrap_or(json!({}));
+                if verify.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+                    let reason = verify
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    return Ok(ActionResult::Failed {
+                        error: format!(
+                            "Clicked option '{display}' for @e{ref_id} but no commit indicator appeared ({reason}). Trigger text after click: {:?}",
+                            verify.get("triggerText").and_then(|v| v.as_str()).unwrap_or("")
+                        ),
+                    });
+                }
+
+                let shown = verify
+                    .get("display")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| if !display.is_empty() { display.clone() } else { value.clone() });
 
                 Ok(ActionResult::Success {
-                    message: format!("SELECTED: {} on @e{}", if displayed.is_empty() { value.clone() } else { displayed }, ref_id),
+                    message: format!("SELECTED: {shown} on @e{ref_id}"),
                 })
             }
 
@@ -1674,7 +1899,9 @@ const SNAPSHOT_JS: &str = r#"(() => {
     const elements = [];
     let refId = 0;
 
-    // Selectors for interactive + semantic elements (same set as Sevro)
+    // Selectors for interactive + semantic elements (same set as Sevro,
+    // plus role="option" / role="listbox" so portal-rendered react-select /
+    // Radix / Headless UI menus get @refs once opened).
     const interactiveSelectors = [
         'a[href]',
         'button',
@@ -1689,6 +1916,8 @@ const SNAPSHOT_JS: &str = r#"(() => {
         '[role="radio"]',
         '[role="tab"]',
         '[role="menuitem"]',
+        '[role="option"]',
+        '[role="listbox"]',
         '[contenteditable="true"]',
     ].join(',');
 
