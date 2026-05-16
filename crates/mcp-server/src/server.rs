@@ -698,6 +698,207 @@ impl WraithHandler {
         self.engine.clone()
     }
 
+    /// BR-9: shared captcha-solve-and-inject helper. Used by both the
+    /// standalone `browse_solve_captcha` MCP tool and the `solve_captcha`
+    /// playbook step. Submits to the 2captcha API, polls for the token, and
+    /// injects it into the live page so the next submit handler's
+    /// `grecaptcha.execute()` resolves immediately with the pre-solved token.
+    /// Returns the token string on success or a human-readable error on
+    /// failure.
+    async fn solve_and_inject_captcha(
+        &self,
+        captcha_type: &str,
+        site_key_arg: Option<String>,
+        url_arg: Option<String>,
+    ) -> Result<String, String> {
+        let api_key = std::env::var("TWOCAPTCHA_API_KEY").map_err(|_| {
+            "TWOCAPTCHA_API_KEY environment variable not set. A solving-service API key is required.".to_string()
+        })?;
+
+        // Determine page URL
+        let page_url = if let Some(u) = url_arg {
+            u
+        } else {
+            let engine_arc = self.active_engine_async().await;
+            let engine = engine_arc.lock().await;
+            engine.current_url().await.unwrap_or_default()
+        };
+
+        // Determine site key — auto-detect if not provided
+        let site_key = if let Some(sk) = site_key_arg {
+            sk
+        } else {
+            let engine_arc = self.active_engine_async().await;
+            let engine = engine_arc.lock().await;
+            let detect_js = r#"(() => {
+                var el = document.querySelector('[data-sitekey]');
+                if (el) return el.dataset.sitekey || el.getAttribute('data-sitekey');
+                var script = document.querySelector('script[src*="recaptcha"]');
+                if (script) {
+                    var m = script.src.match(/render=([^&]+)/);
+                    if (m) return m[1];
+                }
+                var turnstile = document.querySelector('[data-cf-turnstile-sitekey]');
+                if (turnstile) return turnstile.getAttribute('data-cf-turnstile-sitekey') || turnstile.dataset.cfTurnstileSitekey;
+                var tScript = document.querySelector('script[src*="turnstile"]');
+                if (tScript) {
+                    var tm = tScript.src.match(/sitekey=([^&]+)/);
+                    if (tm) return tm[1];
+                }
+                return '';
+            })()"#;
+            let detected = engine.eval_js(detect_js).await.unwrap_or_default();
+            if detected.is_empty() {
+                return Err("Could not auto-detect CAPTCHA site key. Provide site_key manually.".to_string());
+            }
+            detected
+        };
+
+        info!(site_key = %site_key, page_url = %page_url, captcha_type = %captcha_type, "CAPTCHA site key resolved");
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(130))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        // Step 1: Submit task
+        let mut submit_params = vec![
+            ("key", api_key.clone()),
+            ("pageurl", page_url.clone()),
+            ("json", "1".to_string()),
+        ];
+        match captcha_type {
+            "turnstile" => {
+                submit_params.push(("method", "turnstile".to_string()));
+                submit_params.push(("sitekey", site_key.clone()));
+            }
+            _ => {
+                submit_params.push(("method", "userrecaptcha".to_string()));
+                submit_params.push(("googlekey", site_key.clone()));
+                submit_params.push(("version", "v3".to_string()));
+                submit_params.push(("action", "submit".to_string()));
+                submit_params.push(("min_score", "0.7".to_string()));
+            }
+        }
+        let submit_resp = client
+            .post("http://2captcha.com/in.php")
+            .form(&submit_params)
+            .send()
+            .await
+            .map_err(|e| format!("Challenge solver submit failed: {e}"))?;
+        let submit_body: serde_json::Value = submit_resp
+            .json()
+            .await
+            .map_err(|e| format!("Challenge solver response parse error: {e}"))?;
+        if submit_body.get("status").and_then(|v| v.as_i64()) != Some(1) {
+            let err_text = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(format!("Challenge solver rejected task: {err_text}"));
+        }
+        let task_id = submit_body
+            .get("request")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        info!(task_id = %task_id, "Challenge solver task submitted, polling for result");
+
+        // Step 2: Poll for result (every 5s, max 120s)
+        let poll_url = format!(
+            "http://2captcha.com/res.php?key={}&action=get&id={}&json=1",
+            api_key, task_id
+        );
+        let mut token = String::new();
+        for attempt in 0..24u32 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let poll_resp = client.get(&poll_url).send().await;
+            match poll_resp {
+                Ok(resp) => {
+                    if let Ok(body) = resp.json::<serde_json::Value>().await {
+                        let status = body.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
+                        let request = body.get("request").and_then(|v| v.as_str()).unwrap_or("");
+                        if status == 1 {
+                            token = request.to_string();
+                            info!(attempt = attempt, "CAPTCHA solved");
+                            break;
+                        } else if request == "CAPCHA_NOT_READY" || request == "CAPTCHA_NOT_READY" {
+                            continue;
+                        } else {
+                            return Err(format!("Challenge solver error: {request}"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(attempt = attempt, error = %e, "Poll request failed, retrying");
+                }
+            }
+        }
+        if token.is_empty() {
+            return Err("CAPTCHA solving timed out after 120 seconds".to_string());
+        }
+
+        // Step 3: inject into page (v3-aware: overrides grecaptcha.execute).
+        let escaped = token.replace('\\', "\\\\").replace('\'', "\\'");
+        let inject_js = match captcha_type {
+            "turnstile" => format!(
+                r#"(() => {{
+                    var el = document.querySelector('[name="cf-turnstile-response"]') || document.querySelector('input[name*="turnstile"]');
+                    if (el) el.value = '{escaped}';
+                    var cb = document.querySelector('[data-cf-turnstile-sitekey]');
+                    if (cb && cb.dataset.callback && typeof window[cb.dataset.callback] === 'function') {{
+                        window[cb.dataset.callback]('{escaped}');
+                    }}
+                    return 'injected';
+                }})()"#
+            ),
+            _ => format!(
+                r#"(() => {{
+                    const TOKEN = '{escaped}';
+                    let actions = [];
+                    let el = document.getElementById('g-recaptcha-response');
+                    if (!el) {{
+                        const els = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
+                        if (els.length > 0) el = els[0];
+                    }}
+                    if (el) {{ el.value = TOKEN; actions.push('textarea'); }}
+                    if (typeof grecaptcha !== 'undefined') {{
+                        try {{
+                            grecaptcha.execute = function(siteKey, opts) {{ return Promise.resolve(TOKEN); }};
+                            actions.push('execute_override');
+                        }} catch(e) {{}}
+                        try {{
+                            if (typeof grecaptcha.getResponse === 'function') {{
+                                grecaptcha.callback && grecaptcha.callback(TOKEN);
+                                actions.push('callback');
+                            }}
+                        }} catch(e) {{}}
+                    }}
+                    if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                        try {{
+                            const clients = ___grecaptcha_cfg.clients;
+                            for (const k in clients) {{
+                                const c = clients[k];
+                                for (const kk in c) {{
+                                    const item = c[kk];
+                                    if (item && typeof item === 'object') {{
+                                        for (const kkk in item) {{
+                                            if (typeof item[kkk] === 'function' && /callback/i.test(kkk)) {{
+                                                try {{ item[kkk](TOKEN); actions.push('client_cb'); }} catch(e2) {{}}
+                                            }}
+                                        }}
+                                    }}
+                                }}
+                            }}
+                        }} catch(e3) {{}}
+                    }}
+                    return 'injected:' + actions.join(',');
+                }})()"#
+            ),
+        };
+        let engine_arc = self.active_engine_async().await;
+        let engine = engine_arc.lock().await;
+        let _ = engine.eval_js(&inject_js).await;
+        Ok(token)
+    }
+
     /// Dispatch a tool call to the real browser.
     async fn dispatch_tool(
         &self,
@@ -2650,202 +2851,12 @@ impl WraithHandler {
                 let input: SolveCaptchaInput = parse_args(args)?;
                 let captcha_type = input.captcha_type.unwrap_or_else(|| "recaptchav3".to_string());
                 info!(captcha_type = %captcha_type, "Solving challenge via solving service");
-
-                let api_key = std::env::var("TWOCAPTCHA_API_KEY")
-                    .map_err(|_| ErrorData::internal_error(
-                        "TWOCAPTCHA_API_KEY environment variable not set. A solving-service API key is required.".to_string(), None))?;
-
-                // Determine page URL
-                let page_url = if let Some(u) = input.url {
-                    u
-                } else {
-                    let engine_arc = self.active_engine_async().await;
-                    let engine = engine_arc.lock().await;
-                    engine.current_url().await.unwrap_or_default()
-                };
-
-                // Determine site key — auto-detect if not provided
-                let site_key = if let Some(sk) = input.site_key {
-                    sk
-                } else {
-                    let engine_arc = self.active_engine_async().await;
-                    let engine = engine_arc.lock().await;
-                    let detect_js = r#"(() => {
-                        var el = document.querySelector('[data-sitekey]');
-                        if (el) return el.dataset.sitekey || el.getAttribute('data-sitekey');
-                        var script = document.querySelector('script[src*="recaptcha"]');
-                        if (script) {
-                            var m = script.src.match(/render=([^&]+)/);
-                            if (m) return m[1];
-                        }
-                        var turnstile = document.querySelector('[data-cf-turnstile-sitekey]');
-                        if (turnstile) return turnstile.getAttribute('data-cf-turnstile-sitekey') || turnstile.dataset.cfTurnstileSitekey;
-                        var tScript = document.querySelector('script[src*="turnstile"]');
-                        if (tScript) {
-                            var tm = tScript.src.match(/sitekey=([^&]+)/);
-                            if (tm) return tm[1];
-                        }
-                        return '';
-                    })()"#;
-                    let detected = engine.eval_js(detect_js).await.unwrap_or_default();
-                    if detected.is_empty() {
-                        return Err(ErrorData::internal_error(
-                            "Could not auto-detect CAPTCHA site key. Provide site_key manually.".to_string(), None));
-                    }
-                    detected
-                };
-
-                info!(site_key = %site_key, page_url = %page_url, "CAPTCHA site key resolved");
-
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(130))
-                    .build()
-                    .unwrap_or_else(|_| reqwest::Client::new());
-
-                // Step 1: Submit CAPTCHA task to 2captcha
-                let mut submit_params = vec![
-                    ("key", api_key.clone()),
-                    ("pageurl", page_url.clone()),
-                    ("json", "1".to_string()),
-                ];
-
-                match captcha_type.as_str() {
-                    "turnstile" => {
-                        submit_params.push(("method", "turnstile".to_string()));
-                        submit_params.push(("sitekey", site_key.clone()));
-                    }
-                    _ => {
-                        // reCAPTCHA v3 (default)
-                        submit_params.push(("method", "userrecaptcha".to_string()));
-                        submit_params.push(("googlekey", site_key.clone()));
-                        submit_params.push(("version", "v3".to_string()));
-                        submit_params.push(("action", "submit".to_string()));
-                        submit_params.push(("min_score", "0.7".to_string()));
-                    }
+                match self.solve_and_inject_captcha(&captcha_type, input.site_key, input.url).await {
+                    Ok(token) => Ok(CallToolResult::success(vec![Content::text(
+                        format!("CAPTCHA solved (type: {}). Token: {}", captcha_type, token)
+                    )])),
+                    Err(e) => Err(ErrorData::internal_error(e, None)),
                 }
-
-                let submit_resp = client
-                    .post("http://2captcha.com/in.php")
-                    .form(&submit_params)
-                    .send()
-                    .await
-                    .map_err(|e| ErrorData::internal_error(format!("Challenge solver submit failed: {e}"), None))?;
-
-                let submit_body: serde_json::Value = submit_resp
-                    .json()
-                    .await
-                    .map_err(|e| ErrorData::internal_error(format!("Challenge solver response parse error: {e}"), None))?;
-
-                if submit_body.get("status").and_then(|v| v.as_i64()) != Some(1) {
-                    let err_text = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("unknown error");
-                    return Err(ErrorData::internal_error(format!("Challenge solver rejected task: {err_text}"), None));
-                }
-
-                let task_id = submit_body.get("request").and_then(|v| v.as_str()).unwrap_or("")
-                    .to_string();
-                info!(task_id = %task_id, "Challenge solver task submitted, polling for result");
-
-                // Step 2: Poll for result (every 5s, max 120s)
-                let poll_url = format!(
-                    "http://2captcha.com/res.php?key={}&action=get&id={}&json=1",
-                    api_key, task_id
-                );
-                let max_attempts = 24; // 24 * 5s = 120s
-                let mut token = String::new();
-
-                for attempt in 0..max_attempts {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-                    let poll_resp = client.get(&poll_url).send().await;
-                    match poll_resp {
-                        Ok(resp) => {
-                            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                                let status = body.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
-                                let request = body.get("request").and_then(|v| v.as_str()).unwrap_or("");
-
-                                if status == 1 {
-                                    token = request.to_string();
-                                    info!(attempt = attempt, "CAPTCHA solved");
-                                    break;
-                                } else if request == "CAPCHA_NOT_READY" || request == "CAPTCHA_NOT_READY" {
-                                    debug!(attempt = attempt, "CAPTCHA not ready, polling again");
-                                    continue;
-                                } else {
-                                    return Err(ErrorData::internal_error(
-                                        format!("Challenge solver error: {request}"), None));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!(attempt = attempt, error = %e, "Poll request failed, retrying");
-                        }
-                    }
-                }
-
-                if token.is_empty() {
-                    return Err(ErrorData::internal_error(
-                        "CAPTCHA solving timed out after 120 seconds".to_string(), None));
-                }
-
-                // Step 3: Inject the token into the page
-                let inject_js = match captcha_type.as_str() {
-                    "turnstile" => format!(
-                        r#"(() => {{
-                            var el = document.querySelector('[name="cf-turnstile-response"]') || document.querySelector('input[name*="turnstile"]');
-                            if (el) el.value = '{}';
-                            var cb = document.querySelector('[data-cf-turnstile-sitekey]');
-                            if (cb && cb.dataset.callback && typeof window[cb.dataset.callback] === 'function') {{
-                                window[cb.dataset.callback]('{}');
-                            }}
-                            return 'injected';
-                        }})()"#,
-                        token.replace('\'', "\\'"),
-                        token.replace('\'', "\\'")
-                    ),
-                    _ => format!(
-                        r#"(() => {{
-                            var el = document.getElementById('g-recaptcha-response');
-                            if (!el) {{
-                                var els = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
-                                if (els.length > 0) el = els[0];
-                            }}
-                            if (el) el.value = '{}';
-                            if (typeof grecaptcha !== 'undefined' && grecaptcha.getResponse) {{
-                                try {{ grecaptcha.callback('{}'); }} catch(e) {{}}
-                            }}
-                            if (typeof ___grecaptcha_cfg !== 'undefined') {{
-                                try {{
-                                    var clients = ___grecaptcha_cfg.clients;
-                                    for (var k in clients) {{
-                                        var c = clients[k];
-                                        for (var kk in c) {{
-                                            var item = c[kk];
-                                            if (item && typeof item === 'object') {{
-                                                for (var kkk in item) {{
-                                                    if (typeof item[kkk] === 'function') {{
-                                                        try {{ item[kkk]('{}'); }} catch(e2) {{}}
-                                                    }}
-                                                }}
-                                            }}
-                                        }}
-                                    }}
-                                }} catch(e3) {{}}
-                            }}
-                            return 'injected';
-                        }})()"#,
-                        token.replace('\'', "\\'"),
-                        token.replace('\'', "\\'"),
-                        token.replace('\'', "\\'")
-                    ),
-                };
-
-                let engine_arc = self.active_engine_async().await;
-                let engine = engine_arc.lock().await;
-                let _ = engine.eval_js(&inject_js).await;
-
-                Ok(CallToolResult::success(vec![Content::text(
-                    format!("CAPTCHA solved (type: {}). Token: {}", captcha_type, token)
-                )]))
             }
 
             // === TLS Verification ===
@@ -4069,6 +4080,54 @@ impl WraithHandler {
                             })
                         }
 
+                        "solve_captcha" => {
+                            // BR-9: solve reCAPTCHA v3 / Turnstile via 2captcha
+                            // and inject the token into the live page so the
+                            // next submit's grecaptcha.execute() resolves with
+                            // the pre-solved value. Requires TWOCAPTCHA_API_KEY
+                            // env var to be set on the wraith MCP process.
+                            let captcha_type = step
+                                .get("captcha_type")
+                                .or_else(|| step.get("type"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("recaptchav3")
+                                .to_string();
+                            let site_key = step
+                                .get("site_key")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let page_url = step
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            match self.solve_and_inject_captcha(&captcha_type, site_key, page_url).await {
+                                Ok(token) => {
+                                    let preview = if token.len() > 32 {
+                                        format!("{}…", &token[..32])
+                                    } else {
+                                        token.clone()
+                                    };
+                                    json!({
+                                        "step": idx + 1,
+                                        "name": step_name,
+                                        "action": "solve_captcha",
+                                        "status": "ok",
+                                        "captcha_type": captcha_type,
+                                        "token_preview": preview,
+                                        "token_len": token.len()
+                                    })
+                                }
+                                Err(e) => json!({
+                                    "step": idx + 1,
+                                    "name": step_name,
+                                    "action": "solve_captcha",
+                                    "status": "error",
+                                    "captcha_type": captcha_type,
+                                    "error": e
+                                }),
+                            }
+                        }
+
                         other => {
                             warn!(action = %other, "Unknown playbook action — skipping");
                             json!({
@@ -4425,6 +4484,10 @@ const PLAYBOOK_GREENHOUSE: &str = r#"
   action: fill
   selector: "input[name=urls[LinkedIn]]"
   value: "{{linkedin_url}}"
+
+- name: Solve invisible reCAPTCHA v3
+  action: solve_captcha
+  captcha_type: recaptchav3
 
 - name: Submit application
   action: submit
