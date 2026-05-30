@@ -60,7 +60,7 @@ impl Default for AgentConfig {
         Self {
             max_steps: 50,
             max_context_tokens: 100_000,
-            model: "claude-sonnet-4-20250514".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
             auto_extract_content: true,
             use_vision: false,
